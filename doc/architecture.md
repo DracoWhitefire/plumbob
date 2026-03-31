@@ -382,11 +382,39 @@ surface will be driven by what the DRM/KMS integration actually needs to call: a
 
 ---
 
-## `no_std` Compatibility
+## `no_std`, `alloc`, and `async`
 
-plumbob requires no allocator. All types are stack-allocated. `FrlTrainer<C, P>` owns a
-`C: ScdcClient` and a `P: HdmiPhy`; both are caller-supplied and caller-sized. No heap
-use anywhere in the training loop. The full API is available in bare `no_std` environments.
+plumbob declares `#![no_std]` and `#![forbid(unsafe_code)]`. Three capability tiers are
+available depending on the target environment:
+
+**`no_std` (no allocator)**
+
+The full training state machine is available. `FrlTrainer<C, P>` is stack-allocated;
+`TrainingConfig`, `TrainingOutcome`, `TrainingError`, and all owned protocol types
+(`LtpReq`, `FfeLevels`, `TrainingStatus`, `CedCounters`) are stack-allocated. No heap
+use anywhere in the training loop. This tier covers bare-metal and firmware targets.
+
+**`no_std` + `alloc` feature**
+
+Adds `TrainingTrace` and `train_at_rate_traced`. The trace requires `Vec` to accumulate
+events; everything else is unchanged. Enable with:
+
+```toml
+plumbob = { version = "0.1", features = ["alloc"] }
+```
+
+**`std` feature**
+
+Implies `alloc`. No additional API surface beyond what `alloc` provides; `std` exists as
+a convenience for targets where it is available and for host-side tooling.
+
+**Async**
+
+The sync `ScdcClient` trait is blocking. Async link training follows the same pattern as
+`hdmi-hal` / `hdmi-hal-async`: a companion crate `plumbob-async` will mirror `ScdcClient`
+and `FrlTrainer` with `async fn` methods, depend on `plumbob` for shared data types, and
+be implemented against `culvert-async`. This is out of scope for the current phase; the
+sync API is designed so that adding the async companion requires no changes to this crate.
 
 ---
 
