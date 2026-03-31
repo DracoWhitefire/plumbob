@@ -145,6 +145,10 @@ pub enum FfeLevels {
 }
 
 /// FRL configuration written to Config_0.
+///
+/// `dsc_frl_max` is sourced from `TrainingConfig` and reflects whether the
+/// negotiated configuration requires DSC transport (`NegotiatedConfig.resolved.dsc_required`).
+/// plumbob passes it through without interpreting it.
 pub struct FrlConfig {
     pub rate: HdmiForumFrl,
     pub ffe_levels: FfeLevels,
@@ -211,6 +215,13 @@ pub enum TrainingOutcome {
 pub struct TrainingConfig {
     /// FFE levels advertised to the sink in Config_0.
     pub ffe_levels: FfeLevels,
+    /// Whether to set DSC_FRL_Max in Config_0.
+    ///
+    /// Set to `true` when the negotiated configuration requires DSC transport
+    /// (`NegotiatedConfig.resolved.dsc_required`). The integration layer is
+    /// responsible for supplying this value; plumbob passes it through into
+    /// `FrlConfig` without interpreting it. Defaults to `false`.
+    pub dsc_frl_max: bool,
     /// Maximum poll iterations waiting for flt_ready (phase 2).
     pub flt_ready_timeout: u32,
     /// Maximum poll iterations waiting for frl_start (phase 3).
@@ -256,9 +267,10 @@ impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
 ```
 
 `TrainingConfig` is `#[non_exhaustive]` and implements `Default`. The default values are
-`ffe_levels: FfeLevels::Ffe0`, `flt_ready_timeout: 1000`, `frl_start_timeout: 1000`, and
-`ltp_timeout: 1000`. These are reasonable for hardware use but are not tuned for any
-specific platform; callers should adjust the timeout values for their polling cadence.
+`ffe_levels: FfeLevels::Ffe0`, `dsc_frl_max: false`, `flt_ready_timeout: 1000`,
+`frl_start_timeout: 1000`, and `ltp_timeout: 1000`. These are reasonable for hardware use
+but are not tuned for any specific platform; callers should adjust the timeout values for
+their polling cadence.
 
 ---
 
