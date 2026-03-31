@@ -85,16 +85,24 @@ rate and returns when it reaches a terminal state.
 Configuration is a write-then-forget step. The sink detects the rate change and begins its
 own internal preparation.
 
-### Phase 2 — Initiation
+### Phase 2 — Readiness
+
+Poll `ScdcClient::read_training_status` until the sink asserts `flt_ready`. This flag
+signals that the sink has completed its internal preparation for Fixed Link Training at the
+requested rate.
+
+If `flt_ready` does not assert within `TrainingConfig::flt_ready_timeout` iterations, the
+attempt terminates with `TrainingOutcome::FallbackRequired`.
+
+### Phase 3 — Initiation
 
 Poll `ScdcClient::read_training_status` until the sink asserts `frl_start`. This flag
-signals that the sink has acknowledged the requested rate and is ready for the LTP training
-loop.
+signals that the sink is ready for the LTP training loop to begin.
 
 If `frl_start` does not assert within `TrainingConfig::frl_start_timeout` iterations, the
 attempt terminates with `TrainingOutcome::FallbackRequired`.
 
-### Phase 3 — LTP Loop
+### Phase 4 — LTP Loop
 
 On each iteration:
 1. Read `TrainingStatus::ltp_req` via `ScdcClient::read_training_status`.
@@ -145,6 +153,7 @@ pub struct FrlConfig {
 
 /// The subset of SCDC status that the training state machine reads on each poll.
 pub struct TrainingStatus {
+    pub flt_ready: bool,
     pub frl_start: bool,
     pub ltp_req: LtpReq,
 }
@@ -202,9 +211,11 @@ pub enum TrainingOutcome {
 pub struct TrainingConfig {
     /// FFE levels advertised to the sink in Config_0.
     pub ffe_levels: FfeLevels,
-    /// Maximum poll iterations waiting for frl_start (phase 2).
+    /// Maximum poll iterations waiting for flt_ready (phase 2).
+    pub flt_ready_timeout: u32,
+    /// Maximum poll iterations waiting for frl_start (phase 3).
     pub frl_start_timeout: u32,
-    /// Maximum poll iterations in the LTP training loop (phase 3).
+    /// Maximum poll iterations in the LTP training loop (phase 4).
     pub ltp_timeout: u32,
 }
 
@@ -226,7 +237,7 @@ impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
     pub fn new(scdc: C, phy: P) -> Self;
     pub fn into_parts(self) -> (C, P);
 
-    /// Run the full three-phase training sequence at the given FRL rate.
+    /// Run the full four-phase training sequence at the given FRL rate.
     pub fn train_at_rate(
         &mut self,
         rate: HdmiForumFrl,
@@ -245,9 +256,9 @@ impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
 ```
 
 `TrainingConfig` is `#[non_exhaustive]` and implements `Default`. The default values are
-`frl_start_timeout: 1000` and `ltp_timeout: 1000`. These are reasonable for hardware use
-but are not tuned for any specific platform; callers should adjust the timeout values for
-their polling cadence.
+`ffe_levels: FfeLevels::Ffe0`, `flt_ready_timeout: 1000`, `frl_start_timeout: 1000`, and
+`ltp_timeout: 1000`. These are reasonable for hardware use but are not tuned for any
+specific platform; callers should adjust the timeout values for their polling cadence.
 
 ---
 
@@ -273,23 +284,29 @@ pub enum TrainingEvent {
         ffe_levels: FfeLevels,
     },
 
-    /// Phase 2: the sink asserted frl_start after this many poll iterations.
+    /// Phase 2: the sink asserted flt_ready after this many poll iterations.
+    FltReadyReceived { after_iterations: u32 },
+
+    /// Phase 2: timed out waiting for flt_ready.
+    FltReadyTimeout { iterations_elapsed: u32 },
+
+    /// Phase 3: the sink asserted frl_start after this many poll iterations.
     FrlStartReceived { after_iterations: u32 },
 
-    /// Phase 2: timed out waiting for frl_start.
+    /// Phase 3: timed out waiting for frl_start.
     FrlStartTimeout { iterations_elapsed: u32 },
 
-    /// Phase 3: the sink changed its LTP request to this pattern.
+    /// Phase 4: the sink changed its LTP request to this pattern.
     ///
     /// Recorded each time ltp_req transitions to a new value, not on every poll.
     /// The sequence of these events shows how the sink's pattern requests evolved
     /// during training.
     LtpPatternRequested { pattern: LtpReq },
 
-    /// Phase 3: ltp_req reached None on all lanes. Training succeeded.
+    /// Phase 4: ltp_req reached None on all lanes. Training succeeded.
     AllLanesSatisfied { after_iterations: u32 },
 
-    /// Phase 3: timed out in the LTP loop before ltp_req reached None.
+    /// Phase 4: timed out in the LTP loop before ltp_req reached None.
     LtpLoopTimeout { iterations_elapsed: u32 },
 }
 ```
@@ -321,6 +338,7 @@ A complete successful trace looks like:
 
 ```
 RateConfigured { rate: Rate9Gbps3Lanes, ffe_levels: Ffe0 }
+FltReadyReceived { after_iterations: 5 }
 FrlStartReceived { after_iterations: 12 }
 LtpPatternRequested { pattern: Lfsr0 }
 LtpPatternRequested { pattern: Lfsr2 }
@@ -328,27 +346,37 @@ LtpPatternRequested { pattern: None }   ← not recorded; AllLanesSatisfied is e
 AllLanesSatisfied { after_iterations: 47 }
 ```
 
-A trace that timed out in phase 2 — the sink never asserted `frl_start`:
+A trace that timed out in phase 2 — the sink never completed internal preparation:
 
 ```
 RateConfigured { rate: Rate12Gbps4Lanes, ffe_levels: Ffe0 }
+FltReadyTimeout { iterations_elapsed: 1000 }
+```
+
+A trace that timed out in phase 3 — the sink became ready but never signalled to begin:
+
+```
+RateConfigured { rate: Rate12Gbps4Lanes, ffe_levels: Ffe0 }
+FltReadyReceived { after_iterations: 4 }
 FrlStartTimeout { iterations_elapsed: 1000 }
 ```
 
-A trace that timed out in phase 3 — the sink requested patterns but lanes never converged:
+A trace that timed out in phase 4 — the sink requested patterns but lanes never converged:
 
 ```
 RateConfigured { rate: Rate12Gbps4Lanes, ffe_levels: Ffe0 }
+FltReadyReceived { after_iterations: 4 }
 FrlStartReceived { after_iterations: 3 }
 LtpPatternRequested { pattern: Lfsr1 }
 LtpPatternRequested { pattern: Lfsr3 }
 LtpLoopTimeout { iterations_elapsed: 1000 }
 ```
 
-The distinction between a phase 2 timeout and a phase 3 timeout tells the caller something
-about what went wrong: a phase 2 timeout means the sink never acknowledged the rate at all;
-a phase 3 timeout means the sink accepted the rate but lanes failed to lock, which is more
-likely a signal integrity or equalization issue.
+Each timeout phase tells the caller something distinct about what went wrong: a phase 2
+timeout means the sink did not complete internal preparation at this rate; a phase 3 timeout
+means it prepared but did not initiate training; a phase 4 timeout means the sink entered
+the LTP loop but lanes failed to lock, which is more likely a signal integrity or
+equalization issue.
 
 ---
 
@@ -476,8 +504,8 @@ sync API is designed so that adding the async companion requires no changes to t
   needs to know whether it came from the I²C bus, the PHY, or the protocol. `TrainingError`
   keeps them separate.
 - **No unsafe code.** `#![forbid(unsafe_code)]`.
-- **Stable consumer types.** `TrainingOutcome` and `TrainingConfig` are `#[non_exhaustive]`
-  where appropriate. Callers are insulated from internal expansions.
+- **Stable consumer types.** `TrainingOutcome`, `TrainingConfig`, and `TrainingTrace` are
+  `#[non_exhaustive]` where appropriate. Callers are insulated from internal expansions.
 
 ---
 
