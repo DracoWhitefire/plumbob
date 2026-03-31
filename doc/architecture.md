@@ -541,3 +541,102 @@ one call is a stub.
 `ScdcClient::read_ced` returns `CedCounters` (defined here) which will feed equalization
 adjustments during the LTP loop once `EqParams` is expanded to carry the relevant fields.
 The training loop already calls `read_ced`; the equalization call is the stub.
+
+---
+
+## Implementation Plan
+
+Steps are ordered by dependency. Each step should leave the crate compiling and tests
+passing before the next begins. This section will be removed once implementation is
+complete.
+
+### Step 1 — Crate scaffolding
+
+- Replace the stub `src/lib.rs` with the real module skeleton.
+- Configure `Cargo.toml`: add dependencies on `hdmi-hal` and `display-types`; declare
+  `alloc` and `std` feature flags (`std` implies `alloc`).
+- Add crate-level attributes: `#![no_std]`, `#![forbid(unsafe_code)]`,
+  `#![deny(missing_docs)]`.
+- Add `extern crate alloc;` gated on the `alloc` feature.
+
+### Step 2 — Owned protocol types
+
+Implement all types that form the vocabulary of `ScdcClient` and the state machine:
+`LtpReq`, `FfeLevels`, `FrlConfig`, `TrainingStatus`, `CedCount`, `CedCounters`.
+
+These are pure data types with no logic. Derive `Debug`, `Clone`, `Copy`, `PartialEq`,
+`Eq` where appropriate. Mark `LtpReq` `#[non_exhaustive]`. `CedCount::new` masks to
+15 bits (matching culvert's existing behaviour).
+
+### Step 3 — `ScdcClient` trait
+
+Define the trait with its three methods: `write_frl_config`, `read_training_status`,
+`read_ced`. No implementations in this step.
+
+### Step 4 — Training types
+
+Implement `TrainingOutcome`, `TrainingError`, and `TrainingConfig`.
+
+`TrainingConfig` implements `Default` with `ffe_levels: Ffe0`, `dsc_frl_max: false`,
+and all three timeouts set to `1000`. Mark `TrainingConfig` and `TrainingOutcome`
+`#[non_exhaustive]`.
+
+### Step 5 — `FrlTrainer` and `train_at_rate`
+
+Implement the `FrlTrainer<C, P>` struct with `new` and `into_parts`.
+
+Implement `train_at_rate`: the four-phase sequence in full. In phase 4, call
+`phy.adjust_equalization(EqParams::default())` as the placeholder for `send_ltp` — the
+state machine structure is complete, only this call is a stub.
+
+### Step 6 — State machine tests
+
+Write a minimal `SimScdc` test helper in `src/sim.rs` (or `#[cfg(test)]`): a struct
+holding a register array that can be pre-loaded to simulate a sink's phase-by-phase
+responses.
+
+Cover:
+- Successful training through all four phases.
+- Phase 2 timeout (`flt_ready` never asserts).
+- Phase 3 timeout (`frl_start` never asserts).
+- Phase 4 timeout (LTP loop does not converge).
+- `TrainingError` propagation from both `ScdcClient` and `HdmiPhy`.
+
+### Step 7 — Diagnostics (`alloc` feature)
+
+Implement `TrainingEvent`, `TrainingTrace`, and `train_at_rate_traced`, all gated on
+`#[cfg(feature = "alloc")]`. `TrainingEvent` and `TrainingTrace` are `#[non_exhaustive]`.
+
+`train_at_rate_traced` runs the same state machine logic as `train_at_rate`; the shared
+logic should be factored so the trace variant adds event recording without duplicating
+the phase code.
+
+### Step 8 — Diagnostics tests
+
+Verify trace contents for each scenario: successful run, each of the three timeout
+variants, and a `TrainingError` mid-run. Assert event order, field values, and that
+`LtpPatternRequested` is emitted on transition rather than on every poll.
+
+### Step 9 — hdmi-hal: `LtpPattern` and `send_ltp`
+
+In hdmi-hal:
+- Add `LtpPattern` newtype.
+- Add `send_ltp(pattern: LtpPattern)` to the `HdmiPhy` trait.
+
+In plumbob:
+- Add a `From<LtpReq>` conversion to `hdmi_hal::LtpPattern` (all variants except
+  `None`, which never reaches the call).
+- Replace the `adjust_equalization` placeholder in phase 4 with `phy.send_ltp(pattern)`.
+- Update the mock PHY in tests to implement `send_ltp`.
+
+### Step 10 — culvert: `plumbob` feature
+
+In culvert:
+- Add a `plumbob` cargo feature that depends on this crate.
+- Add `From` impls between culvert's register-layer types and plumbob's protocol types
+  (`LtpReq`, `FfeLevels`, `CedCount`, `CedCounters`).
+- Implement `plumbob::ScdcClient` for `Scdc<T>` in a feature-gated module. The
+  `read_training_status` impl reads `StatusFlags` and maps `flt_ready`, `frl_start`,
+  and `ltp_req` into `plumbob::TrainingStatus`.
+- Add integration tests in culvert that exercise the `ScdcClient` impl against
+  `TestTransport`.
