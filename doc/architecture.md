@@ -559,7 +559,23 @@ complete.
   `#![deny(missing_docs)]`.
 - Add `extern crate alloc;` gated on the `alloc` feature.
 
-### Step 2 — Owned protocol types
+### Step 2 — CI scaffolding
+
+Add the three workflow files used by all sibling projects:
+
+- `.github/workflows/ci.yml` — `test`, `build (alloc only)`, `build (no_std)`,
+  `build simulate example`, and a `coverage` job using `cargo-llvm-cov`. The coverage
+  job measures line coverage and enforces a ratcheting baseline stored in
+  `.coverage-baseline`. Coverage is measured with `--features std` (the default).
+- `.github/workflows/audit.yml` — runs `rustsec/audit-check` on `Cargo.toml` /
+  `Cargo.lock` changes.
+- `.github/workflows/publish.yml` — triggers on `v*.*.*` tags on `main`; runs the full
+  CI check sequence then `cargo publish`.
+
+Add `.coverage-baseline` containing `0.00` as a placeholder; it will be ratcheted
+upward automatically as tests are added.
+
+### Step 3 — Owned protocol types
 
 Implement all types that form the vocabulary of `ScdcClient` and the state machine:
 `LtpReq`, `FfeLevels`, `FrlConfig`, `TrainingStatus`, `CedCount`, `CedCounters`.
@@ -568,12 +584,15 @@ These are pure data types with no logic. Derive `Debug`, `Clone`, `Copy`, `Parti
 `Eq` where appropriate. Mark `LtpReq` `#[non_exhaustive]`. `CedCount::new` masks to
 15 bits (matching culvert's existing behaviour).
 
-### Step 3 — `ScdcClient` trait
+Tests: each type's constructor, field accessors, and any derived trait behaviour
+(`PartialEq`, `Clone`). Verify `CedCount` masks the validity bit.
+
+### Step 4 — `ScdcClient` trait
 
 Define the trait with its three methods: `write_frl_config`, `read_training_status`,
 `read_ced`. No implementations in this step.
 
-### Step 4 — Training types
+### Step 5 — Training types
 
 Implement `TrainingOutcome`, `TrainingError`, and `TrainingConfig`.
 
@@ -581,7 +600,10 @@ Implement `TrainingOutcome`, `TrainingError`, and `TrainingConfig`.
 and all three timeouts set to `1000`. Mark `TrainingConfig` and `TrainingOutcome`
 `#[non_exhaustive]`.
 
-### Step 5 — `FrlTrainer` and `train_at_rate`
+Tests: verify `TrainingConfig::default()` field values; verify both `TrainingOutcome`
+variants and both `TrainingError` variants are constructible and match correctly.
+
+### Step 6 — `FrlTrainer` and `train_at_rate`
 
 Implement the `FrlTrainer<C, P>` struct with `new` and `into_parts`.
 
@@ -589,20 +611,28 @@ Implement `train_at_rate`: the four-phase sequence in full. In phase 4, call
 `phy.adjust_equalization(EqParams::default())` as the placeholder for `send_ltp` — the
 state machine structure is complete, only this call is a stub.
 
-### Step 6 — State machine tests
+### Step 7 — State machine tests
 
-Write a minimal `SimScdc` test helper in `src/sim.rs` (or `#[cfg(test)]`): a struct
-holding a register array that can be pre-loaded to simulate a sink's phase-by-phase
-responses.
+Write a `SimScdc` test helper: a struct holding a scripted response queue that returns
+pre-set `TrainingStatus` values in sequence, simulating a sink's phase-by-phase
+behaviour. Write a `MockPhy` that records calls.
 
-Cover:
-- Successful training through all four phases.
-- Phase 2 timeout (`flt_ready` never asserts).
-- Phase 3 timeout (`frl_start` never asserts).
-- Phase 4 timeout (LTP loop does not converge).
-- `TrainingError` propagation from both `ScdcClient` and `HdmiPhy`.
+Full coverage requires a test for every branch in `train_at_rate`:
 
-### Step 7 — Diagnostics (`alloc` feature)
+- Successful training: `flt_ready` asserts on poll N, `frl_start` asserts on poll M,
+  `ltp_req` transitions through one or more patterns before reaching `None`.
+- `flt_ready` never asserts: phase 2 times out, returns `FallbackRequired`.
+- `flt_ready` asserts immediately (iteration 0).
+- `frl_start` never asserts: phase 3 times out, returns `FallbackRequired`.
+- `frl_start` asserts immediately.
+- LTP loop times out: `ltp_req` never reaches `None`, returns `FallbackRequired`.
+- LTP loop succeeds on the first iteration (`ltp_req` is `None` on first read).
+- `ltp_req` transitions through all four LFSR variants before reaching `None`.
+- `TrainingError::Scdc` propagates from each of the three `ScdcClient` calls.
+- `TrainingError::Phy` propagates from `set_frl_rate` and from the LTP call.
+- `into_parts` recovers the SCDC client and PHY after a completed attempt.
+
+### Step 8 — Diagnostics (`alloc` feature)
 
 Implement `TrainingEvent`, `TrainingTrace`, and `train_at_rate_traced`, all gated on
 `#[cfg(feature = "alloc")]`. `TrainingEvent` and `TrainingTrace` are `#[non_exhaustive]`.
@@ -611,13 +641,22 @@ Implement `TrainingEvent`, `TrainingTrace`, and `train_at_rate_traced`, all gate
 logic should be factored so the trace variant adds event recording without duplicating
 the phase code.
 
-### Step 8 — Diagnostics tests
+### Step 9 — Diagnostics tests
 
-Verify trace contents for each scenario: successful run, each of the three timeout
-variants, and a `TrainingError` mid-run. Assert event order, field values, and that
-`LtpPatternRequested` is emitted on transition rather than on every poll.
+Full coverage requires a test for every event variant and every trace shape:
 
-### Step 9 — hdmi-hal: `LtpPattern` and `send_ltp`
+- Successful run: assert `RateConfigured`, `FltReadyReceived`, `FrlStartReceived`,
+  one or more `LtpPatternRequested`, `AllLanesSatisfied` in order.
+- Phase 2 timeout: assert `RateConfigured`, `FltReadyTimeout`.
+- Phase 3 timeout: assert `RateConfigured`, `FltReadyReceived`, `FrlStartTimeout`.
+- Phase 4 timeout: assert `RateConfigured`, `FltReadyReceived`, `FrlStartReceived`,
+  one or more `LtpPatternRequested`, `LtpLoopTimeout`.
+- `LtpPatternRequested` is emitted on transition only: a sink that holds the same
+  pattern for multiple iterations produces exactly one event, not one per poll.
+- `AllLanesSatisfied` and `LtpLoopTimeout` carry correct `after_iterations` /
+  `iterations_elapsed` counts.
+
+### Step 10 — hdmi-hal: `LtpPattern` and `send_ltp`
 
 In hdmi-hal:
 - Add `LtpPattern` newtype.
@@ -627,9 +666,10 @@ In plumbob:
 - Add a `From<LtpReq>` conversion to `hdmi_hal::LtpPattern` (all variants except
   `None`, which never reaches the call).
 - Replace the `adjust_equalization` placeholder in phase 4 with `phy.send_ltp(pattern)`.
-- Update the mock PHY in tests to implement `send_ltp`.
+- Update `MockPhy` in tests to implement `send_ltp`; add a test that asserts the correct
+  `LtpPattern` is passed for each `LtpReq` variant.
 
-### Step 10 — culvert: `plumbob` feature
+### Step 11 — culvert: `plumbob` feature
 
 In culvert:
 - Add a `plumbob` cargo feature that depends on this crate.
@@ -639,4 +679,22 @@ In culvert:
   `read_training_status` impl reads `StatusFlags` and maps `flt_ready`, `frl_start`,
   and `ltp_req` into `plumbob::TrainingStatus`.
 - Add integration tests in culvert that exercise the `ScdcClient` impl against
-  `TestTransport`.
+  `TestTransport`: verify each method delegates correctly and that `From` conversions
+  round-trip all variants.
+
+### Step 12 — Example
+
+Add `examples/simulate/` as a standalone crate (matching the pattern in hdmi-hal).
+
+The example demonstrates the full `FrlTrainer` usage pattern:
+- A `SimScdc` implementation backed by an in-memory register array, with a helper
+  to pre-load it with a scripted successful training sequence.
+- A `SimPhy` that prints each PHY call to stdout.
+- A `main` that constructs an `FrlTrainer`, calls `train_at_rate_traced`, and prints
+  the outcome and the full `TrainingTrace`.
+
+The example should show all four phases completing and the trace output, so a reader
+can see the intended usage and verify the event sequence by inspection.
+
+Add `examples/simulate/Cargo.toml` with `publish = false` and a path dependency on
+this crate with `features = ["std"]`.
