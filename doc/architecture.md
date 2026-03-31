@@ -148,12 +148,122 @@ impl<T: ScdcTransport, P: HdmiPhy> FrlTrainer<T, P> {
         rate: HdmiForumFrl,
         config: &TrainingConfig,
     ) -> Result<TrainingOutcome, TrainingError<T::Error, P::Error>>;
+
+    /// Like `train_at_rate`, but also returns a `TrainingTrace` recording the
+    /// full event sequence. Requires the `alloc` feature.
+    #[cfg(feature = "alloc")]
+    pub fn train_at_rate_traced(
+        &mut self,
+        rate: HdmiForumFrl,
+        config: &TrainingConfig,
+    ) -> Result<(TrainingOutcome, TrainingTrace), TrainingError<T::Error, P::Error>>;
 }
 ```
 
 `TrainingConfig` is `#[non_exhaustive]` and implements `Default`. The defaults are
 reasonable for hardware use but are not tuned for any specific platform; callers should
 adjust the timeout values for their polling cadence.
+
+---
+
+## Diagnostics
+
+Concordance records every decision it considers in a `ReasoningTrace`. plumbob is a
+sequential state machine rather than a decision pipeline, so the diagnostic equivalent is
+an ordered event log: a record of what the sink signaled, when each phase completed, and
+why training succeeded or did not. A driver or diagnostic tool must be able to reconstruct
+the full training sequence from the trace without inspecting internal state or reading logs.
+
+### `TrainingEvent`
+
+Each phase transition and significant sink signal produces a `TrainingEvent`. Events are
+recorded in order from phase 1 through the terminal state.
+
+```rust
+#[non_exhaustive]
+pub enum TrainingEvent {
+    /// Phase 1: Config_0 was written with this rate and FFE level count.
+    RateConfigured {
+        rate: HdmiForumFrl,
+        ffe_levels: FfeLevels,
+    },
+
+    /// Phase 2: the sink asserted frl_start after this many poll iterations.
+    FrlStartReceived { after_iterations: u32 },
+
+    /// Phase 2: timed out waiting for frl_start.
+    FrlStartTimeout { iterations_elapsed: u32 },
+
+    /// Phase 3: the sink changed its LTP request to this pattern.
+    ///
+    /// Recorded each time ltp_req transitions to a new value, not on every poll.
+    /// The sequence of these events shows how the sink's pattern requests evolved
+    /// during training.
+    LtpPatternRequested { pattern: LtpReq },
+
+    /// Phase 3: ltp_req reached None on all lanes. Training succeeded.
+    AllLanesSatisfied { after_iterations: u32 },
+
+    /// Phase 3: timed out in the LTP loop before ltp_req reached None.
+    LtpLoopTimeout { iterations_elapsed: u32 },
+}
+```
+
+Only transitions in `ltp_req` are recorded as `LtpPatternRequested`, not every poll. A
+sink that holds the same pattern for 50 iterations produces one event, not 50. This keeps
+the trace compact while preserving the information a diagnostic tool actually needs: what
+patterns were requested, and in what order.
+
+### `TrainingTrace`
+
+```rust
+/// Full event log for a single training attempt.
+#[non_exhaustive]
+pub struct TrainingTrace {
+    /// The FRL rate that was attempted.
+    pub rate: HdmiForumFrl,
+    /// Ordered event log from phase 1 through the terminal state.
+    pub events: Vec<TrainingEvent>,
+}
+```
+
+`TrainingTrace` uses `Vec` and requires the `alloc` feature. The non-allocating
+`train_at_rate` is always available; `train_at_rate_traced` is alloc-gated.
+
+### Interpreting the trace
+
+A complete successful trace looks like:
+
+```
+RateConfigured { rate: Rate9Gbps3Lanes, ffe_levels: Ffe0 }
+FrlStartReceived { after_iterations: 12 }
+LtpPatternRequested { pattern: Lfsr0 }
+LtpPatternRequested { pattern: Lfsr2 }
+LtpPatternRequested { pattern: None }   ← not recorded; AllLanesSatisfied is emitted instead
+AllLanesSatisfied { after_iterations: 47 }
+```
+
+A trace that timed out in phase 2 — the sink never asserted `frl_start`:
+
+```
+RateConfigured { rate: Rate12Gbps4Lanes, ffe_levels: Ffe0 }
+FrlStartTimeout { iterations_elapsed: 1000 }
+```
+
+A trace that timed out in phase 3 — the sink requested patterns but lanes never converged:
+
+```
+RateConfigured { rate: Rate12Gbps4Lanes, ffe_levels: Ffe0 }
+FrlStartReceived { after_iterations: 3 }
+LtpPatternRequested { pattern: Lfsr1 }
+LtpPatternRequested { pattern: Lfsr3 }
+LtpLoopTimeout { iterations_elapsed: 1000 }
+```
+
+The distinction between a phase 2 timeout and a phase 3 timeout tells the caller something
+about what went wrong: a phase 2 timeout means the sink never acknowledged the rate at all;
+a phase 3 timeout means the sink accepted the rate but lanes failed to lock, which is more
+likely a signal integrity or equalization issue.
 
 ---
 
