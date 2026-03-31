@@ -42,7 +42,7 @@ The following are out of scope:
   are the only timeout mechanism.
 - **TMDS link setup** — plumbob handles FRL training only. TMDS mode is the fallback
   that concordance selects if no FRL tier trains successfully; plumbob has no role in it.
-- **CED-driven equalization** — CED counter feedback from culvert will eventually
+- **CED-driven equalization** — CED counter feedback from the `ScdcClient` will eventually
   inform equalization adjustments during the LTP loop. This is blocked on `EqParams`
   being expanded; the placeholder call exists but does nothing useful yet.
 
