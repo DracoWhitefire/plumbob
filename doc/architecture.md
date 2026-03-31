@@ -212,6 +212,7 @@ pub enum TrainingOutcome {
 
 /// Per-attempt training configuration.
 #[non_exhaustive]
+#[derive(Clone, Copy)]
 pub struct TrainingConfig {
     /// FFE levels advertised to the sink in Config_0.
     pub ffe_levels: FfeLevels,
@@ -336,6 +337,12 @@ patterns were requested, and in what order.
 pub struct TrainingTrace {
     /// The FRL rate that was attempted.
     pub rate: HdmiForumFrl,
+    /// The configuration in force during this attempt.
+    ///
+    /// Recorded so that a trace is fully self-describing: timeout counts in
+    /// the events (e.g. `FltReadyTimeout { iterations_elapsed: 47 }`) are only
+    /// meaningful when read against the limit that was configured.
+    pub config: TrainingConfig,
     /// Ordered event log from phase 1 through the terminal state.
     pub events: Vec<TrainingEvent>,
 }
@@ -343,6 +350,9 @@ pub struct TrainingTrace {
 
 `TrainingTrace` uses `Vec` and requires the `alloc` feature. The non-allocating
 `train_at_rate` is always available; `train_at_rate_traced` is alloc-gated.
+
+`TrainingConfig` derives `Clone` and `Copy` (all its fields are `Copy`); storing it
+in `TrainingTrace` is a value copy with no allocation.
 
 ### Interpreting the trace
 
@@ -655,6 +665,9 @@ Full coverage requires a test for every event variant and every trace shape:
   pattern for multiple iterations produces exactly one event, not one per poll.
 - `AllLanesSatisfied` and `LtpLoopTimeout` carry correct `after_iterations` /
   `iterations_elapsed` counts.
+- `TrainingTrace.config` matches the `TrainingConfig` passed to `train_at_rate_traced`;
+  verify that `iterations_elapsed` in timeout events is interpretable against the
+  corresponding limit in the recorded config.
 
 ### Step 10 — hdmi-hal: `LtpPattern` and `send_ltp`
 
