@@ -370,6 +370,43 @@ The rule: if it touches state across multiple register accesses, timeout logic, 
 decision of what to do with a register value, it belongs in plumbob. If it reads or writes
 registers and returns typed results, it belongs in the SCDC implementation.
 
+#### Type ownership and the culvert boundary
+
+plumbob owns the types that form the vocabulary of `ScdcClient`: `LtpReq`, `FfeLevels`,
+`FrlConfig`, `TrainingStatus`, `CedCount`, `CedCounters`. These are the types the state
+machine reasons about.
+
+culvert independently defines its own register-layer types (`culvert::LtpReq`,
+`culvert::FfeLevels`, etc.) for its own purposes — they are the output of SCDC register
+decoding, not the input to a training state machine. The two sets of types happen to be
+structurally identical today but exist at different layers and can evolve independently.
+
+When culvert implements `ScdcClient` (via its `plumbob` cargo feature), it converts between
+its own types and plumbob's at the impl boundary:
+
+```rust
+#[cfg(feature = "plumbob")]
+impl<T: ScdcTransport> plumbob::ScdcClient for Scdc<T> {
+    fn read_training_status(&mut self) -> Result<plumbob::TrainingStatus, ...> {
+        let flags = self.read_status_flags()?;
+        Ok(plumbob::TrainingStatus {
+            frl_start: flags.frl_start,
+            ltp_req: flags.ltp_req.into(), // culvert::LtpReq → plumbob::LtpReq
+        })
+    }
+    // ...
+}
+```
+
+`From` impls between the corresponding types live in the same feature-gated module.
+culvert's own types are unchanged; the conversion is confined to the impl.
+
+This approach is intentional. The alternative — making culvert's types re-exports of
+plumbob's when the feature is active — would make `culvert::LtpReq` mean different things
+depending on the feature set, breaking crates that use culvert without plumbob. Making the
+dependency unconditional would force plumbob into every culvert user's dependency graph.
+The boundary conversion is small, explicit, and keeps both crates independently usable.
+
 ### Above: `LinkTrainer` (defined by the integration layer, implemented here)
 
 The integration layer defines the interface it needs from link training. plumbob
@@ -448,10 +485,16 @@ sync API is designed so that adding the async companion requires no changes to t
 **`HdmiPhy::send_ltp`** — Phase 3 of training requires the source to drive a specific Link
 Training Pattern on the physical lanes, as requested by the sink via `LtpReq`. This is a
 PHY operation. `HdmiPhy` currently has `set_frl_rate`, `adjust_equalization`, and
-`set_scrambling`, but no method for driving LTP patterns. Until `send_ltp(req: LtpReq)`
-(or equivalent) is added to `hdmi-hal` — using plumbob's `LtpReq` type — the LTP loop
-calls `adjust_equalization` as a placeholder. The state machine structure is complete;
-only this one call is a stub.
+`set_scrambling`, but no method for driving LTP patterns.
+
+The method will be added to `hdmi-hal` as `send_ltp(pattern: LtpPattern)`, where
+`LtpPattern` is a newtype defined in hdmi-hal. This keeps hdmi-hal free of any dependency
+on plumbob. plumbob converts from its `LtpReq` to `hdmi_hal::LtpPattern` before calling
+the PHY; `LtpReq::None` is the exit condition for the LTP loop and never reaches the call.
+
+Until `send_ltp` and `LtpPattern` are added to hdmi-hal, the LTP loop calls
+`adjust_equalization` as a placeholder. The state machine structure is complete; only this
+one call is a stub.
 
 **`EqParams` expansion** — `EqParams` in hdmi-hal is currently an empty placeholder struct.
 `ScdcClient::read_ced` returns `CedCounters` (defined here) which will feed equalization
