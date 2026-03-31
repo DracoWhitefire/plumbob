@@ -244,9 +244,10 @@ impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
 }
 ```
 
-`TrainingConfig` is `#[non_exhaustive]` and implements `Default`. The defaults are
-reasonable for hardware use but are not tuned for any specific platform; callers should
-adjust the timeout values for their polling cadence.
+`TrainingConfig` is `#[non_exhaustive]` and implements `Default`. The default values are
+`frl_start_timeout: 1000` and `ltp_timeout: 1000`. These are reasonable for hardware use
+but are not tuned for any specific platform; callers should adjust the timeout values for
+their polling cadence.
 
 ---
 
