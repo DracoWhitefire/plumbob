@@ -3,9 +3,9 @@
 ## Role
 
 `plumbob` implements the Fixed Rate Link (FRL) training state machine defined in the HDMI
-2.1 specification. It sits above `culvert` (typed SCDC register access) in the stack, and
-alongside `hdmi-hal` (PHY configuration traits), running the state machine that determines
-the maximum viable FRL tier for a given source–sink–cable combination.
+2.1 specification. It defines the interface its dependencies must satisfy rather than
+depending on any specific SCDC implementation, and it is itself replaceable by any crate
+that implements the `LinkTrainer` trait defined by the integration layer above it.
 
 Training establishes actual link capability, not just theoretical negotiation. A
 `NegotiatedConfig` from concordance identifies what the hardware should support; link
@@ -20,19 +20,21 @@ TMDS, or surface the failure.
 plumbob covers:
 
 - the FRL link training state machine: three-phase training per HDMI 2.1 §10.x,
-- `FrlTrainer<T, P>`: the central type, owning an SCDC client and a PHY,
+- `ScdcClient`: the typed SCDC interface trait, defined here and implemented by SCDC crates,
+- `FrlTrainer<C, P>`: the central type, owning an `ScdcClient` and a PHY,
 - `TrainingOutcome`: the result of a single training attempt (`Success` or `FallbackRequired`),
 - `TrainingConfig`: per-attempt configuration (FFE levels, iteration limits),
 - `TrainingError`: hard failures (transport or protocol errors),
+- owned protocol types: `LtpReq`, `FfeLevels`, `TrainingStatus`, `CedCounters`,
 - simulation support: the training procedure is fully exercisable without real hardware
-  by using simulated implementations of `ScdcTransport` and `HdmiPhy`.
+  by using simulated implementations of `ScdcClient` and `HdmiPhy`.
 
 The following are out of scope:
 
 - **Rate fallback policy** — `train_at_rate` returns `FallbackRequired`; the caller
   decides the retry sequence. plumbob does not maintain a rate table or retry loop.
-- **SCDC register knowledge** — plumbob calls culvert's typed methods and does not
-  define or decode any SCDC register fields itself.
+- **SCDC register decoding** — plumbob reads typed values from `ScdcClient` and does not
+  decode raw register bytes or know SCDC register addresses.
 - **PHY vendor sequences** — plumbob calls `HdmiPhy` methods; the register sequences
   for lane reconfiguration are in platform PHY backends.
 - **Timing** — plumbob is synchronous and poll-based. No sleep, no timers. Timing
@@ -50,16 +52,23 @@ The following are out of scope:
 
 ```
 display-types  ─┐
-hdmi-hal       ─┤
-culvert        ─┴─►  plumbob
+hdmi-hal       ─┴─►  plumbob  ◄─  culvert (implements ScdcClient, feature-gated)
+                               ◄─  integration layer (defines LinkTrainer, plumbob implements it)
 ```
 
-- `culvert` — `Scdc<T>`, `FrlConfig`, `StatusFlags`, `LtpReq`, `FfeLevels`, `ScdcError`
-- `hdmi-hal` — `ScdcTransport`, `HdmiPhy`, `EqParams`
+- `hdmi-hal` — `HdmiPhy`, `EqParams`
 - `display-types` — `HdmiForumFrl`
 
-plumbob does not depend on `concordance` or `piaf`. It receives a target FRL rate from the
-caller (typically chosen from concordance's ranked output) and trains at that rate.
+plumbob does not depend on `culvert`. The relationship runs the other way: culvert
+implements `plumbob::ScdcClient` for `Scdc<T>`, gated behind a `plumbob` cargo feature.
+Any crate that implements `ScdcClient` can be used in place of culvert.
+
+plumbob does not depend on the integration layer. The integration layer defines a
+`LinkTrainer` trait; plumbob implements it. Any crate that implements `LinkTrainer` can
+be used in place of plumbob.
+
+plumbob does not depend on `concordance` or `piaf`. It receives a target FRL rate from
+the caller and trains at that rate.
 
 ---
 
@@ -70,8 +79,7 @@ rate and returns when it reaches a terminal state.
 
 ### Phase 1 — Configuration
 
-1. Write the target FRL rate and FFE level count to `Config_0` via
-   `Scdc::write_frl_config`.
+1. Call `ScdcClient::write_frl_config` with the target rate and FFE level count.
 2. Call `HdmiPhy::set_frl_rate` to configure the physical lanes for this rate.
 
 Configuration is a write-then-forget step. The sink detects the rate change and begins its
@@ -79,8 +87,9 @@ own internal preparation.
 
 ### Phase 2 — Initiation
 
-Poll `Scdc::read_status_flags` until the sink asserts `frl_start`. This flag signals that
-the sink has acknowledged the requested rate and is ready for the LTP training loop.
+Poll `ScdcClient::read_training_status` until the sink asserts `frl_start`. This flag
+signals that the sink has acknowledged the requested rate and is ready for the LTP training
+loop.
 
 If `frl_start` does not assert within `TrainingConfig::flt_ready_timeout` iterations, the
 attempt terminates with `TrainingOutcome::FallbackRequired`.
@@ -88,7 +97,7 @@ attempt terminates with `TrainingOutcome::FallbackRequired`.
 ### Phase 3 — LTP Loop
 
 On each iteration:
-1. Read `StatusFlags::ltp_req`.
+1. Read `TrainingStatus::ltp_req` via `ScdcClient::read_training_status`.
 2. If `LtpReq::None` — all lanes are satisfied. Training succeeded.
 3. Otherwise — drive the requested Link Training Pattern on the PHY lanes and iterate.
 
@@ -102,6 +111,81 @@ does not currently have this method. Until it is added, the LTP phase falls back
 ---
 
 ## Key Types
+
+### Owned protocol types
+
+These types are defined in plumbob because they are the vocabulary of the `ScdcClient`
+interface and the training state machine. SCDC implementations convert to them; the
+training state machine uses them directly.
+
+```rust
+/// Link Training Pattern requested by the sink via Status_Flags_1 bits[7:4].
+#[non_exhaustive]
+pub enum LtpReq {
+    None  = 0,
+    Lfsr0 = 1,
+    Lfsr1 = 2,
+    Lfsr2 = 3,
+    Lfsr3 = 4,
+}
+
+/// FFE (Feed-Forward Equalization) level count advertised to the sink in Config_0.
+pub enum FfeLevels {
+    Ffe0 = 0,
+    Ffe1 = 1,
+    // ... through Ffe7
+}
+
+/// FRL configuration written to Config_0.
+pub struct FrlConfig {
+    pub rate: HdmiForumFrl,
+    pub ffe_levels: FfeLevels,
+    pub dsc_frl_max: bool,
+}
+
+/// The subset of SCDC status that the training state machine reads on each poll.
+pub struct TrainingStatus {
+    pub frl_start: bool,
+    pub ltp_req: LtpReq,
+}
+
+/// A 15-bit per-lane character error count.
+pub struct CedCount(u16);
+
+/// Per-lane character error counts used for equalization feedback.
+pub struct CedCounters {
+    pub lane0: Option<CedCount>,
+    pub lane1: Option<CedCount>,
+    pub lane2: Option<CedCount>,
+    pub lane3: Option<CedCount>,  // None in 3-lane FRL mode
+}
+```
+
+### `ScdcClient`
+
+The typed SCDC interface required by the link training state machine. Defined here so
+that the state machine has no dependency on any specific SCDC implementation.
+
+```rust
+pub trait ScdcClient {
+    type Error;
+
+    /// Write FRL rate and configuration to Config_0.
+    fn write_frl_config(&mut self, config: FrlConfig) -> Result<(), Self::Error>;
+
+    /// Read frl_start and ltp_req from Status_Flags.
+    fn read_training_status(&mut self) -> Result<TrainingStatus, Self::Error>;
+
+    /// Read per-lane character error counts for equalization feedback.
+    fn read_ced(&mut self) -> Result<CedCounters, Self::Error>;
+}
+```
+
+Implementations are provided by SCDC crates. culvert implements this for `Scdc<T>` via a
+`plumbob` cargo feature. A simulated implementation for testing requires only a struct with
+a register array.
+
+### Training types
 
 ```rust
 /// Outcome of a training attempt at a single FRL rate.
@@ -126,28 +210,28 @@ pub struct TrainingConfig {
 
 /// Hard error that terminated a training attempt.
 ///
-/// Distinct from FallbackRequired: this means something failed at the transport
-/// or protocol level, not that the link simply didn't train at this rate.
-pub enum TrainingError<E, F> {
-    /// The SCDC transport or a protocol violation from culvert.
-    Scdc(ScdcError<E>),
+/// Distinct from FallbackRequired: this means something failed at the I/O level,
+/// not that the link simply didn't train at this rate.
+pub enum TrainingError<ScdcErr, PhyErr> {
+    /// The ScdcClient returned an error.
+    Scdc(ScdcErr),
     /// The PHY returned an error.
-    Phy(F),
+    Phy(PhyErr),
 }
 
-/// The central training type. Wraps a culvert SCDC client and an HdmiPhy.
-pub struct FrlTrainer<T, P> { ... }
+/// The central training type. Owns an ScdcClient and an HdmiPhy.
+pub struct FrlTrainer<C, P> { ... }
 
-impl<T: ScdcTransport, P: HdmiPhy> FrlTrainer<T, P> {
-    pub fn new(scdc: Scdc<T>, phy: P) -> Self;
-    pub fn into_parts(self) -> (Scdc<T>, P);
+impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
+    pub fn new(scdc: C, phy: P) -> Self;
+    pub fn into_parts(self) -> (C, P);
 
     /// Run the full three-phase training sequence at the given FRL rate.
     pub fn train_at_rate(
         &mut self,
         rate: HdmiForumFrl,
         config: &TrainingConfig,
-    ) -> Result<TrainingOutcome, TrainingError<T::Error, P::Error>>;
+    ) -> Result<TrainingOutcome, TrainingError<C::Error, P::Error>>;
 
     /// Like `train_at_rate`, but also returns a `TrainingTrace` recording the
     /// full event sequence. Requires the `alloc` feature.
@@ -156,7 +240,7 @@ impl<T: ScdcTransport, P: HdmiPhy> FrlTrainer<T, P> {
         &mut self,
         rate: HdmiForumFrl,
         config: &TrainingConfig,
-    ) -> Result<(TrainingOutcome, TrainingTrace), TrainingError<T::Error, P::Error>>;
+    ) -> Result<(TrainingOutcome, TrainingTrace), TrainingError<C::Error, P::Error>>;
 }
 ```
 
@@ -267,37 +351,54 @@ likely a signal integrity or equalization issue.
 
 ---
 
-## The plumbob / culvert Boundary
+## Interface Boundaries
 
-Like the culvert / hdmi-hal boundary, this one is worth stating explicitly.
+plumbob sits between two interfaces, and defines one of them.
 
-**culvert's responsibility:** typed register access. Given a desired FRL rate, write it
-into `Config_0`. Given a status register, decode it into `StatusFlags`. culvert does not
-know what to do with a `StatusFlags`; it only knows how to read one.
+### Below: `ScdcClient` (defined here, implemented by SCDC crates)
 
-**plumbob's responsibility:** the state machine. Receive a target FRL rate from the caller.
-Write `Config_0`. Poll for `frl_start`. Handle `ltp_req`. Declare success or fall back.
-That sequencing, the iteration limits, and the fallback signal live here — not in culvert.
+**The SCDC implementation's responsibility:** typed register access. Given a desired FRL
+rate, write it into `Config_0`. Given a status register, decode it into `TrainingStatus`.
+The SCDC implementation does not know what to do with a `TrainingStatus`; it only knows
+how to read one.
+
+**plumbob's responsibility toward the SCDC layer:** sequence the calls. Write `Config_0`.
+Poll for `frl_start`. Read `ltp_req`. Declare success or fall back. That sequencing, the
+iteration limits, and the fallback signal live here.
 
 The rule: if it touches state across multiple register accesses, timeout logic, or the
 decision of what to do with a register value, it belongs in plumbob. If it reads or writes
-registers and returns typed results, it belongs in culvert.
+registers and returns typed results, it belongs in the SCDC implementation.
+
+### Above: `LinkTrainer` (defined by the integration layer, implemented here)
+
+The integration layer defines the interface it needs from link training. plumbob
+implements it. This means the integration layer has no dependency on plumbob specifically
+— any crate that implements `LinkTrainer` is substitutable.
+
+The `LinkTrainer` trait is defined in the integration layer crate (not yet built). Its
+surface will be driven by what the DRM/KMS integration actually needs to call: at minimum,
+`train_at_rate` and the ability to recover the SCDC client and PHY on completion.
 
 ---
 
 ## `no_std` Compatibility
 
-plumbob requires no allocator. All types are stack-allocated. `FrlTrainer<T, P>` owns a
-`Scdc<T>` and a `P`; both are caller-supplied and caller-sized. No heap use anywhere in
-the training loop. The full API is available in bare `no_std` environments.
+plumbob requires no allocator. All types are stack-allocated. `FrlTrainer<C, P>` owns a
+`C: ScdcClient` and a `P: HdmiPhy`; both are caller-supplied and caller-sized. No heap
+use anywhere in the training loop. The full API is available in bare `no_std` environments.
 
 ---
 
 ## Design Principles
 
+- **Interfaces owned by consumers.** plumbob defines the interface its dependencies
+  must satisfy (`ScdcClient`) rather than depending on a concrete implementation.
+  The integration layer above defines the interface plumbob must satisfy (`LinkTrainer`).
+  Each layer is substitutable independently.
 - **Deterministic and testable.** The training procedure runs identically against a
-  simulated register array and real hardware. Pre-load the simulated `ScdcTransport`
-  with the register values a sink would produce at each training phase, run the state
+  simulated `ScdcClient` and real hardware. Implement `ScdcClient` with a register
+  array, pre-load it with the values a sink would produce at each phase, run the state
   machine, assert on the outcome. No hardware required for any test.
 - **State machine, not scattered logic.** The three phases are an explicit sequence.
   Phase transitions are clear, terminal states are explicit, and every exit point
@@ -317,13 +418,14 @@ the training loop. The full API is available in bare `no_std` environments.
 ## Open Items
 
 **`HdmiPhy::send_ltp`** — Phase 3 of training requires the source to drive a specific Link
-Training Pattern on the physical lanes, as requested by the sink via `LTP_Req`. This is a
+Training Pattern on the physical lanes, as requested by the sink via `LtpReq`. This is a
 PHY operation. `HdmiPhy` currently has `set_frl_rate`, `adjust_equalization`, and
 `set_scrambling`, but no method for driving LTP patterns. Until `send_ltp(req: LtpReq)`
-(or equivalent) is added to `hdmi-hal`, the LTP loop calls `adjust_equalization` as a
-placeholder. The state machine structure is complete; only this one call is a stub.
+(or equivalent) is added to `hdmi-hal` — using plumbob's `LtpReq` type — the LTP loop
+calls `adjust_equalization` as a placeholder. The state machine structure is complete;
+only this one call is a stub.
 
 **`EqParams` expansion** — `EqParams` in hdmi-hal is currently an empty placeholder struct.
-CED counters (per-lane character error counts, readable via `Scdc::read_ced`) will feed
-equalization adjustments during the LTP loop once `EqParams` is expanded to carry the
-relevant fields. The training loop already reads CED data; the adjustment call is the stub.
+`ScdcClient::read_ced` returns `CedCounters` (defined here) which will feed equalization
+adjustments during the LTP loop once `EqParams` is expanded to carry the relevant fields.
+The training loop already calls `read_ced`; the equalization call is the stub.
