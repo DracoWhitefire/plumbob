@@ -19,7 +19,7 @@ TMDS, or surface the failure.
 
 plumbob covers:
 
-- the FRL link training state machine: three-phase training per HDMI 2.1 §10.x,
+- the FRL link training state machine: four-phase training per HDMI 2.1 §10.x,
 - `ScdcClient`: the typed SCDC interface trait, defined here and implemented by SCDC crates,
 - `FrlTrainer<C, P>`: the central type, owning an `ScdcClient` and a PHY,
 - `TrainingOutcome`: the result of a single training attempt (`Success` or `FallbackRequired`),
@@ -506,7 +506,7 @@ sync API is designed so that adding the async companion requires no changes to t
   simulated `ScdcClient` and real hardware. Implement `ScdcClient` with a register
   array, pre-load it with the values a sink would produce at each phase, run the state
   machine, assert on the outcome. No hardware required for any test.
-- **State machine, not scattered logic.** The three phases are an explicit sequence.
+- **State machine, not scattered logic.** The four phases are an explicit sequence.
   Phase transitions are clear, terminal states are explicit, and every exit point
   produces a typed result. No implicit control flow, no silent completion.
 - **Policy at the right layer.** plumbob implements the spec, not strategy. Rate
