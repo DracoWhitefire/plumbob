@@ -13,6 +13,12 @@ training determines what it actually achieves. The caller is responsible for dec
 to do with a `FallbackRequired` outcome — whether to retry at a lower tier, fall back to
 TMDS, or surface the failure.
 
+plumbob is usable as a standalone crate without the broader concordance/piaf stack. A
+firmware image, an embedded hardware vendor's SDK, or a kernel driver can depend directly
+on plumbob, supply their own `ScdcClient` and `HdmiPhy` implementations, and call
+`train_at_rate` without any negotiation layer above it. The concordance integration is one
+deployment model, not a requirement.
+
 ---
 
 ## Scope
@@ -243,6 +249,13 @@ pub enum TrainingError<ScdcErr, PhyErr> {
 }
 
 /// The central training type. Owns an ScdcClient and an HdmiPhy.
+///
+/// `FrlTrainer` is reusable across multiple `train_at_rate` calls. A caller
+/// performing rate fallback calls `train_at_rate` repeatedly on the same trainer,
+/// stepping down through FRL tiers, without reconstructing it between attempts.
+/// `into_parts` is for when training is finished entirely and the caller wants
+/// the SCDC client and PHY back for ongoing use (link monitoring, re-training
+/// on degradation, etc.).
 pub struct FrlTrainer<C, P> { ... }
 
 impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
