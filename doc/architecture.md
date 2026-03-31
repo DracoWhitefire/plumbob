@@ -91,7 +91,7 @@ Poll `ScdcClient::read_training_status` until the sink asserts `frl_start`. This
 signals that the sink has acknowledged the requested rate and is ready for the LTP training
 loop.
 
-If `frl_start` does not assert within `TrainingConfig::flt_ready_timeout` iterations, the
+If `frl_start` does not assert within `TrainingConfig::frl_start_timeout` iterations, the
 attempt terminates with `TrainingOutcome::FallbackRequired`.
 
 ### Phase 3 — LTP Loop
@@ -203,7 +203,7 @@ pub struct TrainingConfig {
     /// FFE levels advertised to the sink in Config_0.
     pub ffe_levels: FfeLevels,
     /// Maximum poll iterations waiting for frl_start (phase 2).
-    pub flt_ready_timeout: u32,
+    pub frl_start_timeout: u32,
     /// Maximum poll iterations in the LTP training loop (phase 3).
     pub ltp_timeout: u32,
 }
