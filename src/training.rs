@@ -155,9 +155,7 @@ impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
                 .read_training_status()
                 .map_err(TrainingError::Scdc)?;
             if status.ltp_req == LtpReq::None {
-                return Ok(TrainingOutcome::Success {
-                    achieved_rate: rate,
-                });
+                return Ok(TrainingOutcome::Success { achieved_rate: rate });
             }
             let _ced = self.scdc.read_ced().map_err(TrainingError::Scdc)?;
             // Placeholder for phy.send_ltp(pattern) — see open items in architecture.md.
@@ -174,10 +172,154 @@ impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
 
 #[cfg(test)]
 mod tests {
-    use super::*;
-    use display_types::cea861::hdmi_forum::HdmiForumFrl;
+    extern crate std;
+    use std::collections::VecDeque;
 
-    // --- TrainingConfig::default ---
+    use display_types::cea861::hdmi_forum::HdmiForumFrl;
+    use hdmi_hal::phy::{EqParams, HdmiPhy};
+
+    use super::*;
+    use crate::scdc::ScdcClient;
+    use crate::types::{CedCounters, FrlConfig, LtpReq, TrainingStatus};
+
+    // -------------------------------------------------------------------------
+    // SimScdc — scripted SCDC client for state machine tests
+    // -------------------------------------------------------------------------
+
+    struct SimScdc {
+        /// Scripted responses for `read_training_status`, consumed in order.
+        statuses: VecDeque<Result<TrainingStatus, ()>>,
+        fail_write_frl_config: bool,
+        fail_read_ced: bool,
+        /// The last config written via `write_frl_config`.
+        written_config: Option<FrlConfig>,
+        ced_calls: u32,
+    }
+
+    impl SimScdc {
+        fn new() -> Self {
+            Self {
+                statuses: VecDeque::new(),
+                fail_write_frl_config: false,
+                fail_read_ced: false,
+                written_config: None,
+                ced_calls: 0,
+            }
+        }
+
+        fn push(&mut self, status: TrainingStatus) {
+            self.statuses.push_back(Ok(status));
+        }
+
+        fn push_err(&mut self) {
+            self.statuses.push_back(Err(()));
+        }
+    }
+
+    impl ScdcClient for SimScdc {
+        type Error = ();
+
+        fn write_frl_config(&mut self, config: FrlConfig) -> Result<(), ()> {
+            if self.fail_write_frl_config {
+                return Err(());
+            }
+            self.written_config = Some(config);
+            Ok(())
+        }
+
+        fn read_training_status(&mut self) -> Result<TrainingStatus, ()> {
+            self.statuses.pop_front().unwrap_or(Err(()))
+        }
+
+        fn read_ced(&mut self) -> Result<CedCounters, ()> {
+            if self.fail_read_ced {
+                return Err(());
+            }
+            self.ced_calls += 1;
+            Ok(CedCounters { lane0: None, lane1: None, lane2: None, lane3: None })
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // MockPhy — records calls and supports injectable errors
+    // -------------------------------------------------------------------------
+
+    struct MockPhy {
+        fail_set_frl_rate: bool,
+        fail_adjust_eq: bool,
+        frl_rate: Option<HdmiForumFrl>,
+        eq_calls: u32,
+    }
+
+    impl MockPhy {
+        fn new() -> Self {
+            Self {
+                fail_set_frl_rate: false,
+                fail_adjust_eq: false,
+                frl_rate: None,
+                eq_calls: 0,
+            }
+        }
+    }
+
+    impl HdmiPhy for MockPhy {
+        type Error = ();
+
+        fn set_frl_rate(&mut self, rate: HdmiForumFrl) -> Result<(), ()> {
+            if self.fail_set_frl_rate {
+                return Err(());
+            }
+            self.frl_rate = Some(rate);
+            Ok(())
+        }
+
+        fn adjust_equalization(&mut self, _params: EqParams) -> Result<(), ()> {
+            if self.fail_adjust_eq {
+                return Err(());
+            }
+            self.eq_calls += 1;
+            Ok(())
+        }
+
+        fn set_scrambling(&mut self, _enabled: bool) -> Result<(), ()> {
+            Ok(())
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // Status helpers and fixtures
+    // -------------------------------------------------------------------------
+
+    fn not_ready() -> TrainingStatus {
+        TrainingStatus { flt_ready: false, frl_start: false, ltp_req: LtpReq::None }
+    }
+
+    fn flt_ready() -> TrainingStatus {
+        TrainingStatus { flt_ready: true, frl_start: false, ltp_req: LtpReq::None }
+    }
+
+    fn frl_started() -> TrainingStatus {
+        TrainingStatus { flt_ready: true, frl_start: true, ltp_req: LtpReq::None }
+    }
+
+    fn ltp(pattern: LtpReq) -> TrainingStatus {
+        TrainingStatus { flt_ready: true, frl_start: true, ltp_req: pattern }
+    }
+
+    const RATE: HdmiForumFrl = HdmiForumFrl::Rate6Gbps4Lanes;
+
+    fn cfg(flt: u32, frl: u32, ltp_t: u32) -> TrainingConfig {
+        TrainingConfig {
+            flt_ready_timeout: flt,
+            frl_start_timeout: frl,
+            ltp_timeout: ltp_t,
+            ..TrainingConfig::default()
+        }
+    }
+
+    // -------------------------------------------------------------------------
+    // TrainingConfig defaults
+    // -------------------------------------------------------------------------
 
     #[test]
     fn training_config_default_ffe_levels() {
@@ -191,46 +333,34 @@ mod tests {
 
     #[test]
     fn training_config_default_timeouts() {
-        let cfg = TrainingConfig::default();
-        assert_eq!(cfg.flt_ready_timeout, 1000);
-        assert_eq!(cfg.frl_start_timeout, 1000);
-        assert_eq!(cfg.ltp_timeout, 1000);
+        let c = TrainingConfig::default();
+        assert_eq!(c.flt_ready_timeout, 1000);
+        assert_eq!(c.frl_start_timeout, 1000);
+        assert_eq!(c.ltp_timeout, 1000);
     }
 
-    // --- TrainingOutcome ---
+    // -------------------------------------------------------------------------
+    // TrainingOutcome and TrainingError constructibility
+    // -------------------------------------------------------------------------
 
     #[test]
     fn training_outcome_success_carries_rate() {
-        let outcome = TrainingOutcome::Success {
-            achieved_rate: HdmiForumFrl::Rate6Gbps4Lanes,
-        };
-        assert_eq!(
-            outcome,
-            TrainingOutcome::Success {
-                achieved_rate: HdmiForumFrl::Rate6Gbps4Lanes
-            }
-        );
+        let o = TrainingOutcome::Success { achieved_rate: HdmiForumFrl::Rate6Gbps4Lanes };
+        assert_eq!(o, TrainingOutcome::Success { achieved_rate: HdmiForumFrl::Rate6Gbps4Lanes });
     }
 
     #[test]
     fn training_outcome_fallback_required() {
-        assert_eq!(
-            TrainingOutcome::FallbackRequired,
-            TrainingOutcome::FallbackRequired
-        );
+        assert_eq!(TrainingOutcome::FallbackRequired, TrainingOutcome::FallbackRequired);
     }
 
     #[test]
     fn training_outcome_variants_are_distinct() {
         assert_ne!(
-            TrainingOutcome::Success {
-                achieved_rate: HdmiForumFrl::Rate6Gbps4Lanes
-            },
+            TrainingOutcome::Success { achieved_rate: HdmiForumFrl::Rate6Gbps4Lanes },
             TrainingOutcome::FallbackRequired,
         );
     }
-
-    // --- TrainingError ---
 
     #[test]
     fn training_error_scdc_variant() {
@@ -246,8 +376,243 @@ mod tests {
 
     #[test]
     fn training_error_variants_are_distinct() {
-        let scdc: TrainingError<u8, u8> = TrainingError::Scdc(1);
-        let phy: TrainingError<u8, u8> = TrainingError::Phy(1);
-        assert_ne!(scdc, phy);
+        let s: TrainingError<u8, u8> = TrainingError::Scdc(1);
+        let p: TrainingError<u8, u8> = TrainingError::Phy(1);
+        assert_ne!(s, p);
+    }
+
+    // -------------------------------------------------------------------------
+    // State machine: normal paths
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn successful_training() {
+        let mut scdc = SimScdc::new();
+        // Phase 2: 2 not-ready, then flt_ready (after_iterations = 2)
+        scdc.push(not_ready());
+        scdc.push(not_ready());
+        scdc.push(flt_ready());
+        // Phase 3: 1 not-started, then frl_start (after_iterations = 1)
+        scdc.push(flt_ready());
+        scdc.push(frl_started());
+        // Phase 4: two pattern requests then success
+        scdc.push(ltp(LtpReq::Lfsr0));
+        scdc.push(ltp(LtpReq::Lfsr2));
+        scdc.push(frl_started()); // ltp_req = None → success
+
+        let outcome = FrlTrainer::new(scdc, MockPhy::new())
+            .train_at_rate(RATE, &TrainingConfig::default())
+            .unwrap();
+        assert_eq!(outcome, TrainingOutcome::Success { achieved_rate: RATE });
+    }
+
+    #[test]
+    fn flt_ready_timeout() {
+        let mut scdc = SimScdc::new();
+        scdc.push(not_ready());
+        scdc.push(not_ready());
+        scdc.push(not_ready()); // i reaches flt_ready_timeout = 3
+
+        let outcome = FrlTrainer::new(scdc, MockPhy::new())
+            .train_at_rate(RATE, &cfg(3, 10, 10))
+            .unwrap();
+        assert_eq!(outcome, TrainingOutcome::FallbackRequired);
+    }
+
+    #[test]
+    fn flt_ready_immediate() {
+        let mut scdc = SimScdc::new();
+        scdc.push(flt_ready()); // asserts on first read: i = 0
+        scdc.push(frl_started());
+        scdc.push(frl_started()); // phase 4: ltp_req = None
+
+        let outcome = FrlTrainer::new(scdc, MockPhy::new())
+            .train_at_rate(RATE, &TrainingConfig::default())
+            .unwrap();
+        assert_eq!(outcome, TrainingOutcome::Success { achieved_rate: RATE });
+    }
+
+    #[test]
+    fn frl_start_timeout() {
+        let mut scdc = SimScdc::new();
+        scdc.push(flt_ready()); // phase 2: immediate
+        // Phase 3: i reaches frl_start_timeout = 3
+        scdc.push(flt_ready());
+        scdc.push(flt_ready());
+        scdc.push(flt_ready());
+
+        let outcome = FrlTrainer::new(scdc, MockPhy::new())
+            .train_at_rate(RATE, &cfg(10, 3, 10))
+            .unwrap();
+        assert_eq!(outcome, TrainingOutcome::FallbackRequired);
+    }
+
+    #[test]
+    fn frl_start_immediate() {
+        let mut scdc = SimScdc::new();
+        scdc.push(flt_ready());   // phase 2: immediate (i = 0)
+        scdc.push(frl_started()); // phase 3: immediate (i = 0)
+        scdc.push(frl_started()); // phase 4: ltp_req = None
+
+        let outcome = FrlTrainer::new(scdc, MockPhy::new())
+            .train_at_rate(RATE, &TrainingConfig::default())
+            .unwrap();
+        assert_eq!(outcome, TrainingOutcome::Success { achieved_rate: RATE });
+    }
+
+    #[test]
+    fn ltp_loop_timeout() {
+        let mut scdc = SimScdc::new();
+        scdc.push(flt_ready());
+        scdc.push(frl_started());
+        // Phase 4: i reaches ltp_timeout = 3
+        scdc.push(ltp(LtpReq::Lfsr1));
+        scdc.push(ltp(LtpReq::Lfsr1));
+        scdc.push(ltp(LtpReq::Lfsr1));
+
+        let outcome = FrlTrainer::new(scdc, MockPhy::new())
+            .train_at_rate(RATE, &cfg(10, 10, 3))
+            .unwrap();
+        assert_eq!(outcome, TrainingOutcome::FallbackRequired);
+    }
+
+    #[test]
+    fn ltp_success_on_first_read() {
+        let mut scdc = SimScdc::new();
+        scdc.push(flt_ready());
+        scdc.push(frl_started());
+        scdc.push(frl_started()); // ltp_req = None on the first LTP read
+
+        let outcome = FrlTrainer::new(scdc, MockPhy::new())
+            .train_at_rate(RATE, &TrainingConfig::default())
+            .unwrap();
+        assert_eq!(outcome, TrainingOutcome::Success { achieved_rate: RATE });
+    }
+
+    #[test]
+    fn ltp_all_lfsr_variants() {
+        let mut scdc = SimScdc::new();
+        scdc.push(flt_ready());
+        scdc.push(frl_started());
+        scdc.push(ltp(LtpReq::Lfsr0));
+        scdc.push(ltp(LtpReq::Lfsr1));
+        scdc.push(ltp(LtpReq::Lfsr2));
+        scdc.push(ltp(LtpReq::Lfsr3));
+        scdc.push(frl_started()); // ltp_req = None
+
+        let outcome = FrlTrainer::new(scdc, MockPhy::new())
+            .train_at_rate(RATE, &TrainingConfig::default())
+            .unwrap();
+        assert_eq!(outcome, TrainingOutcome::Success { achieved_rate: RATE });
+    }
+
+    // -------------------------------------------------------------------------
+    // Error propagation
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn error_write_frl_config() {
+        let mut scdc = SimScdc::new();
+        scdc.fail_write_frl_config = true;
+
+        let err = FrlTrainer::new(scdc, MockPhy::new())
+            .train_at_rate(RATE, &TrainingConfig::default())
+            .unwrap_err();
+        assert_eq!(err, TrainingError::Scdc(()));
+    }
+
+    #[test]
+    fn error_set_frl_rate() {
+        let mut phy = MockPhy::new();
+        phy.fail_set_frl_rate = true;
+
+        let err = FrlTrainer::new(SimScdc::new(), phy)
+            .train_at_rate(RATE, &TrainingConfig::default())
+            .unwrap_err();
+        assert_eq!(err, TrainingError::Phy(()));
+    }
+
+    #[test]
+    fn error_read_training_status_phase2() {
+        let mut scdc = SimScdc::new();
+        scdc.push_err();
+
+        let err = FrlTrainer::new(scdc, MockPhy::new())
+            .train_at_rate(RATE, &TrainingConfig::default())
+            .unwrap_err();
+        assert_eq!(err, TrainingError::Scdc(()));
+    }
+
+    #[test]
+    fn error_read_training_status_phase3() {
+        let mut scdc = SimScdc::new();
+        scdc.push(flt_ready());
+        scdc.push_err();
+
+        let err = FrlTrainer::new(scdc, MockPhy::new())
+            .train_at_rate(RATE, &TrainingConfig::default())
+            .unwrap_err();
+        assert_eq!(err, TrainingError::Scdc(()));
+    }
+
+    #[test]
+    fn error_read_training_status_phase4() {
+        let mut scdc = SimScdc::new();
+        scdc.push(flt_ready());
+        scdc.push(frl_started());
+        scdc.push_err();
+
+        let err = FrlTrainer::new(scdc, MockPhy::new())
+            .train_at_rate(RATE, &TrainingConfig::default())
+            .unwrap_err();
+        assert_eq!(err, TrainingError::Scdc(()));
+    }
+
+    #[test]
+    fn error_read_ced() {
+        let mut scdc = SimScdc::new();
+        scdc.push(flt_ready());
+        scdc.push(frl_started());
+        scdc.push(ltp(LtpReq::Lfsr0)); // non-None → read_ced is called
+        scdc.fail_read_ced = true;
+
+        let err = FrlTrainer::new(scdc, MockPhy::new())
+            .train_at_rate(RATE, &TrainingConfig::default())
+            .unwrap_err();
+        assert_eq!(err, TrainingError::Scdc(()));
+    }
+
+    #[test]
+    fn error_adjust_equalization() {
+        let mut scdc = SimScdc::new();
+        scdc.push(flt_ready());
+        scdc.push(frl_started());
+        scdc.push(ltp(LtpReq::Lfsr0)); // non-None → adjust_equalization is called
+        let mut phy = MockPhy::new();
+        phy.fail_adjust_eq = true;
+
+        let err = FrlTrainer::new(scdc, phy)
+            .train_at_rate(RATE, &TrainingConfig::default())
+            .unwrap_err();
+        assert_eq!(err, TrainingError::Phy(()));
+    }
+
+    // -------------------------------------------------------------------------
+    // into_parts
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn into_parts_recovers_scdc_and_phy() {
+        let mut scdc = SimScdc::new();
+        scdc.push(flt_ready());
+        scdc.push(frl_started());
+        scdc.push(frl_started()); // phase 4: ltp_req = None
+
+        let mut trainer = FrlTrainer::new(scdc, MockPhy::new());
+        trainer.train_at_rate(RATE, &TrainingConfig::default()).unwrap();
+
+        let (scdc, phy) = trainer.into_parts();
+        assert_eq!(scdc.written_config.unwrap().rate, RATE);
+        assert_eq!(phy.frl_rate, Some(RATE));
     }
 }
