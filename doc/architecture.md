@@ -80,7 +80,7 @@ the caller and trains at that rate.
 
 ## Training Procedure (HDMI 2.1 §10.x)
 
-FRL link training has three phases. `train_at_rate` runs the full sequence for a single
+FRL link training has four phases. `train_at_rate` runs the full sequence for a single
 rate and returns when it reaches a terminal state.
 
 ### Phase 1 — Configuration
