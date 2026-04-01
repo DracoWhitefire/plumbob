@@ -1,6 +1,8 @@
 use display_types::cea861::hdmi_forum::HdmiForumFrl;
+use hdmi_hal::phy::{EqParams, HdmiPhy};
 
-use crate::types::FfeLevels;
+use crate::scdc::ScdcClient;
+use crate::types::{FfeLevels, FrlConfig, LtpReq};
 
 /// Outcome of a training attempt at a single FRL rate.
 #[non_exhaustive]
@@ -64,7 +66,111 @@ impl Default for TrainingConfig {
     }
 }
 
-// FrlTrainer is added in step 6.
+/// The central training type. Owns an `ScdcClient` and an `HdmiPhy`.
+///
+/// `FrlTrainer` is reusable across multiple `train_at_rate` calls. A caller
+/// performing rate fallback calls `train_at_rate` repeatedly on the same trainer,
+/// stepping down through FRL tiers, without reconstructing it between attempts.
+/// Use `into_parts` to recover the SCDC client and PHY when training is finished.
+pub struct FrlTrainer<C, P> {
+    scdc: C,
+    phy: P,
+}
+
+impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
+    /// Constructs a new `FrlTrainer` owning the given SCDC client and PHY.
+    pub fn new(scdc: C, phy: P) -> Self {
+        Self { scdc, phy }
+    }
+
+    /// Consumes the trainer and returns the SCDC client and PHY.
+    pub fn into_parts(self) -> (C, P) {
+        (self.scdc, self.phy)
+    }
+
+    /// Runs the full four-phase FRL training sequence at the given rate.
+    ///
+    /// Returns [`TrainingOutcome::Success`] when all lanes satisfy their LTP
+    /// requests, or [`TrainingOutcome::FallbackRequired`] if any phase times out.
+    /// A [`TrainingError`] is returned only on hard I/O failures.
+    pub fn train_at_rate(
+        &mut self,
+        rate: HdmiForumFrl,
+        config: &TrainingConfig,
+    ) -> Result<TrainingOutcome, TrainingError<C::Error, P::Error>> {
+        // Phase 1 — Configuration
+        self.scdc
+            .write_frl_config(FrlConfig {
+                rate,
+                ffe_levels: config.ffe_levels,
+                dsc_frl_max: config.dsc_frl_max,
+            })
+            .map_err(TrainingError::Scdc)?;
+        self.phy.set_frl_rate(rate).map_err(TrainingError::Phy)?;
+
+        // Phase 2 — Readiness: poll until the sink asserts flt_ready.
+        //
+        // `i` counts failed reads. At success it equals `after_iterations`; at
+        // timeout it equals `iterations_elapsed`. This convention is shared with
+        // phases 3 and 4 so the trace layer can record correct counts.
+        let mut i = 0u32;
+        loop {
+            let status = self
+                .scdc
+                .read_training_status()
+                .map_err(TrainingError::Scdc)?;
+            if status.flt_ready {
+                break;
+            }
+            i += 1;
+            if i >= config.flt_ready_timeout {
+                return Ok(TrainingOutcome::FallbackRequired);
+            }
+        }
+
+        // Phase 3 — Initiation: poll until the sink asserts frl_start.
+        let mut i = 0u32;
+        loop {
+            let status = self
+                .scdc
+                .read_training_status()
+                .map_err(TrainingError::Scdc)?;
+            if status.frl_start {
+                break;
+            }
+            i += 1;
+            if i >= config.frl_start_timeout {
+                return Ok(TrainingOutcome::FallbackRequired);
+            }
+        }
+
+        // Phase 4 — LTP loop: drive patterns until ltp_req reaches None.
+        //
+        // read_ced is called on each iteration; it will feed equalization
+        // adjustments once EqParams is expanded beyond its current placeholder.
+        let mut i = 0u32;
+        loop {
+            let status = self
+                .scdc
+                .read_training_status()
+                .map_err(TrainingError::Scdc)?;
+            if status.ltp_req == LtpReq::None {
+                return Ok(TrainingOutcome::Success {
+                    achieved_rate: rate,
+                });
+            }
+            let _ced = self.scdc.read_ced().map_err(TrainingError::Scdc)?;
+            // Placeholder for phy.send_ltp(pattern) — see open items in architecture.md.
+            self.phy
+                .adjust_equalization(EqParams::default())
+                .map_err(TrainingError::Phy)?;
+            i += 1;
+            if i >= config.ltp_timeout {
+                return Ok(TrainingOutcome::FallbackRequired);
+            }
+        }
+    }
+}
 
 #[cfg(test)]
 mod tests {
