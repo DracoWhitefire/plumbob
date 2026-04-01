@@ -1,14 +1,26 @@
-pub fn add(left: u64, right: u64) -> u64 {
-    left + right
-}
+//! FRL link training state machine for HDMI 2.1.
+//!
+//! `plumbob` implements the Fixed Rate Link (FRL) training procedure defined in the
+//! HDMI 2.1 specification. It defines the [`ScdcClient`] interface its dependencies
+//! must satisfy and exposes [`FrlTrainer`] as the central entry point.
+//!
+//! # Features
+//!
+//! - **`alloc`** — enables [`TrainingTrace`] and [`FrlTrainer::train_at_rate_traced`].
+//! - **`std`** — implies `alloc`; no additional API surface.
 
-#[cfg(test)]
-mod tests {
-    use super::*;
+#![no_std]
+#![forbid(unsafe_code)]
+#![deny(missing_docs)]
 
-    #[test]
-    fn it_works() {
-        let result = add(2, 2);
-        assert_eq!(result, 4);
-    }
-}
+#[cfg(feature = "alloc")]
+extern crate alloc;
+
+mod types;
+mod scdc;
+mod training;
+
+#[cfg(feature = "alloc")]
+mod trace;
+
+// Re-exports are added as each module is populated (steps 3–8).
