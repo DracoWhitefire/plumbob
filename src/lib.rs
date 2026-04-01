@@ -27,4 +27,6 @@ pub use types::{CedCount, CedCounters, FfeLevels, FrlConfig, LtpReq, TrainingSta
 
 pub use scdc::ScdcClient;
 
-// Further re-exports are added as each module is populated (steps 5–8).
+pub use training::{TrainingConfig, TrainingError, TrainingOutcome};
+
+// Further re-exports are added as each module is populated (steps 6–8).
