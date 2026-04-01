@@ -1,6 +1,6 @@
 use display_types::cea861::hdmi_forum::HdmiForumFrl;
 
-/// Link Training Pattern requested by the sink via Status_Flags_1 bits[7:4].
+/// Link Training Pattern requested by the sink via Status_Flags_1 `bits[7:4]`.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum LtpReq {
@@ -65,7 +65,7 @@ pub struct TrainingStatus {
 /// A 15-bit per-lane character error count.
 ///
 /// The high byte's bit 7 is a validity flag consumed by [`CedCounters`];
-/// the counter occupies bits[14:0]. Values are always ≤ `0x7FFF`.
+/// the counter occupies `bits[14:0]`. Values are always ≤ `0x7FFF`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CedCount(u16);
 
@@ -164,7 +164,11 @@ mod tests {
 
     #[test]
     fn training_status_fields() {
-        let s = TrainingStatus { flt_ready: true, frl_start: false, ltp_req: LtpReq::Lfsr1 };
+        let s = TrainingStatus {
+            flt_ready: true,
+            frl_start: false,
+            ltp_req: LtpReq::Lfsr1,
+        };
         assert!(s.flt_ready);
         assert!(!s.frl_start);
         assert_eq!(s.ltp_req, LtpReq::Lfsr1);
@@ -172,7 +176,11 @@ mod tests {
 
     #[test]
     fn training_status_clone_eq() {
-        let a = TrainingStatus { flt_ready: true, frl_start: true, ltp_req: LtpReq::None };
+        let a = TrainingStatus {
+            flt_ready: true,
+            frl_start: true,
+            ltp_req: LtpReq::None,
+        };
         assert_eq!(a, a.clone());
     }
 
@@ -207,7 +215,12 @@ mod tests {
 
     #[test]
     fn ced_counters_all_none() {
-        let c = CedCounters { lane0: None, lane1: None, lane2: None, lane3: None };
+        let c = CedCounters {
+            lane0: None,
+            lane1: None,
+            lane2: None,
+            lane3: None,
+        };
         assert!(c.lane0.is_none());
         assert!(c.lane3.is_none());
     }
@@ -228,7 +241,12 @@ mod tests {
 
     #[test]
     fn ced_counters_clone_eq() {
-        let a = CedCounters { lane0: Some(CedCount::new(5)), lane1: None, lane2: None, lane3: None };
+        let a = CedCounters {
+            lane0: Some(CedCount::new(5)),
+            lane1: None,
+            lane2: None,
+            lane3: None,
+        };
         assert_eq!(a, a.clone());
     }
 }
