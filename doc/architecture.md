@@ -192,7 +192,7 @@ pub trait ScdcClient {
     /// Write FRL rate and configuration to Config_0.
     fn write_frl_config(&mut self, config: FrlConfig) -> Result<(), Self::Error>;
 
-    /// Read frl_start and ltp_req from Status_Flags.
+    /// Read flt_ready, frl_start, and ltp_req from Status_Flags.
     fn read_training_status(&mut self) -> Result<TrainingStatus, Self::Error>;
 
     /// Read per-lane character error counts for equalization feedback.
