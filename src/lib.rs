@@ -25,4 +25,6 @@ mod trace;
 
 pub use types::{CedCount, CedCounters, FfeLevels, FrlConfig, LtpReq, TrainingStatus};
 
-// Further re-exports are added as each module is populated (steps 4–8).
+pub use scdc::ScdcClient;
+
+// Further re-exports are added as each module is populated (steps 5–8).
