@@ -23,4 +23,6 @@ mod training;
 #[cfg(feature = "alloc")]
 mod trace;
 
-// Re-exports are added as each module is populated (steps 3–8).
+pub use types::{CedCount, CedCounters, FfeLevels, FrlConfig, LtpReq, TrainingStatus};
+
+// Further re-exports are added as each module is populated (steps 4–8).
