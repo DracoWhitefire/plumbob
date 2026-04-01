@@ -10,7 +10,10 @@ repository = "https://github.com/DracoWhitefire/plumbob"
 keywords = ["hdmi", "link-training", "frl", "embedded", "no-std"]
 categories = ["hardware-support", "embedded", "no-std"]
 
+[features]
+alloc = []
+std = ["alloc"]
+
 [dependencies]
-culvert = { path = "../culvert" }
 hdmi-hal = { path = "../hdmi-hal" }
 display-types = { path = "../display-types", default-features = false }
