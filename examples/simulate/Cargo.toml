@@ -9,8 +9,5 @@ publish = false
 
 [dependencies]
 plumbob = { path = "../..", features = ["std"] }
-hdmi-hal = { path = "../../../hdmi-hal" }
-display-types = { path = "../../../display-types" }
-
-[patch.crates-io]
-display-types = { path = "../../../display-types" }
+hdmi-hal = { version = "0.2.0" }
+display-types = { version = "0.3.1" }
