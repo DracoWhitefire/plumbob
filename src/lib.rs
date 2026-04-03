@@ -6,7 +6,7 @@
 //!
 //! # Features
 //!
-//! - **`alloc`** — enables [`TrainingTrace`] and [`FrlTrainer::train_at_rate_traced`].
+//! - **`alloc`** — enables `TrainingTrace` and `FrlTrainer::train_at_rate_traced`.
 //! - **`std`** — implies `alloc`; no additional API surface.
 
 #![no_std]

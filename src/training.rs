@@ -749,4 +749,230 @@ mod tests {
         assert_eq!(scdc.written_config.unwrap().rate, RATE);
         assert_eq!(phy.frl_rate, Some(RATE));
     }
+
+    // -------------------------------------------------------------------------
+    // Diagnostics: TrainingTrace event sequences
+    // -------------------------------------------------------------------------
+
+    #[cfg(feature = "alloc")]
+    mod trace_tests {
+        extern crate std;
+        use std::vec::Vec;
+
+        use crate::trace::TrainingEvent;
+        use crate::types::{FfeLevels, LtpReq};
+
+        use super::{
+            FrlTrainer, MockPhy, RATE, SimScdc, TrainingConfig, TrainingOutcome, cfg, flt_ready,
+            frl_started, ltp, not_ready,
+        };
+
+        #[test]
+        fn trace_successful_run() {
+            let mut scdc = SimScdc::new();
+            // Phase 2: 2 failed reads then flt_ready (after_iterations = 2)
+            scdc.push(not_ready());
+            scdc.push(not_ready());
+            scdc.push(flt_ready());
+            // Phase 3: 1 failed read then frl_start (after_iterations = 1)
+            scdc.push(flt_ready());
+            scdc.push(frl_started());
+            // Phase 4: two pattern requests then success (after_iterations = 2)
+            scdc.push(ltp(LtpReq::Lfsr0));
+            scdc.push(ltp(LtpReq::Lfsr2));
+            scdc.push(frl_started()); // ltp_req = None
+
+            let (outcome, trace) = FrlTrainer::new(scdc, MockPhy::new())
+                .train_at_rate_traced(RATE, &TrainingConfig::default())
+                .unwrap();
+
+            assert_eq!(
+                outcome,
+                TrainingOutcome::Success {
+                    achieved_rate: RATE
+                }
+            );
+            assert_eq!(trace.rate, RATE);
+            assert_eq!(
+                trace.events,
+                [
+                    TrainingEvent::RateConfigured {
+                        rate: RATE,
+                        ffe_levels: FfeLevels::Ffe0
+                    },
+                    TrainingEvent::FltReadyReceived {
+                        after_iterations: 2
+                    },
+                    TrainingEvent::FrlStartReceived {
+                        after_iterations: 1
+                    },
+                    TrainingEvent::LtpPatternRequested {
+                        pattern: LtpReq::Lfsr0
+                    },
+                    TrainingEvent::LtpPatternRequested {
+                        pattern: LtpReq::Lfsr2
+                    },
+                    TrainingEvent::AllLanesSatisfied {
+                        after_iterations: 2
+                    },
+                ]
+            );
+        }
+
+        #[test]
+        fn trace_phase2_timeout() {
+            let mut scdc = SimScdc::new();
+            scdc.push(not_ready());
+            scdc.push(not_ready());
+            scdc.push(not_ready()); // i reaches flt_ready_timeout = 3
+
+            let (_outcome, trace) = FrlTrainer::new(scdc, MockPhy::new())
+                .train_at_rate_traced(RATE, &cfg(3, 10, 10))
+                .unwrap();
+
+            assert_eq!(
+                trace.events,
+                [
+                    TrainingEvent::RateConfigured {
+                        rate: RATE,
+                        ffe_levels: FfeLevels::Ffe0
+                    },
+                    TrainingEvent::FltReadyTimeout {
+                        iterations_elapsed: 3
+                    },
+                ]
+            );
+        }
+
+        #[test]
+        fn trace_phase3_timeout() {
+            let mut scdc = SimScdc::new();
+            scdc.push(flt_ready()); // phase 2: immediate (after_iterations = 0)
+            scdc.push(flt_ready()); // frl_start = false
+            scdc.push(flt_ready());
+            scdc.push(flt_ready()); // i reaches frl_start_timeout = 3
+
+            let (_outcome, trace) = FrlTrainer::new(scdc, MockPhy::new())
+                .train_at_rate_traced(RATE, &cfg(10, 3, 10))
+                .unwrap();
+
+            assert_eq!(
+                trace.events,
+                [
+                    TrainingEvent::RateConfigured {
+                        rate: RATE,
+                        ffe_levels: FfeLevels::Ffe0
+                    },
+                    TrainingEvent::FltReadyReceived {
+                        after_iterations: 0
+                    },
+                    TrainingEvent::FrlStartTimeout {
+                        iterations_elapsed: 3
+                    },
+                ]
+            );
+        }
+
+        #[test]
+        fn trace_phase4_timeout() {
+            let mut scdc = SimScdc::new();
+            scdc.push(flt_ready());
+            scdc.push(frl_started());
+            scdc.push(ltp(LtpReq::Lfsr1)); // i = 1, new pattern
+            scdc.push(ltp(LtpReq::Lfsr3)); // i = 2, new pattern
+            scdc.push(ltp(LtpReq::Lfsr3)); // i = 3, same — no new event → timeout
+
+            let (_outcome, trace) = FrlTrainer::new(scdc, MockPhy::new())
+                .train_at_rate_traced(RATE, &cfg(10, 10, 3))
+                .unwrap();
+
+            assert_eq!(
+                trace.events,
+                [
+                    TrainingEvent::RateConfigured {
+                        rate: RATE,
+                        ffe_levels: FfeLevels::Ffe0
+                    },
+                    TrainingEvent::FltReadyReceived {
+                        after_iterations: 0
+                    },
+                    TrainingEvent::FrlStartReceived {
+                        after_iterations: 0
+                    },
+                    TrainingEvent::LtpPatternRequested {
+                        pattern: LtpReq::Lfsr1
+                    },
+                    TrainingEvent::LtpPatternRequested {
+                        pattern: LtpReq::Lfsr3
+                    },
+                    TrainingEvent::LtpLoopTimeout {
+                        iterations_elapsed: 3
+                    },
+                ]
+            );
+        }
+
+        #[test]
+        fn trace_ltp_pattern_on_transition_only() {
+            // A sink that holds Lfsr1 for 3 iterations then changes to Lfsr2 produces
+            // exactly one LtpPatternRequested{Lfsr1}, not three.
+            let mut scdc = SimScdc::new();
+            scdc.push(flt_ready());
+            scdc.push(frl_started());
+            scdc.push(ltp(LtpReq::Lfsr1));
+            scdc.push(ltp(LtpReq::Lfsr1));
+            scdc.push(ltp(LtpReq::Lfsr1));
+            scdc.push(ltp(LtpReq::Lfsr2));
+            scdc.push(frl_started()); // ltp_req = None → success (after_iterations = 4)
+
+            let (_outcome, trace) = FrlTrainer::new(scdc, MockPhy::new())
+                .train_at_rate_traced(RATE, &TrainingConfig::default())
+                .unwrap();
+
+            let ltp_events: Vec<_> = trace
+                .events
+                .iter()
+                .filter(|e| matches!(e, TrainingEvent::LtpPatternRequested { .. }))
+                .collect();
+            assert_eq!(ltp_events.len(), 2); // Lfsr1 once, Lfsr2 once
+            assert_eq!(
+                ltp_events[0],
+                &TrainingEvent::LtpPatternRequested {
+                    pattern: LtpReq::Lfsr1
+                }
+            );
+            assert_eq!(
+                ltp_events[1],
+                &TrainingEvent::LtpPatternRequested {
+                    pattern: LtpReq::Lfsr2
+                }
+            );
+
+            // AllLanesSatisfied should reflect 4 loop iterations (3 × Lfsr1 + 1 × Lfsr2)
+            assert!(trace.events.contains(&TrainingEvent::AllLanesSatisfied {
+                after_iterations: 4
+            }));
+        }
+
+        #[test]
+        fn trace_config_recorded_and_timeout_interpretable() {
+            let config = cfg(5, 7, 9);
+            let mut scdc = SimScdc::new();
+            // Drive to a phase 2 timeout so we can read iterations_elapsed against config.
+            for _ in 0..5 {
+                scdc.push(not_ready());
+            }
+
+            let (_outcome, trace) = FrlTrainer::new(scdc, MockPhy::new())
+                .train_at_rate_traced(RATE, &config)
+                .unwrap();
+
+            assert_eq!(trace.config, config);
+            // The timeout event count should equal the configured limit.
+            assert!(trace.events.contains(&TrainingEvent::FltReadyTimeout {
+                iterations_elapsed: 5
+            }));
+            assert_eq!(trace.config.flt_ready_timeout, 5);
+        }
+    }
 }
