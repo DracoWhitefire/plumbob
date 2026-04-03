@@ -58,22 +58,22 @@ jobs:
         run: cargo fmt --check
 
       - name: Clippy
-        run: cargo clippy --features std -- -D warnings
+        run: cargo clippy --locked --features std -- -D warnings
 
       - name: Docs
-        run: cargo rustdoc --features std -- -D missing_docs
+        run: cargo rustdoc --locked --features std -- -D missing_docs
 
       - name: Test
-        run: cargo test --features std
+        run: cargo test --locked --features std
 
       - name: Build (alloc only)
-        run: cargo build --no-default-features --features alloc
+        run: cargo build --locked --no-default-features --features alloc
 
       - name: Build (no_std)
-        run: cargo build --no-default-features
+        run: cargo build --locked --no-default-features
 
       - name: Build simulate example
-        run: cargo build --manifest-path examples/simulate/Cargo.toml
+        run: cargo build --locked --manifest-path examples/simulate/Cargo.toml
 
       - name: Publish
         run: cargo publish
