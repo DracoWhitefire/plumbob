@@ -27,11 +27,20 @@ dependencies = [
 ]
 
 [[package]]
+name = "hdmi-hal"
+version = "0.3.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "d91ae818f9d040b67827ae8e83fc8f27c5de1ef93aecd9394f7fdff368c40feb"
+dependencies = [
+ "display-types",
+]
+
+[[package]]
 name = "plumbob"
 version = "0.1.0"
 dependencies = [
  "display-types",
- "hdmi-hal",
+ "hdmi-hal 0.3.0",
 ]
 
 [[package]]
@@ -39,6 +48,6 @@ name = "simulate"
 version = "0.1.0"
 dependencies = [
  "display-types",
- "hdmi-hal",
+ "hdmi-hal 0.2.0",
  "plumbob",
 ]

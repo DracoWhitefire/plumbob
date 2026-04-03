@@ -218,8 +218,8 @@ impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
 
         // Phase 4 — LTP loop: drive patterns until ltp_req reaches None.
         //
-        // read_ced is called on each iteration; it will feed equalization
-        // adjustments once EqParams is expanded to carry the relevant fields.
+        // read_ced is called on each iteration; it will feed per-lane equalization
+        // adjustments once LaneEqParams fields are defined in hdmi-hal.
         // LtpPatternRequested is emitted only on transitions, not every poll.
         let mut i = 0u32;
         let mut last_ltp: Option<LtpReq> = None;
