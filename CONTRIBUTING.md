@@ -7,9 +7,9 @@ Thanks for your interest in contributing. This document covers the basics.
 Relevant docs for contributors:
 
 - [`doc/setup.md`](doc/setup.md) — build, test, and fuzzing commands
-- [`doc/testing.md`](doc/testing.md) — testing strategy, fixture corpus, and CI expectations
+- [`doc/testing.md`](doc/testing.md) — testing strategy, sim harness, and CI expectations
 - [`doc/architecture.md`](doc/architecture.md) — pipeline structure, scope, and design principles
-- [`doc/model.md`](doc/model.md) — data types, field conventions, and the fixed-capacity pattern
+- [`doc/model.md`](doc/model.md) — data types, field conventions, and the ownership boundary between `ScdcClient` and the state machine
 - [`doc/roadmap.md`](doc/roadmap.md) — planned features and known gaps
 
 ## Issues and pull requests
@@ -18,7 +18,7 @@ Relevant docs for contributors:
 discuss a change before implementing it. For small, self-contained fixes a PR on its own
 is fine.
 
-- Bug reports: include the EDID bytes (as a hex dump or attached binary) if you have them.
+- Bug reports: include a `TrainingTrace` if available, or describe the SCDC register sequence and the phase where training failed.
 - Feature requests: a brief description of what you need and why is enough to start a
   conversation.
 - PRs: keep them focused. One logical change per PR makes review faster and keeps history
@@ -30,8 +30,8 @@ is fine.
 - Public items need rustdoc comments (`cargo rustdoc -- -D missing_docs` must pass).
 - Follow the existing patterns in the codebase — see [`doc/architecture.md`](doc/architecture.md)
   and [`doc/model.md`](doc/model.md) for the design principles behind them.
-- `#![deny(unsafe_code)]` is enforced; no unsafe code.
-- Keep `no_std` compatibility. The static pipeline and all scalar decoding must compile
+- `#![forbid(unsafe_code)]` is enforced; no unsafe code.
+- Keep `no_std` compatibility. `FrlTrainer` and all owned protocol types must compile
   without `alloc` or `std`.
 
 ## Commit and PR expectations

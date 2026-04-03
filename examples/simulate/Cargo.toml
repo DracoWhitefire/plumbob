@@ -9,5 +9,5 @@ publish = false
 
 [dependencies]
 plumbob = { path = "../..", features = ["std"] }
-hdmi-hal = { version = "0.2.0" }
+hdmi-hal = { version = "0.3.0" }
 display-types = { version = "0.3.1" }
