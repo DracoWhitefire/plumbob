@@ -222,41 +222,41 @@ impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
             return Ok(outcome);
         }
 
-        // Phase 4 — LTP loop: drive patterns until ltp_req reaches None.
-        //
-        // read_ced is called on each iteration; it will feed per-lane equalization
-        // adjustments once LaneEqParams fields are defined in hdmi-hal.
-        // LtpPatternRequested is emitted only on transitions, not every poll.
+        // Phase 4 — LTP loop.
+        self.ltp_loop(rate, config, record)
+    }
+
+    /// Phase 4: drive LTP patterns until the sink signals all lanes satisfied.
+    ///
+    /// `read_ced` is called on each iteration; it will feed per-lane equalization
+    /// adjustments once `LaneEqParams` fields are defined in hdmi-hal.
+    /// `LtpPatternRequested` is emitted only on transitions, not every poll.
+    fn ltp_loop<F>(
+        &mut self,
+        rate: HdmiForumFrl,
+        config: &TrainingConfig,
+        record: &mut F,
+    ) -> Result<TrainingOutcome, TrainingError<C::Error, P::Error>>
+    where
+        F: FnMut(TrainingEvent),
+    {
         let mut i = 0u32;
         let mut last_ltp: Option<LtpReq> = None;
         loop {
-            let status = self
-                .scdc
-                .read_training_status()
-                .map_err(TrainingError::Scdc)?;
+            let status = self.scdc.read_training_status().map_err(TrainingError::Scdc)?;
             if status.ltp_req == LtpReq::None {
-                record(TrainingEvent::AllLanesSatisfied {
-                    after_iterations: i,
-                });
-                return Ok(TrainingOutcome::Success {
-                    achieved_rate: rate,
-                });
+                record(TrainingEvent::AllLanesSatisfied { after_iterations: i });
+                return Ok(TrainingOutcome::Success { achieved_rate: rate });
             }
             if Some(status.ltp_req) != last_ltp {
-                record(TrainingEvent::LtpPatternRequested {
-                    pattern: status.ltp_req,
-                });
+                record(TrainingEvent::LtpPatternRequested { pattern: status.ltp_req });
                 last_ltp = Some(status.ltp_req);
             }
             let _ced = self.scdc.read_ced().map_err(TrainingError::Scdc)?;
-            self.phy
-                .send_ltp(status.ltp_req.into())
-                .map_err(TrainingError::Phy)?;
+            self.phy.send_ltp(status.ltp_req.into()).map_err(TrainingError::Phy)?;
             i += 1;
             if i >= config.ltp_timeout {
-                record(TrainingEvent::LtpLoopTimeout {
-                    iterations_elapsed: i,
-                });
+                record(TrainingEvent::LtpLoopTimeout { iterations_elapsed: i });
                 return Ok(TrainingOutcome::FallbackRequired);
             }
         }
