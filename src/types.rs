@@ -1,4 +1,5 @@
 use display_types::cea861::hdmi_forum::HdmiForumFrl;
+use hdmi_hal::phy::LtpPattern;
 
 /// Link Training Pattern requested by the sink via Status_Flags_1 `bits[7:4]`.
 #[non_exhaustive]
@@ -96,6 +97,18 @@ pub struct CedCounters {
     /// Character error count for lane 3, or `None` if the validity bit is not set.
     /// Always `None` in 3-lane FRL mode.
     pub lane3: Option<CedCount>,
+}
+
+/// Converts a sink LTP request to a PHY pattern.
+///
+/// `LtpReq::None` is the training-complete signal and never reaches this
+/// conversion; the training loop exits before calling `HdmiPhy::send_ltp`.
+/// The raw discriminant value is used directly: Lfsr0 → 1, Lfsr1 → 2,
+/// Lfsr2 → 3, Lfsr3 → 4.
+impl From<LtpReq> for LtpPattern {
+    fn from(req: LtpReq) -> Self {
+        LtpPattern::new(req as u8)
+    }
 }
 
 #[cfg(test)]
@@ -248,5 +261,27 @@ mod tests {
             lane3: None,
         };
         assert_eq!(a, a.clone());
+    }
+
+    // --- From<LtpReq> for LtpPattern ---
+
+    #[test]
+    fn ltp_req_to_pattern_lfsr0() {
+        assert_eq!(LtpPattern::from(LtpReq::Lfsr0).value(), 1);
+    }
+
+    #[test]
+    fn ltp_req_to_pattern_lfsr1() {
+        assert_eq!(LtpPattern::from(LtpReq::Lfsr1).value(), 2);
+    }
+
+    #[test]
+    fn ltp_req_to_pattern_lfsr2() {
+        assert_eq!(LtpPattern::from(LtpReq::Lfsr2).value(), 3);
+    }
+
+    #[test]
+    fn ltp_req_to_pattern_lfsr3() {
+        assert_eq!(LtpPattern::from(LtpReq::Lfsr3).value(), 4);
     }
 }

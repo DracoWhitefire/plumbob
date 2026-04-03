@@ -1,5 +1,5 @@
 use display_types::cea861::hdmi_forum::HdmiForumFrl;
-use hdmi_hal::phy::{EqParams, HdmiPhy};
+use hdmi_hal::phy::HdmiPhy;
 
 #[cfg(feature = "alloc")]
 use alloc::vec::Vec;
@@ -205,7 +205,7 @@ impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
         // Phase 4 — LTP loop: drive patterns until ltp_req reaches None.
         //
         // read_ced is called on each iteration; it will feed equalization
-        // adjustments once EqParams is expanded beyond its current placeholder.
+        // adjustments once EqParams is expanded to carry the relevant fields.
         // LtpPatternRequested is emitted only on transitions, not every poll.
         let mut i = 0u32;
         let mut last_ltp: Option<LtpReq> = None;
@@ -229,9 +229,8 @@ impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
                 last_ltp = Some(status.ltp_req);
             }
             let _ced = self.scdc.read_ced().map_err(TrainingError::Scdc)?;
-            // Placeholder for phy.send_ltp(pattern) — see open items in architecture.md.
             self.phy
-                .adjust_equalization(EqParams::default())
+                .send_ltp(status.ltp_req.into())
                 .map_err(TrainingError::Phy)?;
             i += 1;
             if i >= config.ltp_timeout {
@@ -250,7 +249,7 @@ mod tests {
     use std::collections::VecDeque;
 
     use display_types::cea861::hdmi_forum::HdmiForumFrl;
-    use hdmi_hal::phy::{EqParams, HdmiPhy};
+    use hdmi_hal::phy::{EqParams, HdmiPhy, LtpPattern};
 
     use super::*;
     use crate::scdc::ScdcClient;
@@ -325,24 +324,32 @@ mod tests {
 
     struct MockPhy {
         fail_set_frl_rate: bool,
-        fail_adjust_eq: bool,
+        fail_send_ltp: bool,
         frl_rate: Option<HdmiForumFrl>,
-        eq_calls: u32,
+        last_ltp: Option<LtpPattern>,
     }
 
     impl MockPhy {
         fn new() -> Self {
             Self {
                 fail_set_frl_rate: false,
-                fail_adjust_eq: false,
+                fail_send_ltp: false,
                 frl_rate: None,
-                eq_calls: 0,
+                last_ltp: None,
             }
         }
     }
 
     impl HdmiPhy for MockPhy {
         type Error = ();
+
+        fn send_ltp(&mut self, pattern: LtpPattern) -> Result<(), ()> {
+            if self.fail_send_ltp {
+                return Err(());
+            }
+            self.last_ltp = Some(pattern);
+            Ok(())
+        }
 
         fn set_frl_rate(&mut self, rate: HdmiForumFrl) -> Result<(), ()> {
             if self.fail_set_frl_rate {
@@ -353,10 +360,6 @@ mod tests {
         }
 
         fn adjust_equalization(&mut self, _params: EqParams) -> Result<(), ()> {
-            if self.fail_adjust_eq {
-                return Err(());
-            }
-            self.eq_calls += 1;
             Ok(())
         }
 
@@ -715,18 +718,49 @@ mod tests {
     }
 
     #[test]
-    fn error_adjust_equalization() {
+    fn error_send_ltp() {
         let mut scdc = SimScdc::new();
         scdc.push(flt_ready());
         scdc.push(frl_started());
-        scdc.push(ltp(LtpReq::Lfsr0)); // non-None → adjust_equalization is called
+        scdc.push(ltp(LtpReq::Lfsr0)); // non-None → send_ltp is called
         let mut phy = MockPhy::new();
-        phy.fail_adjust_eq = true;
+        phy.fail_send_ltp = true;
 
         let err = FrlTrainer::new(scdc, phy)
             .train_at_rate(RATE, &TrainingConfig::default())
             .unwrap_err();
         assert_eq!(err, TrainingError::Phy(()));
+    }
+
+    #[test]
+    fn send_ltp_correct_pattern_per_ltp_req() {
+        // Verify the From<LtpReq> → LtpPattern mapping: each LFSR variant
+        // must produce the corresponding raw pattern index (1–4).
+        let cases: &[(LtpReq, u8)] = &[
+            (LtpReq::Lfsr0, 1),
+            (LtpReq::Lfsr1, 2),
+            (LtpReq::Lfsr2, 3),
+            (LtpReq::Lfsr3, 4),
+        ];
+        for &(req, expected_raw) in cases {
+            let mut scdc = SimScdc::new();
+            scdc.push(flt_ready());
+            scdc.push(frl_started());
+            scdc.push(ltp(req)); // sink requests this pattern
+            scdc.push(frl_started()); // ltp_req = None → success
+
+            let mut trainer = FrlTrainer::new(scdc, MockPhy::new());
+            trainer
+                .train_at_rate(RATE, &TrainingConfig::default())
+                .unwrap();
+            let (_, phy) = trainer.into_parts();
+
+            assert_eq!(
+                phy.last_ltp.unwrap().value(),
+                expected_raw,
+                "LtpReq variant produced wrong LtpPattern raw value"
+            );
+        }
     }
 
     // -------------------------------------------------------------------------
