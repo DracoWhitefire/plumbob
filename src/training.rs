@@ -50,11 +50,24 @@ pub struct TrainingConfig {
     /// plumbob passes this through into `FrlConfig` without interpreting it.
     /// Defaults to `false`.
     pub dsc_frl_max: bool,
-    /// Maximum poll iterations waiting for `flt_ready` (phase 2).
+    /// Maximum number of polls to attempt while waiting for `flt_ready` (phase 2).
+    ///
+    /// The loop reads the training status register up to this many times. If
+    /// `flt_ready` has not been asserted after exactly `flt_ready_timeout` polls,
+    /// the attempt returns [`TrainingOutcome::FallbackRequired`]. A value of `0`
+    /// means no polls are attempted and the phase times out immediately.
     pub flt_ready_timeout: u32,
-    /// Maximum poll iterations waiting for `frl_start` (phase 3).
+    /// Maximum number of polls to attempt while waiting for `frl_start` (phase 3).
+    ///
+    /// Identical semantics to [`flt_ready_timeout`](Self::flt_ready_timeout): at
+    /// most `frl_start_timeout` polls are made before the attempt returns
+    /// [`TrainingOutcome::FallbackRequired`].
     pub frl_start_timeout: u32,
-    /// Maximum poll iterations in the LTP training loop (phase 4).
+    /// Maximum number of poll iterations in the LTP training loop (phase 4).
+    ///
+    /// Identical semantics to [`flt_ready_timeout`](Self::flt_ready_timeout): at
+    /// most `ltp_timeout` iterations run before the attempt returns
+    /// [`TrainingOutcome::FallbackRequired`].
     pub ltp_timeout: u32,
 }
 
@@ -156,9 +169,10 @@ impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
 
         // Phase 2 — Readiness: poll until the sink asserts flt_ready.
         //
-        // `i` counts failed reads. At success it equals `after_iterations`; at
-        // timeout it equals `iterations_elapsed`. This convention holds across
-        // all three polling phases.
+        // `i` counts polls attempted so far. It is incremented after each
+        // unsuccessful read, so at the point of a successful read it reflects
+        // how many prior reads failed; at timeout it equals the timeout value
+        // exactly. This convention holds across all three polling phases.
         let mut i = 0u32;
         loop {
             let status = self
