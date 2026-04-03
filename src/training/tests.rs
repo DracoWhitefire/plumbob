@@ -377,6 +377,73 @@ fn into_parts_recovers_scdc_and_phy() {
 }
 
 // -------------------------------------------------------------------------
+// SimScdc and MockPhy behaviour
+// -------------------------------------------------------------------------
+
+#[test]
+fn sim_scdc_empty_queue_returns_err() {
+    use crate::scdc::ScdcClient;
+    // No statuses pushed — the exhausted-queue fallback must return Err(()).
+    let mut scdc = SimScdc::new();
+    assert_eq!(scdc.read_training_status(), Err(()));
+}
+
+#[test]
+fn sim_scdc_statuses_consumed_fifo() {
+    use crate::scdc::ScdcClient;
+    let mut scdc = SimScdc::new();
+    scdc.push(not_ready());
+    scdc.push(flt_ready());
+    assert_eq!(scdc.read_training_status(), Ok(not_ready()));
+    assert_eq!(scdc.read_training_status(), Ok(flt_ready()));
+    assert_eq!(scdc.read_training_status(), Err(())); // queue now empty
+}
+
+#[test]
+fn sim_scdc_ced_calls_counted() {
+    // Two LTP iterations → read_ced called exactly twice.
+    let mut scdc = SimScdc::new();
+    scdc.push(flt_ready());
+    scdc.push(frl_started());
+    scdc.push(ltp(LtpReq::Lfsr0));
+    scdc.push(ltp(LtpReq::Lfsr1));
+    scdc.push(frl_started()); // ltp_req = None → success
+
+    let mut trainer = FrlTrainer::new(scdc, MockPhy::new());
+    trainer
+        .train_at_rate(RATE, &TrainingConfig::default())
+        .unwrap();
+    let (scdc, _) = trainer.into_parts();
+    assert_eq!(scdc.ced_calls, 2);
+}
+
+#[test]
+fn sim_scdc_read_ced_returns_all_none() {
+    use crate::scdc::ScdcClient;
+    let mut scdc = SimScdc::new();
+    let ced = scdc.read_ced().unwrap();
+    assert!(ced.lane0.is_none());
+    assert!(ced.lane1.is_none());
+    assert!(ced.lane2.is_none());
+    assert!(ced.lane3.is_none());
+}
+
+#[test]
+fn mock_phy_adjust_equalization_always_succeeds() {
+    use hdmi_hal::phy::{EqParams, HdmiPhy};
+    let mut phy = MockPhy::new();
+    assert!(phy.adjust_equalization(EqParams::default()).is_ok());
+}
+
+#[test]
+fn mock_phy_set_scrambling_always_succeeds() {
+    use hdmi_hal::phy::HdmiPhy;
+    let mut phy = MockPhy::new();
+    assert!(phy.set_scrambling(true).is_ok());
+    assert!(phy.set_scrambling(false).is_ok());
+}
+
+// -------------------------------------------------------------------------
 // Diagnostics: TrainingTrace event sequences
 // -------------------------------------------------------------------------
 
