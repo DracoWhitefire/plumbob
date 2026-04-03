@@ -6,7 +6,7 @@ use alloc::vec::Vec;
 
 use crate::scdc::ScdcClient;
 use crate::trace::TrainingEvent;
-use crate::types::{FfeLevels, FrlConfig, LtpReq};
+use crate::types::{FfeLevels, FrlConfig, LtpReq, TrainingStatus};
 
 /// Outcome of a training attempt at a single FRL rate.
 #[non_exhaustive]
@@ -139,6 +139,39 @@ impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
         ))
     }
 
+    /// Polls `read_training_status` until `condition` is satisfied or `timeout`
+    /// iterations have elapsed. Emits the appropriate event via `record` in both
+    /// cases. Returns `None` when the condition was met (caller should proceed) or
+    /// `Some(TrainingOutcome::FallbackRequired)` on timeout.
+    ///
+    /// `i` counts polls attempted so far. At the point the condition is met it
+    /// reflects how many prior reads failed; at timeout it equals `timeout` exactly.
+    fn poll_until<F>(
+        &mut self,
+        timeout: u32,
+        condition: impl Fn(&TrainingStatus) -> bool,
+        on_success: impl FnOnce(u32) -> TrainingEvent,
+        on_timeout: impl FnOnce(u32) -> TrainingEvent,
+        record: &mut F,
+    ) -> Result<Option<TrainingOutcome>, TrainingError<C::Error, P::Error>>
+    where
+        F: FnMut(TrainingEvent),
+    {
+        let mut i = 0u32;
+        loop {
+            let status = self.scdc.read_training_status().map_err(TrainingError::Scdc)?;
+            if condition(&status) {
+                record(on_success(i));
+                return Ok(None);
+            }
+            i += 1;
+            if i >= timeout {
+                record(on_timeout(i));
+                return Ok(Some(TrainingOutcome::FallbackRequired));
+            }
+        }
+    }
+
     /// Core four-phase training sequence.
     ///
     /// `record` is called with each [`TrainingEvent`] as it occurs. Pass
@@ -168,52 +201,25 @@ impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
         });
 
         // Phase 2 — Readiness: poll until the sink asserts flt_ready.
-        //
-        // `i` counts polls attempted so far. It is incremented after each
-        // unsuccessful read, so at the point of a successful read it reflects
-        // how many prior reads failed; at timeout it equals the timeout value
-        // exactly. This convention holds across all three polling phases.
-        let mut i = 0u32;
-        loop {
-            let status = self
-                .scdc
-                .read_training_status()
-                .map_err(TrainingError::Scdc)?;
-            if status.flt_ready {
-                record(TrainingEvent::FltReadyReceived {
-                    after_iterations: i,
-                });
-                break;
-            }
-            i += 1;
-            if i >= config.flt_ready_timeout {
-                record(TrainingEvent::FltReadyTimeout {
-                    iterations_elapsed: i,
-                });
-                return Ok(TrainingOutcome::FallbackRequired);
-            }
+        if let Some(outcome) = self.poll_until(
+            config.flt_ready_timeout,
+            |s| s.flt_ready,
+            |i| TrainingEvent::FltReadyReceived { after_iterations: i },
+            |i| TrainingEvent::FltReadyTimeout { iterations_elapsed: i },
+            record,
+        )? {
+            return Ok(outcome);
         }
 
         // Phase 3 — Initiation: poll until the sink asserts frl_start.
-        let mut i = 0u32;
-        loop {
-            let status = self
-                .scdc
-                .read_training_status()
-                .map_err(TrainingError::Scdc)?;
-            if status.frl_start {
-                record(TrainingEvent::FrlStartReceived {
-                    after_iterations: i,
-                });
-                break;
-            }
-            i += 1;
-            if i >= config.frl_start_timeout {
-                record(TrainingEvent::FrlStartTimeout {
-                    iterations_elapsed: i,
-                });
-                return Ok(TrainingOutcome::FallbackRequired);
-            }
+        if let Some(outcome) = self.poll_until(
+            config.frl_start_timeout,
+            |s| s.frl_start,
+            |i| TrainingEvent::FrlStartReceived { after_iterations: i },
+            |i| TrainingEvent::FrlStartTimeout { iterations_elapsed: i },
+            record,
+        )? {
+            return Ok(outcome);
         }
 
         // Phase 4 — LTP loop: drive patterns until ltp_req reaches None.
