@@ -2,11 +2,11 @@
 //!
 //! `plumbob` implements the Fixed Rate Link (FRL) training procedure defined in the
 //! HDMI 2.1 specification. It defines the [`ScdcClient`] interface its dependencies
-//! must satisfy and exposes `FrlTrainer` as the central entry point.
+//! must satisfy and exposes [`FrlTrainer`] as the central entry point.
 //!
 //! # Features
 //!
-//! - **`alloc`** — enables `TrainingTrace` and `FrlTrainer::train_at_rate_traced`.
+//! - **`alloc`** — enables [`TrainingTrace`] and [`FrlTrainer::train_at_rate_traced`].
 //! - **`std`** — implies `alloc`; no additional API surface.
 
 #![no_std]
@@ -17,16 +17,13 @@
 extern crate alloc;
 
 mod scdc;
+mod trace;
 mod training;
 mod types;
 
-#[cfg(feature = "alloc")]
-mod trace;
-
+pub use scdc::ScdcClient;
+pub use training::{FrlTrainer, TrainingConfig, TrainingError, TrainingOutcome};
 pub use types::{CedCount, CedCounters, FfeLevels, FrlConfig, LtpReq, TrainingStatus};
 
-pub use scdc::ScdcClient;
-
-pub use training::{FrlTrainer, TrainingConfig, TrainingError, TrainingOutcome};
-
-// Further re-exports are added as each module is populated (steps 6–8).
+#[cfg(feature = "alloc")]
+pub use trace::{TrainingEvent, TrainingTrace};

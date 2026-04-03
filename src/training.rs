@@ -1,7 +1,11 @@
 use display_types::cea861::hdmi_forum::HdmiForumFrl;
 use hdmi_hal::phy::{EqParams, HdmiPhy};
 
+#[cfg(feature = "alloc")]
+use alloc::vec::Vec;
+
 use crate::scdc::ScdcClient;
+use crate::trace::TrainingEvent;
 use crate::types::{FfeLevels, FrlConfig, LtpReq};
 
 /// Outcome of a training attempt at a single FRL rate.
@@ -98,6 +102,44 @@ impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
         rate: HdmiForumFrl,
         config: &TrainingConfig,
     ) -> Result<TrainingOutcome, TrainingError<C::Error, P::Error>> {
+        self.train_inner(rate, config, &mut |_| {})
+    }
+
+    /// Like [`FrlTrainer::train_at_rate`], but also returns a `TrainingTrace`
+    /// recording the full event sequence.
+    #[cfg(feature = "alloc")]
+    pub fn train_at_rate_traced(
+        &mut self,
+        rate: HdmiForumFrl,
+        config: &TrainingConfig,
+    ) -> Result<(TrainingOutcome, crate::trace::TrainingTrace), TrainingError<C::Error, P::Error>>
+    {
+        let mut events = Vec::new();
+        let outcome = self.train_inner(rate, config, &mut |e| events.push(e))?;
+        Ok((
+            outcome,
+            crate::trace::TrainingTrace {
+                rate,
+                config: *config,
+                events,
+            },
+        ))
+    }
+
+    /// Core four-phase training sequence.
+    ///
+    /// `record` is called with each [`TrainingEvent`] as it occurs. Pass
+    /// `&mut |_| {}` for the non-traced path; the compiler eliminates the
+    /// call entirely in optimised builds.
+    fn train_inner<F>(
+        &mut self,
+        rate: HdmiForumFrl,
+        config: &TrainingConfig,
+        record: &mut F,
+    ) -> Result<TrainingOutcome, TrainingError<C::Error, P::Error>>
+    where
+        F: FnMut(TrainingEvent),
+    {
         // Phase 1 — Configuration
         self.scdc
             .write_frl_config(FrlConfig {
@@ -107,12 +149,16 @@ impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
             })
             .map_err(TrainingError::Scdc)?;
         self.phy.set_frl_rate(rate).map_err(TrainingError::Phy)?;
+        record(TrainingEvent::RateConfigured {
+            rate,
+            ffe_levels: config.ffe_levels,
+        });
 
         // Phase 2 — Readiness: poll until the sink asserts flt_ready.
         //
         // `i` counts failed reads. At success it equals `after_iterations`; at
-        // timeout it equals `iterations_elapsed`. This convention is shared with
-        // phases 3 and 4 so the trace layer can record correct counts.
+        // timeout it equals `iterations_elapsed`. This convention holds across
+        // all three polling phases.
         let mut i = 0u32;
         loop {
             let status = self
@@ -120,10 +166,16 @@ impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
                 .read_training_status()
                 .map_err(TrainingError::Scdc)?;
             if status.flt_ready {
+                record(TrainingEvent::FltReadyReceived {
+                    after_iterations: i,
+                });
                 break;
             }
             i += 1;
             if i >= config.flt_ready_timeout {
+                record(TrainingEvent::FltReadyTimeout {
+                    iterations_elapsed: i,
+                });
                 return Ok(TrainingOutcome::FallbackRequired);
             }
         }
@@ -136,10 +188,16 @@ impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
                 .read_training_status()
                 .map_err(TrainingError::Scdc)?;
             if status.frl_start {
+                record(TrainingEvent::FrlStartReceived {
+                    after_iterations: i,
+                });
                 break;
             }
             i += 1;
             if i >= config.frl_start_timeout {
+                record(TrainingEvent::FrlStartTimeout {
+                    iterations_elapsed: i,
+                });
                 return Ok(TrainingOutcome::FallbackRequired);
             }
         }
@@ -148,14 +206,27 @@ impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
         //
         // read_ced is called on each iteration; it will feed equalization
         // adjustments once EqParams is expanded beyond its current placeholder.
+        // LtpPatternRequested is emitted only on transitions, not every poll.
         let mut i = 0u32;
+        let mut last_ltp: Option<LtpReq> = None;
         loop {
             let status = self
                 .scdc
                 .read_training_status()
                 .map_err(TrainingError::Scdc)?;
             if status.ltp_req == LtpReq::None {
-                return Ok(TrainingOutcome::Success { achieved_rate: rate });
+                record(TrainingEvent::AllLanesSatisfied {
+                    after_iterations: i,
+                });
+                return Ok(TrainingOutcome::Success {
+                    achieved_rate: rate,
+                });
+            }
+            if Some(status.ltp_req) != last_ltp {
+                record(TrainingEvent::LtpPatternRequested {
+                    pattern: status.ltp_req,
+                });
+                last_ltp = Some(status.ltp_req);
             }
             let _ced = self.scdc.read_ced().map_err(TrainingError::Scdc)?;
             // Placeholder for phy.send_ltp(pattern) — see open items in architecture.md.
@@ -164,6 +235,9 @@ impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
                 .map_err(TrainingError::Phy)?;
             i += 1;
             if i >= config.ltp_timeout {
+                record(TrainingEvent::LtpLoopTimeout {
+                    iterations_elapsed: i,
+                });
                 return Ok(TrainingOutcome::FallbackRequired);
             }
         }
@@ -236,7 +310,12 @@ mod tests {
                 return Err(());
             }
             self.ced_calls += 1;
-            Ok(CedCounters { lane0: None, lane1: None, lane2: None, lane3: None })
+            Ok(CedCounters {
+                lane0: None,
+                lane1: None,
+                lane2: None,
+                lane3: None,
+            })
         }
     }
 
@@ -291,19 +370,35 @@ mod tests {
     // -------------------------------------------------------------------------
 
     fn not_ready() -> TrainingStatus {
-        TrainingStatus { flt_ready: false, frl_start: false, ltp_req: LtpReq::None }
+        TrainingStatus {
+            flt_ready: false,
+            frl_start: false,
+            ltp_req: LtpReq::None,
+        }
     }
 
     fn flt_ready() -> TrainingStatus {
-        TrainingStatus { flt_ready: true, frl_start: false, ltp_req: LtpReq::None }
+        TrainingStatus {
+            flt_ready: true,
+            frl_start: false,
+            ltp_req: LtpReq::None,
+        }
     }
 
     fn frl_started() -> TrainingStatus {
-        TrainingStatus { flt_ready: true, frl_start: true, ltp_req: LtpReq::None }
+        TrainingStatus {
+            flt_ready: true,
+            frl_start: true,
+            ltp_req: LtpReq::None,
+        }
     }
 
     fn ltp(pattern: LtpReq) -> TrainingStatus {
-        TrainingStatus { flt_ready: true, frl_start: true, ltp_req: pattern }
+        TrainingStatus {
+            flt_ready: true,
+            frl_start: true,
+            ltp_req: pattern,
+        }
     }
 
     const RATE: HdmiForumFrl = HdmiForumFrl::Rate6Gbps4Lanes;
@@ -345,19 +440,31 @@ mod tests {
 
     #[test]
     fn training_outcome_success_carries_rate() {
-        let o = TrainingOutcome::Success { achieved_rate: HdmiForumFrl::Rate6Gbps4Lanes };
-        assert_eq!(o, TrainingOutcome::Success { achieved_rate: HdmiForumFrl::Rate6Gbps4Lanes });
+        let o = TrainingOutcome::Success {
+            achieved_rate: HdmiForumFrl::Rate6Gbps4Lanes,
+        };
+        assert_eq!(
+            o,
+            TrainingOutcome::Success {
+                achieved_rate: HdmiForumFrl::Rate6Gbps4Lanes
+            }
+        );
     }
 
     #[test]
     fn training_outcome_fallback_required() {
-        assert_eq!(TrainingOutcome::FallbackRequired, TrainingOutcome::FallbackRequired);
+        assert_eq!(
+            TrainingOutcome::FallbackRequired,
+            TrainingOutcome::FallbackRequired
+        );
     }
 
     #[test]
     fn training_outcome_variants_are_distinct() {
         assert_ne!(
-            TrainingOutcome::Success { achieved_rate: HdmiForumFrl::Rate6Gbps4Lanes },
+            TrainingOutcome::Success {
+                achieved_rate: HdmiForumFrl::Rate6Gbps4Lanes
+            },
             TrainingOutcome::FallbackRequired,
         );
     }
@@ -403,7 +510,12 @@ mod tests {
         let outcome = FrlTrainer::new(scdc, MockPhy::new())
             .train_at_rate(RATE, &TrainingConfig::default())
             .unwrap();
-        assert_eq!(outcome, TrainingOutcome::Success { achieved_rate: RATE });
+        assert_eq!(
+            outcome,
+            TrainingOutcome::Success {
+                achieved_rate: RATE
+            }
+        );
     }
 
     #[test]
@@ -429,7 +541,12 @@ mod tests {
         let outcome = FrlTrainer::new(scdc, MockPhy::new())
             .train_at_rate(RATE, &TrainingConfig::default())
             .unwrap();
-        assert_eq!(outcome, TrainingOutcome::Success { achieved_rate: RATE });
+        assert_eq!(
+            outcome,
+            TrainingOutcome::Success {
+                achieved_rate: RATE
+            }
+        );
     }
 
     #[test]
@@ -450,14 +567,19 @@ mod tests {
     #[test]
     fn frl_start_immediate() {
         let mut scdc = SimScdc::new();
-        scdc.push(flt_ready());   // phase 2: immediate (i = 0)
+        scdc.push(flt_ready()); // phase 2: immediate (i = 0)
         scdc.push(frl_started()); // phase 3: immediate (i = 0)
         scdc.push(frl_started()); // phase 4: ltp_req = None
 
         let outcome = FrlTrainer::new(scdc, MockPhy::new())
             .train_at_rate(RATE, &TrainingConfig::default())
             .unwrap();
-        assert_eq!(outcome, TrainingOutcome::Success { achieved_rate: RATE });
+        assert_eq!(
+            outcome,
+            TrainingOutcome::Success {
+                achieved_rate: RATE
+            }
+        );
     }
 
     #[test]
@@ -486,7 +608,12 @@ mod tests {
         let outcome = FrlTrainer::new(scdc, MockPhy::new())
             .train_at_rate(RATE, &TrainingConfig::default())
             .unwrap();
-        assert_eq!(outcome, TrainingOutcome::Success { achieved_rate: RATE });
+        assert_eq!(
+            outcome,
+            TrainingOutcome::Success {
+                achieved_rate: RATE
+            }
+        );
     }
 
     #[test]
@@ -503,7 +630,12 @@ mod tests {
         let outcome = FrlTrainer::new(scdc, MockPhy::new())
             .train_at_rate(RATE, &TrainingConfig::default())
             .unwrap();
-        assert_eq!(outcome, TrainingOutcome::Success { achieved_rate: RATE });
+        assert_eq!(
+            outcome,
+            TrainingOutcome::Success {
+                achieved_rate: RATE
+            }
+        );
     }
 
     // -------------------------------------------------------------------------
@@ -609,7 +741,9 @@ mod tests {
         scdc.push(frl_started()); // phase 4: ltp_req = None
 
         let mut trainer = FrlTrainer::new(scdc, MockPhy::new());
-        trainer.train_at_rate(RATE, &TrainingConfig::default()).unwrap();
+        trainer
+            .train_at_rate(RATE, &TrainingConfig::default())
+            .unwrap();
 
         let (scdc, phy) = trainer.into_parts();
         assert_eq!(scdc.written_config.unwrap().rate, RATE);
