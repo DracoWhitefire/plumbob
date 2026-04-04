@@ -668,15 +668,20 @@ mod trace_tests {
     #[test]
     fn training_trace_new_sets_fields() {
         extern crate std;
-        use std::vec;
         use crate::trace::TrainingTrace;
         use display_types::cea861::hdmi_forum::HdmiForumFrl;
+        use std::vec;
 
         let rate = HdmiForumFrl::Rate6Gbps4Lanes;
         let config = TrainingConfig::default();
         let events = vec![
-            TrainingEvent::RateConfigured { rate, ffe_levels: FfeLevels::Ffe0 },
-            TrainingEvent::AllLanesSatisfied { after_iterations: 3 },
+            TrainingEvent::RateConfigured {
+                rate,
+                ffe_levels: FfeLevels::Ffe0,
+            },
+            TrainingEvent::AllLanesSatisfied {
+                after_iterations: 3,
+            },
         ];
         let trace = TrainingTrace::new(rate, config, events.clone());
         assert_eq!(trace.rate, rate);
