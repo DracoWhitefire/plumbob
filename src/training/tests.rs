@@ -664,4 +664,28 @@ mod trace_tests {
         }));
         assert_eq!(trace.config.flt_ready_timeout, 5);
     }
+
+    #[test]
+    fn training_trace_new_sets_fields() {
+        extern crate std;
+        use crate::trace::TrainingTrace;
+        use display_types::cea861::hdmi_forum::HdmiForumFrl;
+        use std::vec;
+
+        let rate = HdmiForumFrl::Rate6Gbps4Lanes;
+        let config = TrainingConfig::default();
+        let events = vec![
+            TrainingEvent::RateConfigured {
+                rate,
+                ffe_levels: FfeLevels::Ffe0,
+            },
+            TrainingEvent::AllLanesSatisfied {
+                after_iterations: 3,
+            },
+        ];
+        let trace = TrainingTrace::new(rate, config, events.clone());
+        assert_eq!(trace.rate, rate);
+        assert_eq!(trace.config, config);
+        assert_eq!(trace.events, events);
+    }
 }
