@@ -90,3 +90,14 @@ pub struct TrainingTrace {
     /// Ordered event log from phase 1 through the terminal state.
     pub events: Vec<TrainingEvent>,
 }
+
+#[cfg(feature = "alloc")]
+impl TrainingTrace {
+    /// Constructs a `TrainingTrace` from its parts.
+    ///
+    /// This constructor exists so that companion crates (such as `plumbob-async`) can
+    /// produce a `TrainingTrace` despite the struct being `#[non_exhaustive]`.
+    pub fn new(rate: HdmiForumFrl, config: TrainingConfig, events: Vec<TrainingEvent>) -> Self {
+        Self { rate, config, events }
+    }
+}
