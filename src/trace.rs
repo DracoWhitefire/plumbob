@@ -98,6 +98,10 @@ impl TrainingTrace {
     /// This constructor exists so that companion crates (such as `plumbob-async`) can
     /// produce a `TrainingTrace` despite the struct being `#[non_exhaustive]`.
     pub fn new(rate: HdmiForumFrl, config: TrainingConfig, events: Vec<TrainingEvent>) -> Self {
-        Self { rate, config, events }
+        Self {
+            rate,
+            config,
+            events,
+        }
     }
 }
