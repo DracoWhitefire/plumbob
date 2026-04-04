@@ -16,6 +16,12 @@
 - `culvert` integration: `culvert` implements `plumbob::ScdcClient` for `Scdc<T>` via its
   `plumbob` cargo feature
 
+### `plumbob-async`
+
+Async companion crate mirroring `ScdcClient` and `FrlTrainer` with `async fn` methods,
+following the same split as `hdmi-hal` / `hdmi-hal-async`. Shares all data types with
+`plumbob` rather than duplicating them.
+
 ## Planned
 
 ### CED-driven equalization
@@ -33,9 +39,3 @@ that implements `LinkTrainer` is substitutable. The trait surface will be driven
 the DRM/KMS integration needs to call — at minimum, `train_at_rate` and recovery of the
 SCDC client and PHY on completion.
 
-### `plumbob-async`
-
-Async companion crate mirroring `ScdcClient` and `FrlTrainer` with `async fn` methods,
-following the same split as `hdmi-hal` / `hdmi-hal-async`. Shares data types with
-`plumbob` rather than duplicating them. To be implemented when an async consumer (Embassy
-platform backend or async link training) is being built.
