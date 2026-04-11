@@ -5,6 +5,7 @@
 [![docs.rs](https://docs.rs/plumbob/badge.svg)](https://docs.rs/plumbob)
 [![License: MPL-2.0](https://img.shields.io/badge/license-MPL--2.0-blue.svg)](LICENSE)
 [![Rust 1.85+](https://img.shields.io/badge/rustc-1.85+-orange.svg)](https://blog.rust-lang.org/2025/02/20/Rust-1.85.0.html)
+[![SLSA Level 2](https://slsa.dev/images/gh-badge-level2.svg)](https://slsa.dev)
 
 FRL link training state machine for HDMI 2.1.
 
@@ -240,6 +241,20 @@ Any crate that implements `ScdcClient` is substitutable.
 
 - [`doc/architecture.md`](doc/architecture.md) — role, scope, interface boundaries, design
   principles, and the async roadmap
+
+## Verifying releases
+
+Each release is built on GitHub Actions and attested with
+[SLSA Build Level 2](https://slsa.dev) provenance. To verify a release
+`.crate` against its signed provenance, install the
+[GitHub CLI](https://cli.github.com/) and run:
+
+```sh
+gh attestation verify plumbob-X.Y.Z.crate --repo DracoWhitefire/plumbob
+```
+
+The attested `.crate` is attached to each
+[GitHub release](https://github.com/DracoWhitefire/plumbob/releases).
 
 ## License
 
