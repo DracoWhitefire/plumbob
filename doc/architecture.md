@@ -541,6 +541,9 @@ sync API is designed so that adding the async companion requires no changes to t
 - **No unsafe code.** `#![forbid(unsafe_code)]`.
 - **Stable consumer types.** `TrainingOutcome`, `TrainingConfig`, and `TrainingTrace` are
   `#[non_exhaustive]` where appropriate. Callers are insulated from internal expansions.
+- **Attested releases.** Every release is published through a GitHub Actions workflow
+  that signs the `.crate` package with [SLSA Build Level 2](https://slsa.dev) provenance.
+  Verify with `gh attestation verify <file> --repo DracoWhitefire/plumbob`.
 
 ---
 
