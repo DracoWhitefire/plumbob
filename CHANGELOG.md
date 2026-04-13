@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `actions/attest-build-provenance` and verified with
   `gh attestation verify <file> --repo DracoWhitefire/plumbob`.
 
+### Changed
+
+- Updated `hdmi-hal` dependency from `0.3.0` to `0.4.0`.
+
 ## [0.1.2] - 2026-04-04
 
 - `TrainingTrace::new(rate, config, events)` — readded constructor.
