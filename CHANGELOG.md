@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3] - 2026-04-13
+
 ### Added
 
 - **SLSA Build Level 2 provenance** — release artifacts are attested via
