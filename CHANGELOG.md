@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.2.0] - 2026-05-23
+
+### Changed
+
+- **`display-types` updated to 0.4** — tracks DisplayID 2.x support added in `piaf` 0.4.1.
+- **`hdmi-hal` updated to 0.4.1** — aligns with display-types 0.4 across the stack.
+
 ## [0.1.3] - 2026-04-13
 
 ### Added
