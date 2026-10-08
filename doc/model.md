@@ -6,60 +6,52 @@ These types form the vocabulary of `ScdcClient` and the training state machine. 
 defined in plumbob because the state machine reasons in terms of them. SCDC implementations
 convert to them at the impl boundary; the state machine uses them directly.
 
-### `LtpReq`
+### `LtpReq` and `LtpRequests`
 
-The Link Training Pattern requested by the sink, decoded from `Status_Flags_1 bits[7:4]`.
+The link training pattern the sink requests for one lane: a 4-bit field in
+`Status_Flags_1` (lanes 0–1) or `Status_Flags_2` (lanes 2–3).
 
 ```rust
 pub enum LtpReq {
-    None  = 0,  // all lanes satisfied; training loop exits
-    Lfsr0 = 1,
-    Lfsr1 = 2,
-    Lfsr2 = 3,
-    Lfsr3 = 4,
+    None            = 0x0,  // lane trained
+    AllOnes         = 0x1,
+    AllZeros        = 0x2,
+    NyquistClock    = 0x3,
+    DdeCompliance   = 0x4,
+    Lfsr0           = 0x5,
+    Lfsr1           = 0x6,
+    Lfsr2           = 0x7,
+    Lfsr3           = 0x8,
+    FfeChange       = 0xE,
+    RateChange      = 0xF,
 }
+
+pub struct LtpRequests { pub lane0: LtpReq, pub lane1: LtpReq, pub lane2: LtpReq, pub lane3: LtpReq }
 ```
 
-`LtpReq::None` is the terminal condition for phase 4 and never reaches
-`HdmiPhy::send_ltp`. The training loop checks for it explicitly before converting to
-`LtpPattern`. The discriminant values match the raw bit field encoding from the HDMI 2.1
-specification; `From<LtpReq> for LtpPattern` uses `req as u8` directly.
+Values 0x1–0x8 are patterns the PHY drives on that lane; 0x0, 0xE and 0xF are signals to
+the state machine and never reach the PHY. 0x3 (Nyquist clock) is only driven when the
+sink sets `FLT_no_timeout`; otherwise the lane keeps its previous pattern. plumbob tracks
+every lane's pattern and always sends the PHY the full per-lane set. Lane 3 is ignored in 3-lane FRL. Undefined
+values (0x9–0xD) are rejected by the `ScdcClient` implementation as a protocol error.
 
 ### `FfeLevels`
 
-The number of Feed-Forward Equalization levels advertised to the sink in Config_0. Values
-`Ffe0`–`Ffe7` correspond to 0–7 levels. The default is `Ffe0`.
+The highest TxFFE level index the source supports, written to `Config_1` bits 7:4: 0–3 for
+rates up to 12 Gbps, 0–7 above. During LTS:3 each lane's current level starts at 0, rises
+by one for each 0xE request and is held at this value once reached. The default is 0.
 
 ### `FrlConfig`
 
-The configuration written to SCDC Config_0 in phase 1.
+Written to `Config_1` in LTS:2: the FRL rate (bits 3:0) and `FfeLevels` (bits 7:4).
+`HdmiForumFrl::NotSupported` turns FRL off (LTS:L).
 
-```rust
-pub struct FrlConfig {
-    pub rate: HdmiForumFrl,
-    pub ffe_levels: FfeLevels,
-    pub dsc_frl_max: bool,
-}
-```
+### `UpdateFlags` and `SourceTestConfig`
 
-`dsc_frl_max` reflects whether the negotiated configuration requires DSC transport.
-plumbob passes it through from `TrainingConfig` without interpreting it.
-
-### `TrainingStatus`
-
-The subset of SCDC status read on each poll.
-
-```rust
-pub struct TrainingStatus {
-    pub flt_ready: bool,   // sink completed internal preparation (phase 2 exit condition)
-    pub frl_start: bool,   // sink ready for LTP loop (phase 3 exit condition)
-    pub ltp_req:   LtpReq, // sink's current LTP request (phase 4 signal)
-}
-```
-
-`ScdcClient` implementers are responsible for correctly mapping SCDC register bits to
-these fields. plumbob trusts the returned values without re-validation. See the
-`ScdcClient` trait documentation for the full contract.
+The `Update_0` flags the state machine reads and clears (`source_test_update`, `frl_start`,
+`flt_update`), and the `Source_Test_Configuration` field it honours (`flt_no_timeout`).
+Other `Update_0` and `Source_Test_Configuration` fields are not part of training and stay
+in the SCDC implementation.
 
 ### `CedCount` and `CedCounters`
 
@@ -70,9 +62,9 @@ value is a validity flag; `CedCount::new` masks it off:
 CedCount::new(raw) // stores raw & 0x7FFF
 ```
 
-`CedCounters` holds one `Option<CedCount>` per lane. `None` means the validity bit was
-not set in the hardware register. Implementers of `ScdcClient::read_ced` are responsible
-for this mapping. `lane3` is always `None` in 3-lane FRL mode.
+`CedCounters` holds one `Option<CedCount>` per lane. `None` means the validity bit was not
+set. They are diagnostics; the training procedure does not consume them. `lane3` is
+`None` in 3-lane FRL mode.
 
 ---
 
@@ -84,16 +76,16 @@ Per-attempt configuration, constructed via `Default` and overridden as needed:
 
 | Field | Default | Meaning |
 |---|---|---|
-| `ffe_levels` | `Ffe0` | FFE levels advertised in Config_0 |
-| `dsc_frl_max` | `false` | Set DSC_FRL_Max flag in Config_0 |
-| `flt_ready_timeout` | `1000` | Max polls in phase 2 |
-| `frl_start_timeout` | `1000` | Max polls in phase 3 |
-| `ltp_timeout` | `1000` | Max iterations in phase 4 |
+| `ffe_levels` | `0` | Highest TxFFE level advertised in `Config_1` (limited per rate) |
+| `flt_ready_polls` | `50` | Poll limit for `FLT_ready` in LTS:2 (100 ms at 2 ms/poll) |
+| `ltp_polls` | `100` | Poll limit for LTS:3 (200 ms at 2 ms/poll) |
+| `frl_start_polls` | `125` | Poll limit for `FRL_start` in LTS:P (250 ms at 2 ms/poll) |
+| `no_timeout_poll_cap` | `100_000` | Hard cap on polls while the sink sets `FLT_no_timeout` |
 
-All timeout values are exact iteration counts: a value of N means exactly N polls are
-attempted before the phase gives up (not N−1). The default of 1000 is a reasonable
-starting point but is not tuned for any specific hardware; callers should adjust based on
-their polling cadence and inter-poll delay.
+Poll limits are exact counts: N means exactly N polls before the state gives up. The
+defaults reproduce the spec's 100 ms and 200 ms timeouts (and the Xilinx driver's 250 ms
+`FRL_start` wait) at one poll every 2 ms; callers polling at a different cadence should
+scale them.
 
 `TrainingConfig` is `#[non_exhaustive]` and derives `Clone` and `Copy`.
 
@@ -101,16 +93,19 @@ their polling cadence and inter-poll delay.
 
 These are distinct result types representing different failure modes:
 
-- **`TrainingOutcome::FallbackRequired`** — the link did not converge at this rate within
-  the configured timeouts. This is a normal protocol outcome; the caller should retry at
-  a lower rate or fall back to TMDS.
+- **`TrainingOutcome::FallbackRequired { reason }`** — training did not succeed at any of
+  the rates passed in. `reason` says why: `FltReadyTimeout`, `TrainingTimeout` or
+  `FrlStartTimeout` (a poll limit expired in LTS:2, LTS:3 or LTS:P), or `RatesExhausted`
+  (the sink kept requesting a lower rate past the end of the list). `FallbackReason` is
+  `#[non_exhaustive]`. A sink's request for a lower rate within the list is not an
+  outcome: `train` steps down (LTS:4) and continues.
 - **`TrainingError::Scdc(e)` / `TrainingError::Phy(e)`** — a hard I/O failure from the
   SCDC client or PHY. Something failed at the transport level, unrelated to whether the
   link could have trained at this rate.
 
-This distinction matters for diagnostics: a `FallbackRequired` chain ending in TMDS is an
-expected training outcome on marginal hardware; a `TrainingError` means the bus or PHY
-needs attention.
+`FallbackRequired` always leaves the sink in TMDS (LTS:L). This distinction matters for
+diagnostics: an outcome chain ending in TMDS is expected on marginal hardware; a
+`TrainingError` means the bus or PHY needs attention.
 
 ---
 
@@ -121,19 +116,10 @@ defines its own register-layer types (`culvert::LtpReq`, `culvert::FfeLevels`, e
 the output of SCDC register decoding. The two sets are structurally identical but exist at
 different layers and can evolve independently.
 
-When `culvert` implements `plumbob::ScdcClient` (via its `plumbob` cargo feature), it
-converts at the impl boundary:
-
-```rust
-fn read_training_status(&mut self) -> Result<plumbob::TrainingStatus, ...> {
-    let flags = self.read_status_flags()?;
-    Ok(plumbob::TrainingStatus {
-        flt_ready: flags.flt_ready,
-        frl_start: flags.frl_start,
-        ltp_req: flags.ltp_req.into(), // culvert::LtpReq → plumbob::LtpReq
-    })
-}
-```
+When `culvert` implements `plumbob::ScdcClient` (via its `plumbob` cargo feature), each
+trait method calls one culvert method and converts culvert's type to plumbob's at the impl
+boundary (`culvert::LtpRequests` → `plumbob::LtpRequests`, `culvert::UpdateFlags` →
+`plumbob::UpdateFlags`, and so on).
 
 The `From` impls between corresponding types live in a feature-gated module in `culvert`.
 `culvert`'s own types are unchanged; the conversion is confined to the impl. This keeps
