@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **`display-types` updated to 0.4** — tracks DisplayID 2.x support added in `piaf` 0.4.1.
+- **`hdmi-hal` updated to 0.4.1** — aligns with display-types 0.4 across the stack.
+
 ### Internal
 
 - **Automated publish can be triggered by `release-tag`** — `publish.yml` gains a
@@ -14,13 +19,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   workflows, so `release-tag`'s "Trigger publish workflow" step
   (`gh workflow run publish.yml`) could not start a publish run. Dispatches against a
   non-tag ref (e.g. `main`) are skipped, so they cannot publish or create a release.
-
-## [0.2.0] - 2026-05-23
-
-### Changed
-
-- **`display-types` updated to 0.4** — tracks DisplayID 2.x support added in `piaf` 0.4.1.
-- **`hdmi-hal` updated to 0.4.1** — aligns with display-types 0.4 across the stack.
 
 ## [0.1.3] - 2026-04-13
 
