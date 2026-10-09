@@ -3,7 +3,10 @@ use std::vec::Vec;
 
 use super::sim::{PhyCall, PhyOp, SimPhy, SimSink, SinkCall, SinkOp, all};
 use super::*;
+use crate::lts::{FLT_UPDATE, FRL_START, Lanes, SOURCE_TEST_UPDATE, uniform};
+use crate::types::LtpReq;
 use crate::types::SourceTestConfig;
+use hdmi_hal::phy::LtpPattern;
 
 const RATE: HdmiForumFrl = HdmiForumFrl::Rate6Gbps4Lanes;
 
@@ -1154,4 +1157,13 @@ mod traced {
         assert_eq!(trace.config, ffe_3());
         assert_eq!(trace.events, events);
     }
+}
+
+// --- The sync driver
+
+#[test]
+#[should_panic(expected = "plumbob's sync training waited on I/O")]
+fn the_sync_driver_rejects_a_future_that_waits() {
+    // The same output type as the trainer tests' runs, so the check is on that path.
+    let _ = ready::<Result<TrainingOutcome, TrainingError<(), ()>>>(Poll::Pending);
 }

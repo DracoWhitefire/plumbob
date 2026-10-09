@@ -17,6 +17,7 @@
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
+pub mod lts;
 mod scdc;
 mod trace;
 mod training;
@@ -28,5 +29,6 @@ pub use types::{
     CedCount, CedCounters, FfeLevels, FrlConfig, LtpReq, LtpRequests, SourceTestConfig, UpdateFlags,
 };
 
+pub use trace::TrainingEvent;
 #[cfg(feature = "alloc")]
-pub use trace::{TrainingEvent, TrainingTrace};
+pub use trace::TrainingTrace;
