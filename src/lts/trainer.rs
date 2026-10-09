@@ -286,7 +286,8 @@ impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
         rates: &[HdmiForumFrl],
         config: &TrainingConfig,
     ) -> Result<TrainingOutcome, Error<C, P>> {
-        let Some(&rate) = rates.first() else {
+        let mut rates = rates.iter().copied();
+        let Some(rate) = rates.next() else {
             return Ok(TrainingOutcome::FallbackRequired {
                 reason: FallbackReason::RatesExhausted,
             });
@@ -302,15 +303,17 @@ impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
                 State::Prepare => self.prepare(&mut attempt, config)?,
                 State::Train => self.train_lanes(&mut attempt, config)?,
                 State::Pass => self.pass(&attempt, config)?,
-                // Stepping down through `rates` is not implemented yet: with a single
-                // rate, a lower-rate request exhausts the list.
-                State::LowerRate => State::Fallback(FallbackReason::RatesExhausted),
+                State::LowerRate => match rates.next() {
+                    Some(next) => self.lower_rate(&mut attempt, next, config)?,
+                    None => State::Fallback(FallbackReason::RatesExhausted),
+                },
                 State::Success => {
                     return Ok(TrainingOutcome::Success {
                         achieved_rate: attempt.rate,
                     });
                 }
                 State::Fallback(reason) => {
+                    self.exit_to_tmds()?;
                     return Ok(TrainingOutcome::FallbackRequired { reason });
                 }
             };
@@ -412,6 +415,50 @@ impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
             }
         }
         Ok(State::Fallback(FallbackReason::FrlStartTimeout))
+    }
+
+    /// LTS:4: continue training at `rate`, the next one in the list. The sink stays in
+    /// FRL; `FLT_ready` is not awaited again.
+    fn lower_rate(
+        &mut self,
+        attempt: &mut Attempt,
+        rate: HdmiForumFrl,
+        config: &TrainingConfig,
+    ) -> Result<State, Error<C, P>> {
+        self.send_ltp(LanePatterns::default())?;
+
+        attempt.rate = rate;
+        attempt.lanes = Lanes::new(rate);
+        self.adjust_equalization(attempt.lanes.eq_params())?;
+        self.phy.set_frl_rate(rate).map_err(TrainingError::Phy)?;
+        self.clear(FLT_UPDATE)?;
+        self.scdc
+            .write_frl_config(FrlConfig {
+                rate,
+                ffe_levels: config.ffe_levels.limited_to(rate),
+            })
+            .map_err(TrainingError::Scdc)?;
+        Ok(State::Train)
+    }
+
+    /// LTS:L: leave both ends in TMDS. Stops the training patterns, returns the PHY to
+    /// TMDS, turns FRL off in `Config_1` and clears `FLT_update` if it is set, so a failed
+    /// attempt never leaves the sink configured for a rate the source is not driving.
+    fn exit_to_tmds(&mut self) -> Result<(), Error<C, P>> {
+        self.send_ltp(LanePatterns::default())?;
+        self.phy
+            .set_frl_rate(HdmiForumFrl::NotSupported)
+            .map_err(TrainingError::Phy)?;
+        self.scdc
+            .write_frl_config(FrlConfig {
+                rate: HdmiForumFrl::NotSupported,
+                ffe_levels: FfeLevels::default(),
+            })
+            .map_err(TrainingError::Scdc)?;
+        if self.read_update_flags()?.flt_update {
+            self.clear(FLT_UPDATE)?;
+        }
+        Ok(())
     }
 
     /// Polls `FLT_ready` up to `limit` times. Returns whether it asserted.

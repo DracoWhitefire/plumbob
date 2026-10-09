@@ -408,10 +408,10 @@ fn training_timeout_after_exactly_the_poll_limit() {
     let sink = SimSink::new().flt_ready_after(0);
     let (outcome, sink, _) = run(sink, &[RATE], &config);
     assert_eq!(outcome, fallback(FallbackReason::TrainingTimeout));
-    // One read in LTS:2, then exactly the limit in LTS:3.
+    // One read in LTS:2, exactly the limit in LTS:3, then LTS:L's read.
     assert_eq!(
         count(&sink, |c| matches!(c, SinkCall::ReadUpdateFlags(_))),
-        1 + 7
+        1 + 7 + 1
     );
 }
 
@@ -432,12 +432,188 @@ fn polls_that_see_an_update_count_towards_the_limit() {
 }
 
 #[test]
-fn all_rate_change_with_one_rate_exhausts_the_list() {
+fn all_rate_change_on_the_last_rate_exhausts_the_list() {
     let sink = SimSink::new()
         .flt_ready_after(0)
         .round(0, all(LtpReq::RateChange));
     let (outcome, _, _) = run(sink, &[RATE], &TrainingConfig::default());
     assert_eq!(outcome, fallback(FallbackReason::RatesExhausted));
+}
+
+// --- LTS:4
+
+const R12: HdmiForumFrl = HdmiForumFrl::Rate12Gbps4Lanes;
+const R10: HdmiForumFrl = HdmiForumFrl::Rate10Gbps4Lanes;
+
+fn frl_configs(sink: &SimSink) -> Vec<HdmiForumFrl> {
+    sink.calls
+        .iter()
+        .filter_map(|call| match call {
+            SinkCall::WriteFrlConfig(config) => Some(config.rate),
+            _ => None,
+        })
+        .collect()
+}
+
+fn phy_rates(phy: &SimPhy) -> Vec<HdmiForumFrl> {
+    phy.calls
+        .iter()
+        .filter_map(|call| match call {
+            PhyCall::SetFrlRate(rate) => Some(*rate),
+            _ => None,
+        })
+        .collect()
+}
+
+#[test]
+fn a_rate_change_steps_down_to_the_next_rate() {
+    let sink = SimSink::new()
+        .flt_ready_after(0)
+        .round(0, all(LtpReq::RateChange))
+        .round(0, all(LtpReq::Lfsr0))
+        .round(0, all(LtpReq::None))
+        .frl_start_after(0);
+    let (outcome, sink, phy) = run(sink, &[R12, R10], &TrainingConfig::default());
+    assert_eq!(outcome, TrainingOutcome::Success { achieved_rate: R10 });
+    assert_eq!(frl_configs(&sink), [R12, R10]);
+    assert_eq!(phy_rates(&phy), [R12, R10]);
+    // FLT_ready is awaited only in LTS:2.
+    assert_eq!(count(&sink, |c| matches!(c, SinkCall::ReadFltReady(_))), 1);
+}
+
+#[test]
+fn a_rate_change_resets_the_lanes() {
+    let config = TrainingConfig {
+        ffe_levels: FfeLevels::new(3).unwrap(),
+        ..TrainingConfig::default()
+    };
+    let sink = SimSink::new()
+        .flt_ready_after(0)
+        .round(0, all(LtpReq::Lfsr0))
+        .round(0, all(LtpReq::FfeChange))
+        .round(0, all(LtpReq::RateChange))
+        .round(
+            0,
+            requests(LtpReq::Lfsr1, LtpReq::None, LtpReq::None, LtpReq::None),
+        )
+        .round(0, all(LtpReq::None))
+        .frl_start_after(0);
+    let (_, _, phy) = run(sink, &[R12, R10], &config);
+    // Raised to 1 at 12 Gbps, then reset to 0 for 10 Gbps.
+    assert_eq!(levels_sent(&phy), [[1, 1, 1, 1], [0, 0, 0, 0]]);
+    let sent = ltp_sent(&phy);
+    // LTS:4 stops the patterns; at the new rate only lane 0 has one.
+    assert_eq!(sent[2], LanePatterns::default());
+    assert_eq!(sent[3], patterns(Some(LtpPattern::Lfsr1), None, None, None));
+}
+
+#[test]
+fn a_rate_change_can_move_to_three_lanes() {
+    let rate = HdmiForumFrl::Rate6Gbps3Lanes;
+    let sink = SimSink::new()
+        .flt_ready_after(0)
+        .round(0, all(LtpReq::RateChange))
+        .round(0, all(LtpReq::Lfsr2))
+        .round(
+            0,
+            requests(LtpReq::None, LtpReq::None, LtpReq::None, LtpReq::Lfsr3),
+        )
+        .frl_start_after(0);
+    let (outcome, _, phy) = run(sink, &[RATE, rate], &TrainingConfig::default());
+    assert_eq!(
+        outcome,
+        TrainingOutcome::Success {
+            achieved_rate: rate
+        }
+    );
+    let lfsr2 = Some(LtpPattern::Lfsr2);
+    assert_eq!(ltp_sent(&phy)[1], patterns(lfsr2, lfsr2, lfsr2, None));
+}
+
+#[test]
+fn each_rate_gets_a_fresh_poll_limit() {
+    let config = TrainingConfig {
+        ltp_polls: 3,
+        ..TrainingConfig::default()
+    };
+    let sink = SimSink::new()
+        .flt_ready_after(0)
+        .round(2, all(LtpReq::RateChange))
+        .round(2, all(LtpReq::None))
+        .frl_start_after(0);
+    let (outcome, _, _) = run(sink, &[R12, R10], &config);
+    assert_eq!(outcome, TrainingOutcome::Success { achieved_rate: R10 });
+}
+
+#[test]
+fn rate_changes_past_the_end_of_the_list_exhaust_it() {
+    let sink = SimSink::new()
+        .flt_ready_after(0)
+        .round(0, all(LtpReq::RateChange))
+        .round(0, all(LtpReq::RateChange));
+    let (outcome, sink, phy) = run(sink, &[R12, R10], &TrainingConfig::default());
+    assert_eq!(outcome, fallback(FallbackReason::RatesExhausted));
+    assert_eq!(frl_configs(&sink), [R12, R10, HdmiForumFrl::NotSupported]);
+    assert_eq!(phy_rates(&phy), [R12, R10, HdmiForumFrl::NotSupported]);
+}
+
+// --- LTS:L
+
+#[test]
+fn a_fallback_returns_both_ends_to_tmds() {
+    let (outcome, sink, phy) = run(SimSink::new(), &[RATE], &TrainingConfig::default());
+    assert_eq!(outcome, fallback(FallbackReason::FltReadyTimeout));
+    assert_eq!(
+        phy.calls,
+        [
+            PhyCall::SendLtp(LanePatterns::default()),
+            PhyCall::SetFrlRate(HdmiForumFrl::NotSupported),
+        ]
+    );
+    assert_eq!(
+        sink.calls[sink.calls.len() - 2..],
+        [
+            SinkCall::WriteFrlConfig(FrlConfig {
+                rate: HdmiForumFrl::NotSupported,
+                ffe_levels: FfeLevels::default(),
+            }),
+            // FLT_update is not set, so it is not cleared.
+            SinkCall::ReadUpdateFlags(NO_FLAGS),
+        ]
+    );
+}
+
+#[test]
+fn a_fallback_clears_a_pending_flt_update() {
+    // The final RateChange is not serviced in LTS:3, so FLT_update is still set.
+    let sink = SimSink::new()
+        .flt_ready_after(0)
+        .round(0, all(LtpReq::RateChange));
+    let (outcome, sink, _) = run(sink, &[RATE], &TrainingConfig::default());
+    assert_eq!(outcome, fallback(FallbackReason::RatesExhausted));
+    assert_eq!(
+        sink.calls.last(),
+        Some(&SinkCall::ClearUpdateFlags(FLT_UPDATE))
+    );
+}
+
+#[test]
+fn every_timeout_ends_in_tmds() {
+    let config = TrainingConfig {
+        ltp_polls: 2,
+        frl_start_polls: 2,
+        ..TrainingConfig::default()
+    };
+    let flt_ready = SimSink::new();
+    let training = SimSink::new().flt_ready_after(0);
+    let frl_start = SimSink::new()
+        .flt_ready_after(0)
+        .round(0, all(LtpReq::None));
+    for sink in [flt_ready, training, frl_start] {
+        let (_, sink, phy) = run(sink, &[RATE], &config);
+        assert_eq!(frl_configs(&sink).last(), Some(&HdmiForumFrl::NotSupported));
+        assert_eq!(phy_rates(&phy).last(), Some(&HdmiForumFrl::NotSupported));
+    }
 }
 
 // --- FLT_no_timeout
@@ -515,10 +691,10 @@ fn frl_start_timeout_after_exactly_the_poll_limit() {
         .round(0, all(LtpReq::None));
     let (outcome, sink, _) = run(sink, &[RATE], &config);
     assert_eq!(outcome, fallback(FallbackReason::FrlStartTimeout));
-    // One read in LTS:2, one in LTS:3, then exactly the limit in LTS:P.
+    // One read in LTS:2, one in LTS:3, exactly the limit in LTS:P, then LTS:L's read.
     assert_eq!(
         count(&sink, |c| matches!(c, SinkCall::ReadUpdateFlags(_))),
-        1 + 1 + 4
+        1 + 1 + 4 + 1
     );
 }
 
