@@ -69,7 +69,8 @@ hdmi-hal       ─┴─►  plumbob  ◄─  culvert (implements ScdcClient, fe
                                ◄─  integration layer (defines LinkTrainer, plumbob implements it)
 ```
 
-- `hdmi-hal` — `HdmiPhy`, `EqParams`
+- `hdmi-hal` — `HdmiPhy`, `LanePatterns`, `LtpPattern`, `FrlOutput`, `EqParams`,
+  `LaneEqParams`, `TxFfeLevel`
 - `display-types` — `HdmiForumFrl`
 
 plumbob does not depend on `culvert`. The relationship runs the other way: culvert
@@ -299,11 +300,17 @@ impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
     /// `train(&[rate], config)`.
     pub fn train_at_rate(&mut self, rate: HdmiForumFrl, config: &TrainingConfig)
         -> Result<TrainingOutcome, TrainingError<C::Error, P::Error>>;
-    // `train_traced` / `train_at_rate_traced` (alloc), `new`, `into_parts` as before.
+    /// `train` and `train_at_rate`, also returning a `TrainingTrace` (alloc).
+    pub fn train_traced(&mut self, rates: &[HdmiForumFrl], config: &TrainingConfig)
+        -> Result<(TrainingOutcome, TrainingTrace), TrainingError<C::Error, P::Error>>;
+    pub fn train_at_rate_traced(&mut self, rate: HdmiForumFrl, config: &TrainingConfig)
+        -> Result<(TrainingOutcome, TrainingTrace), TrainingError<C::Error, P::Error>>;
+    // `new` and `into_parts` construct the trainer and recover the client and PHY.
 }
-```
 
-`TrainingError` keeps its current shape.
+/// A hard I/O failure, kept separate from the protocol outcome.
+pub enum TrainingError<ScdcErr, PhyErr> { Scdc(ScdcErr), Phy(PhyErr) }
+```
 
 ---
 
@@ -505,29 +512,26 @@ sync API is designed so that adding the async companion requires no changes to t
 
 ---
 
-## Requirements on hdmi-hal
+## What plumbob uses from hdmi-hal
 
-The procedure above needs these changes in `hdmi-hal`, mirrored in `hdmi-hal-async` and
-reflected in `hdmi-hal-i2c-dev`'s `StubPhy`:
+The procedure above relies on these parts of `hdmi-hal` (mirrored in `hdmi-hal-async`,
+and recorded by `hdmi-hal-i2c-dev`'s `StubPhy`):
 
-- **`LtpPattern` with the spec values.** The current documentation maps 1–4 to LFSR 0–3;
-  per the HDMI 2.1 implementations above, 1 = all ones, 2 = all zeros, 3 = Nyquist clock,
-  4 = DDE compliance and 5–8 = LFSR 0–3.
-- **Per-lane patterns.** `HdmiPhy::send_ltp` takes the full per-lane set (e.g.
-  `LanePatterns` with an `Option<LtpPattern>` per lane, `None` meaning no pattern on that
+- **`LtpPattern` with the spec values**: 1 = all ones, 2 = all zeros, 3 = Nyquist clock,
+  4 = DDE compliance and 5–8 = LFSR 0–3. `LtpReq::pattern` maps a request to the pattern
+  of the same value.
+- **Per-lane patterns.** `HdmiPhy::send_ltp` takes the full per-lane set
+  (`LanePatterns`, an `Option<LtpPattern>` per lane, `None` meaning no pattern on that
   lane). The PHY applies the set as given; plumbob tracks which pattern each lane carries.
-- **Per-lane TxFFE level.** `LaneEqParams` gains a TxFFE level (0–7), applied through
-  `HdmiPhy::adjust_equalization`.
-- **FRL output mode on `HdmiPhy`.** `set_frl_output(FrlOutput)` with `GapOnly` (during
-  training and LTS:P) and `Active` (video, data islands and control, set by the caller
-  after `Success`). It sits on `HdmiPhy` because both plumbob and the integration layer
-  drive it, which meets hdmi-hal's bar of a contract shared by several crates, and because
-  `HdmiPhy` already carries link-level operations (`set_scrambling`, `send_ltp`).
-  `HdmiPhy`'s documentation should say that it covers the transmitter's link-level FRL
-  and TMDS behaviour as well as analog lane configuration.
-- **Optional: block reads on `ScdcTransport`.** A `read_block` default method built on
-  single-byte reads keeps existing transports working and lets capable ones read
-  `Status_Flags_1/2` (and the CED block) in one transaction.
+- **Per-lane TxFFE levels.** `LaneEqParams::tx_ffe_level` (a `TxFfeLevel`, 0–7), applied
+  through `HdmiPhy::adjust_equalization`.
+- **FRL output mode on `HdmiPhy`.** `set_frl_output(FrlOutput)`: plumbob sets `GapOnly`
+  during training and LTS:P, and the caller sets `Active` (video, data islands and
+  control) after `Success`. It sits on `HdmiPhy` because both plumbob and the integration
+  layer drive it, and because `HdmiPhy` already carries link-level operations
+  (`set_scrambling`, `send_ltp`).
+- **Block reads on `ScdcTransport`.** `read_block` lets an SCDC implementation read
+  `Status_Flags_1/2` (and the CED block) in one transaction when its transport can.
 
 ## Decisions
 
@@ -540,3 +544,9 @@ reflected in `hdmi-hal-i2c-dev`'s `StubPhy`:
 - A Nyquist clock request (0x3) without `FLT_no_timeout` leaves the lane's previous pattern
   in place; plumbob tracks and sends the full per-lane set.
 - FRL output control (`set_frl_output`) is part of `HdmiPhy`.
+- In LTS:P, `FRL_start` is checked before `FLT_update` when both are set.
+- Retraining from LTS:P keeps each lane's pattern and TxFFE level and starts LTS:3 with a
+  fresh poll limit; levels are reset only in LTS:2 and LTS:4.
+- A 0xF on some lanes but not all keeps those lanes' state, like 0x0; only 0xF on every
+  active lane lowers the rate.
+- The state machine does not call `read_ced`; CED counters are diagnostics.
