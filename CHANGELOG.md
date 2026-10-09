@@ -58,6 +58,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Retraining from LTS:P** — a `FLT_update` before `FRL_start` returns to LTS:3, up to
   `TrainingConfig::max_retrains` times per call (default 3); the next request ends the
   attempt with `RetrainsExhausted`, so training always terminates.
+- **`plumbob::lts`** — the state machine as one I/O-free `async fn`, `lts::run`, over
+  the `TrainingIo` trait (the SCDC and PHY operations training performs). `FrlTrainer`
+  drives it synchronously without an async runtime (one poll with `Waker::noop`), and
+  `plumbob-async` drives the same function asynchronously, so the two cannot drift.
+  Implementing `TrainingIo` drives training from any other environment.
+- **`TrainingEvent` is available without the `alloc` feature**, for `lts::run`'s event
+  callback; only `TrainingTrace` and the traced methods need `alloc`.
 - `LtpRequests`, `UpdateFlags` and `SourceTestConfig` — the per-lane requests, the
   `Update_0` flags and the `Source_Test_Configuration` field the state machine uses.
 

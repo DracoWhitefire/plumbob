@@ -30,6 +30,8 @@ plumbob covers:
   on the sink's request and LTS:L (exit to TMDS) on failure, per HDMI 2.1 §6,
 - `ScdcClient`: the typed SCDC interface trait, defined here and implemented by SCDC crates,
 - `FrlTrainer<C, P>`: the central type, owning an `ScdcClient` and a PHY,
+- `lts`: the state machine as one I/O-free `async fn` (`lts::run`) over the `TrainingIo`
+  trait, which `FrlTrainer` drives synchronously and `plumbob-async` asynchronously,
 - `TrainingOutcome`: the result of a training attempt (`Success`, or `FallbackRequired`
   with a `FallbackReason`),
 - `TrainingConfig`: per-attempt configuration (maximum FFE level, poll limits),
@@ -486,11 +488,46 @@ a convenience for targets where it is available and for host-side tooling.
 
 **Async**
 
-The sync `ScdcClient` trait is blocking. Async link training follows the same pattern as
-`hdmi-hal` / `hdmi-hal-async`: a companion crate `plumbob-async` will mirror `ScdcClient`
-and `FrlTrainer` with `async fn` methods, depend on `plumbob` for shared data types, and
-be implemented against `culvert-async`. This is out of scope for the current phase; the
-sync API is designed so that adding the async companion requires no changes to this crate.
+The state machine is one `async fn`, `lts::run` (see below), so async link training needs
+no second implementation. `plumbob-async` defines an async `ScdcClient` and an async
+`FrlTrainer` that drives `lts::run` over async I/O, and depends on `plumbob` for the state
+machine and all shared types; `culvert-async` implements its `ScdcClient`. See the stack
+design document's "Sync and Async Companions" section for why the core lives here.
+
+### `plumbob::lts`
+
+```rust
+pub trait TrainingIo {
+    type ScdcError;
+    type PhyError;
+    // The SCDC operations of `ScdcClient` that training uses (all but `read_ced`) and the
+    // four `HdmiPhy` operations, as `async fn`s.
+    async fn read_flt_ready(&mut self) -> Result<bool, Self::ScdcError>;
+    async fn send_ltp(&mut self, patterns: LanePatterns) -> Result<(), Self::PhyError>;
+    // …
+}
+
+pub async fn run<Io: TrainingIo, F: FnMut(TrainingEvent)>(
+    io: &mut Io,
+    rates: &[HdmiForumFrl],
+    config: &TrainingConfig,
+    record: &mut F,
+) -> Result<TrainingOutcome, TrainingError<Io::ScdcError, Io::PhyError>>;
+```
+
+`run` is the procedure described above: the same outcomes, errors and `TrainingEvent`s,
+with no I/O of its own. Drivers supply the I/O:
+
+- **`FrlTrainer` (sync).** An adapter implements `TrainingIo` over the trainer's
+  `ScdcClient` and `HdmiPhy`; each method is the sync call itself, so its future is ready
+  when first polled. The trainer polls `run` once with `core::task::Waker::noop()` (stable
+  since Rust 1.85, plumbob's MSRV) and it completes: no executor, no runtime, `no_std`.
+  A `Pending` there would be a plumbob bug and panics.
+- **`plumbob-async`.** An adapter over async `ScdcClient` and `HdmiPhy` implementations,
+  `.await`ing `run`.
+
+`TrainingIo`'s futures are not required to be `Send`, as in `hdmi-hal-async`: the targets
+are single-threaded executors and the sync driver.
 
 ---
 
@@ -504,6 +541,9 @@ sync API is designed so that adding the async companion requires no changes to t
   simulated `ScdcClient` and real hardware. Implement `ScdcClient` with a register
   array, pre-load it with the values a sink would produce at each phase, run the state
   machine, assert on the outcome. No hardware required for any test.
+- **One implementation, sync and async.** The state machine is written once, as an
+  I/O-free `async fn`; the sync and async trainers only supply the I/O. A fix to the
+  procedure reaches both.
 - **State machine, not scattered logic.** The link training states are an explicit
   sequence. State transitions are clear, terminal states are explicit, and every exit
   point produces a typed result and leaves the sink in a defined state. No implicit

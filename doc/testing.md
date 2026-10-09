@@ -67,6 +67,12 @@ The `alloc`-gated tests exercise `train_traced` and `train_at_rate_traced` and a
   are interpretable against the configured limits
 - Traced and untraced runs agreeing on the outcome
 
+### The sync driver
+
+The state machine tests run through `FrlTrainer`, so they exercise `lts::run` driven
+synchronously. One more test checks the driver's guard: a future that is still pending
+after one poll — impossible over the sync adapter — panics rather than being dropped.
+
 ## Coverage
 
 CI measures line coverage with `cargo-llvm-cov` over the `std` feature set. The baseline

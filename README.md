@@ -196,12 +196,22 @@ one in LTS:3 means lanes did not converge (signal integrity or equalization); on
 LTS:P means training passed but the sink never released the link. Every
 `FallbackRequired` trace ends with `ExitedToTmds`.
 
+## Async and custom drivers
+
+The state machine is written once, as `plumbob::lts::run`: an `async fn` over the
+`TrainingIo` trait (the SCDC and PHY operations training performs), which does no I/O of
+its own. `FrlTrainer` drives it synchronously over an `ScdcClient` and an `HdmiPhy`, with
+no async runtime: its I/O completes immediately, so the function never waits.
+[`plumbob-async`](https://crates.io/crates/plumbob-async) drives the same function over
+async I/O, so sync and async training cannot drift apart. Implementing `TrainingIo`
+yourself drives it from any other environment.
+
 ## Features
 
 | Feature | Default | Description |
 |---------|---------|-------------|
 | `std`   | no      | Implies `alloc`; no additional API surface |
-| `alloc` | no      | Enables `TrainingTrace`, `TrainingEvent`, `train_traced` and `train_at_rate_traced` |
+| `alloc` | no      | Enables `TrainingTrace`, `train_traced` and `train_at_rate_traced` |
 
 No features are enabled by default. The bare crate provides the full training state
 machine without an allocator.
