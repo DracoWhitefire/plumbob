@@ -471,6 +471,8 @@ The full training state machine is available. `FrlTrainer<C, P>` is stack-alloca
 `TrainingConfig`, `TrainingOutcome`, `TrainingError`, and all owned protocol types
 (`LtpReq`, `LtpRequests`, `FfeLevels`, `UpdateFlags`, `CedCounters`, …) are stack-allocated. No heap
 use anywhere in the training loop. This tier covers bare-metal and firmware targets.
+CI builds this tier and the `alloc` tier for `thumbv7em-none-eabi`, a target without
+`std`.
 
 **`no_std` + `alloc` feature**
 
