@@ -326,15 +326,16 @@ fn error_send_ltp() {
 
 #[test]
 fn send_ltp_correct_pattern_per_ltp_req() {
-    // Verify the From<LtpReq> → LtpPattern mapping: each LFSR variant
-    // must produce the corresponding raw pattern index (1–4).
-    let cases: &[(LtpReq, u8)] = &[
-        (LtpReq::Lfsr0, 1),
-        (LtpReq::Lfsr1, 2),
-        (LtpReq::Lfsr2, 3),
-        (LtpReq::Lfsr3, 4),
+    // Each LFSR request is driven as the LFSR pattern of the same name, on
+    // every lane.
+    use hdmi_hal::phy::{LanePatterns, LtpPattern};
+    let cases: &[(LtpReq, LtpPattern)] = &[
+        (LtpReq::Lfsr0, LtpPattern::Lfsr0),
+        (LtpReq::Lfsr1, LtpPattern::Lfsr1),
+        (LtpReq::Lfsr2, LtpPattern::Lfsr2),
+        (LtpReq::Lfsr3, LtpPattern::Lfsr3),
     ];
-    for &(req, expected_raw) in cases {
+    for &(req, expected) in cases {
         let mut scdc = SimScdc::new();
         scdc.push(flt_ready());
         scdc.push(frl_started());
@@ -348,9 +349,14 @@ fn send_ltp_correct_pattern_per_ltp_req() {
         let (_, phy) = trainer.into_parts();
 
         assert_eq!(
-            phy.last_ltp.unwrap().value(),
-            expected_raw,
-            "LtpReq variant produced wrong LtpPattern raw value"
+            phy.last_ltp,
+            Some(LanePatterns {
+                lane0: Some(expected),
+                lane1: Some(expected),
+                lane2: Some(expected),
+                lane3: Some(expected),
+            }),
+            "LtpReq variant produced wrong LtpPattern"
         );
     }
 }
@@ -433,6 +439,14 @@ fn mock_phy_adjust_equalization_always_succeeds() {
     use hdmi_hal::phy::{EqParams, HdmiPhy};
     let mut phy = MockPhy::new();
     assert!(phy.adjust_equalization(EqParams::default()).is_ok());
+}
+
+#[test]
+fn mock_phy_set_frl_output_always_succeeds() {
+    use hdmi_hal::phy::{FrlOutput, HdmiPhy};
+    let mut phy = MockPhy::new();
+    assert!(phy.set_frl_output(FrlOutput::GapOnly).is_ok());
+    assert!(phy.set_frl_output(FrlOutput::Active).is_ok());
 }
 
 #[test]

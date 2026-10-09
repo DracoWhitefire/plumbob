@@ -1,5 +1,5 @@
 use display_types::cea861::hdmi_forum::HdmiForumFrl;
-use hdmi_hal::phy::HdmiPhy;
+use hdmi_hal::phy::{HdmiPhy, LanePatterns, LtpPattern};
 
 #[cfg(feature = "alloc")]
 use alloc::vec::Vec;
@@ -273,8 +273,14 @@ impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
                 last_ltp = Some(status.ltp_req);
             }
             let _ced = self.scdc.read_ced().map_err(TrainingError::Scdc)?;
+            let pattern: Option<LtpPattern> = status.ltp_req.into();
             self.phy
-                .send_ltp(status.ltp_req.into())
+                .send_ltp(LanePatterns {
+                    lane0: pattern,
+                    lane1: pattern,
+                    lane2: pattern,
+                    lane3: pattern,
+                })
                 .map_err(TrainingError::Phy)?;
             i += 1;
             if i >= config.ltp_timeout {

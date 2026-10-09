@@ -99,15 +99,19 @@ pub struct CedCounters {
     pub lane3: Option<CedCount>,
 }
 
-/// Converts a sink LTP request to a PHY pattern.
+/// Converts a sink LTP request to the pattern the PHY drives.
 ///
-/// `LtpReq::None` is the training-complete signal and never reaches this
-/// conversion; the training loop exits before calling `HdmiPhy::send_ltp`.
-/// The raw discriminant value is used directly: Lfsr0 → 1, Lfsr1 → 2,
-/// Lfsr2 → 3, Lfsr3 → 4.
-impl From<LtpReq> for LtpPattern {
+/// Each LFSR request maps to the LFSR pattern of the same name. `LtpReq::None`
+/// (no pattern) maps to `None`.
+impl From<LtpReq> for Option<LtpPattern> {
     fn from(req: LtpReq) -> Self {
-        LtpPattern::new(req as u8)
+        match req {
+            LtpReq::None => None,
+            LtpReq::Lfsr0 => Some(LtpPattern::Lfsr0),
+            LtpReq::Lfsr1 => Some(LtpPattern::Lfsr1),
+            LtpReq::Lfsr2 => Some(LtpPattern::Lfsr2),
+            LtpReq::Lfsr3 => Some(LtpPattern::Lfsr3),
+        }
     }
 }
 
@@ -263,25 +267,30 @@ mod tests {
         assert_eq!(a, a.clone());
     }
 
-    // --- From<LtpReq> for LtpPattern ---
+    // --- From<LtpReq> for Option<LtpPattern> ---
+
+    #[test]
+    fn ltp_req_to_pattern_none() {
+        assert_eq!(Option::<LtpPattern>::from(LtpReq::None), None);
+    }
 
     #[test]
     fn ltp_req_to_pattern_lfsr0() {
-        assert_eq!(LtpPattern::from(LtpReq::Lfsr0).value(), 1);
+        assert_eq!(Option::from(LtpReq::Lfsr0), Some(LtpPattern::Lfsr0));
     }
 
     #[test]
     fn ltp_req_to_pattern_lfsr1() {
-        assert_eq!(LtpPattern::from(LtpReq::Lfsr1).value(), 2);
+        assert_eq!(Option::from(LtpReq::Lfsr1), Some(LtpPattern::Lfsr1));
     }
 
     #[test]
     fn ltp_req_to_pattern_lfsr2() {
-        assert_eq!(LtpPattern::from(LtpReq::Lfsr2).value(), 3);
+        assert_eq!(Option::from(LtpReq::Lfsr2), Some(LtpPattern::Lfsr2));
     }
 
     #[test]
     fn ltp_req_to_pattern_lfsr3() {
-        assert_eq!(LtpPattern::from(LtpReq::Lfsr3).value(), 4);
+        assert_eq!(Option::from(LtpReq::Lfsr3), Some(LtpPattern::Lfsr3));
     }
 }

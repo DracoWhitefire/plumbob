@@ -7,7 +7,7 @@
 
 use core::convert::Infallible;
 use display_types::cea861::hdmi_forum::HdmiForumFrl;
-use hdmi_hal::phy::{EqParams, HdmiPhy, LtpPattern};
+use hdmi_hal::phy::{EqParams, FrlOutput, HdmiPhy, LanePatterns};
 use plumbob::{
     CedCounters, FrlConfig, FrlTrainer, LtpReq, ScdcClient, TrainingConfig, TrainingStatus,
 };
@@ -109,8 +109,13 @@ impl HdmiPhy for SimPhy {
         Ok(())
     }
 
-    fn send_ltp(&mut self, pattern: LtpPattern) -> Result<(), Infallible> {
-        println!("PHY:  send_ltp({})", pattern.value());
+    fn send_ltp(&mut self, patterns: LanePatterns) -> Result<(), Infallible> {
+        println!("PHY:  send_ltp({patterns:?})");
+        Ok(())
+    }
+
+    fn set_frl_output(&mut self, output: FrlOutput) -> Result<(), Infallible> {
+        println!("PHY:  set_frl_output({output:?})");
         Ok(())
     }
 

@@ -2,7 +2,7 @@ extern crate std;
 use std::collections::VecDeque;
 
 use display_types::cea861::hdmi_forum::HdmiForumFrl;
-use hdmi_hal::phy::{EqParams, HdmiPhy, LtpPattern};
+use hdmi_hal::phy::{EqParams, FrlOutput, HdmiPhy, LanePatterns};
 
 use crate::scdc::ScdcClient;
 use crate::types::{CedCounters, FrlConfig, LtpReq, TrainingStatus};
@@ -80,7 +80,7 @@ pub struct MockPhy {
     pub fail_set_frl_rate: bool,
     pub fail_send_ltp: bool,
     pub frl_rate: Option<HdmiForumFrl>,
-    pub last_ltp: Option<LtpPattern>,
+    pub last_ltp: Option<LanePatterns>,
 }
 
 impl MockPhy {
@@ -97,11 +97,15 @@ impl MockPhy {
 impl HdmiPhy for MockPhy {
     type Error = ();
 
-    fn send_ltp(&mut self, pattern: LtpPattern) -> Result<(), ()> {
+    fn send_ltp(&mut self, patterns: LanePatterns) -> Result<(), ()> {
         if self.fail_send_ltp {
             return Err(());
         }
-        self.last_ltp = Some(pattern);
+        self.last_ltp = Some(patterns);
+        Ok(())
+    }
+
+    fn set_frl_output(&mut self, _output: FrlOutput) -> Result<(), ()> {
         Ok(())
     }
 
