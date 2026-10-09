@@ -7,6 +7,7 @@
 #![allow(dead_code)]
 
 pub(crate) mod scdc;
+pub(crate) mod trace;
 pub(crate) mod trainer;
 pub(crate) mod types;
 

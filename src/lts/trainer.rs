@@ -4,8 +4,14 @@ use hdmi_hal::phy::{
 };
 
 use super::scdc::ScdcClient;
+use super::trace::TrainingEvent;
 use super::types::{FfeLevels, FrlConfig, LtpReq, LtpRequests, UpdateFlags};
 use crate::training::TrainingError;
+
+#[cfg(feature = "alloc")]
+use super::trace::TrainingTrace;
+#[cfg(feature = "alloc")]
+use alloc::vec::Vec;
 
 /// Why a training attempt ended without a link.
 #[non_exhaustive]
@@ -135,9 +141,15 @@ impl Lanes {
         }
     }
 
-    /// Updates each lane from the sink's request for it. Returns whether any TxFFE level
-    /// changed.
-    fn apply(&mut self, requests: LtpRequests, no_timeout: bool, max_level: u8) -> bool {
+    /// Updates each lane from the sink's request for it, recording each TxFFE raise.
+    /// Returns whether any TxFFE level changed.
+    fn apply<F: FnMut(TrainingEvent)>(
+        &mut self,
+        requests: LtpRequests,
+        no_timeout: bool,
+        max_level: u8,
+        record: &mut F,
+    ) -> bool {
         let requests = [
             requests.lane0,
             requests.lane1,
@@ -155,6 +167,11 @@ impl Lanes {
                     if self.levels[lane] < max_level {
                         self.levels[lane] += 1;
                         ffe_changed = true;
+                        record(TrainingEvent::FfeRaised {
+                            // At most 4 lanes and level 7: both fit in a u8.
+                            lane: lane as u8,
+                            level: self.levels[lane],
+                        });
                     }
                 }
                 // 0x0 (and a 0xF on only some lanes) keeps the lane's pattern and level.
@@ -286,6 +303,40 @@ impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
         rates: &[HdmiForumFrl],
         config: &TrainingConfig,
     ) -> Result<TrainingOutcome, Error<C, P>> {
+        self.run(rates, config, &mut |_| {})
+    }
+
+    /// Like [`train_at_rate`](Self::train_at_rate), and also returns a [`TrainingTrace`]
+    /// of the attempt.
+    #[cfg(feature = "alloc")]
+    pub fn train_at_rate_traced(
+        &mut self,
+        rate: HdmiForumFrl,
+        config: &TrainingConfig,
+    ) -> Result<(TrainingOutcome, TrainingTrace), Error<C, P>> {
+        self.train_traced(&[rate], config)
+    }
+
+    /// Like [`train`](Self::train), and also returns a [`TrainingTrace`] of the attempt.
+    #[cfg(feature = "alloc")]
+    pub fn train_traced(
+        &mut self,
+        rates: &[HdmiForumFrl],
+        config: &TrainingConfig,
+    ) -> Result<(TrainingOutcome, TrainingTrace), Error<C, P>> {
+        let mut events = Vec::new();
+        let outcome = self.run(rates, config, &mut |event| events.push(event))?;
+        Ok((outcome, TrainingTrace::new(rates.to_vec(), *config, events)))
+    }
+
+    /// The state machine. `record` is called with each [`TrainingEvent`] as it occurs;
+    /// the untraced path passes a closure that does nothing, which the compiler removes.
+    fn run<F: FnMut(TrainingEvent)>(
+        &mut self,
+        rates: &[HdmiForumFrl],
+        config: &TrainingConfig,
+        record: &mut F,
+    ) -> Result<TrainingOutcome, Error<C, P>> {
         let mut rates = rates.iter().copied();
         let Some(rate) = rates.next() else {
             return Ok(TrainingOutcome::FallbackRequired {
@@ -300,12 +351,15 @@ impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
         let mut state = State::Prepare;
         loop {
             state = match state {
-                State::Prepare => self.prepare(&mut attempt, config)?,
-                State::Train => self.train_lanes(&mut attempt, config)?,
-                State::Pass => self.pass(&attempt, config)?,
+                State::Prepare => self.prepare(&mut attempt, config, record)?,
+                State::Train => self.train_lanes(&mut attempt, config, record)?,
+                State::Pass => self.pass(&attempt, config, record)?,
                 State::LowerRate => match rates.next() {
-                    Some(next) => self.lower_rate(&mut attempt, next, config)?,
-                    None => State::Fallback(FallbackReason::RatesExhausted),
+                    Some(next) => self.lower_rate(&mut attempt, next, config, record)?,
+                    None => {
+                        record(TrainingEvent::RatesExhausted);
+                        State::Fallback(FallbackReason::RatesExhausted)
+                    }
                 },
                 State::Success => {
                     return Ok(TrainingOutcome::Success {
@@ -313,7 +367,7 @@ impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
                     });
                 }
                 State::Fallback(reason) => {
-                    self.exit_to_tmds()?;
+                    self.exit_to_tmds(record)?;
                     return Ok(TrainingOutcome::FallbackRequired { reason });
                 }
             };
@@ -321,18 +375,23 @@ impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
     }
 
     /// LTS:2: wait for the sink, configure the PHY and write `Config_0` and `Config_1`.
-    fn prepare(
+    fn prepare<F: FnMut(TrainingEvent)>(
         &mut self,
         attempt: &mut Attempt,
         config: &TrainingConfig,
+        record: &mut F,
     ) -> Result<State, Error<C, P>> {
         if self.read_update_flags()?.source_test_update {
-            self.read_source_test(attempt)?;
+            self.read_source_test(attempt, record)?;
         }
 
         let limit = attempt.limit(config, config.flt_ready_polls);
-        if !self.poll_flt_ready(limit)? {
-            return Ok(State::Fallback(FallbackReason::FltReadyTimeout));
+        match self.poll_flt_ready(limit)? {
+            Some(polls) => record(TrainingEvent::FltReady { after_polls: polls }),
+            None => {
+                record(TrainingEvent::FltReadyTimeout { polls: limit });
+                return Ok(State::Fallback(FallbackReason::FltReadyTimeout));
+            }
         }
 
         self.clear(FLT_UPDATE)?;
@@ -350,26 +409,24 @@ impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
         self.scdc
             .write_config_0_defaults()
             .map_err(TrainingError::Scdc)?;
-        self.scdc
-            .write_frl_config(FrlConfig {
-                rate: attempt.rate,
-                ffe_levels: config.ffe_levels.limited_to(attempt.rate),
-            })
-            .map_err(TrainingError::Scdc)?;
+        self.write_rate(attempt.rate, config, record)?;
         Ok(State::Train)
     }
 
     /// LTS:3: follow the sink's per-lane requests until it passes the lanes, asks for a
     /// lower rate, or the poll limit runs out.
-    fn train_lanes(
+    fn train_lanes<F: FnMut(TrainingEvent)>(
         &mut self,
         attempt: &mut Attempt,
         config: &TrainingConfig,
+        record: &mut F,
     ) -> Result<State, Error<C, P>> {
         let max_level = config.ffe_levels.limited_to(attempt.rate).value();
         let mut polls = 0;
         loop {
-            if polls >= attempt.limit(config, config.ltp_polls) {
+            let limit = attempt.limit(config, config.ltp_polls);
+            if polls >= limit {
+                record(TrainingEvent::TrainingTimeout { polls: limit });
                 return Ok(State::Fallback(FallbackReason::TrainingTimeout));
             }
             let flags = self.read_update_flags()?;
@@ -378,18 +435,22 @@ impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
                 continue;
             }
             if flags.source_test_update {
-                self.read_source_test(attempt)?;
+                self.read_source_test(attempt, record)?;
             }
 
             let requests = self.scdc.read_ltp_requests().map_err(TrainingError::Scdc)?;
             if attempt.lanes.all(requests, LtpReq::None) {
+                record(TrainingEvent::TrainingPassed { after_polls: polls });
                 return Ok(State::Pass);
             }
+            record(TrainingEvent::LtpRequested { requests });
             if attempt.lanes.all(requests, LtpReq::RateChange) {
                 return Ok(State::LowerRate);
             }
 
-            let ffe_changed = attempt.lanes.apply(requests, attempt.no_timeout, max_level);
+            let ffe_changed = attempt
+                .lanes
+                .apply(requests, attempt.no_timeout, max_level, record);
             self.send_ltp(attempt.lanes.patterns())?;
             if ffe_changed {
                 self.adjust_equalization(attempt.lanes.eq_params())?;
@@ -399,52 +460,62 @@ impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
     }
 
     /// LTS:P: send gap characters until the sink sets `FRL_start`, or asks to retrain.
-    fn pass(&mut self, attempt: &Attempt, config: &TrainingConfig) -> Result<State, Error<C, P>> {
+    fn pass<F: FnMut(TrainingEvent)>(
+        &mut self,
+        attempt: &Attempt,
+        config: &TrainingConfig,
+        record: &mut F,
+    ) -> Result<State, Error<C, P>> {
         self.send_ltp(uniform(attempt.lanes.count, None))?;
         self.set_frl_output(FrlOutput::GapOnly)?;
         self.clear(FLT_UPDATE)?;
 
-        for _ in 0..config.frl_start_polls {
+        for polls in 1..=config.frl_start_polls {
             let flags = self.read_update_flags()?;
             if flags.frl_start {
                 self.clear(FRL_START)?;
+                record(TrainingEvent::FrlStart { after_polls: polls });
                 return Ok(State::Success);
             }
             if flags.flt_update {
+                record(TrainingEvent::RetrainRequested);
                 return Ok(State::Train);
             }
         }
+        record(TrainingEvent::FrlStartTimeout {
+            polls: config.frl_start_polls,
+        });
         Ok(State::Fallback(FallbackReason::FrlStartTimeout))
     }
 
     /// LTS:4: continue training at `rate`, the next one in the list. The sink stays in
     /// FRL; `FLT_ready` is not awaited again.
-    fn lower_rate(
+    fn lower_rate<F: FnMut(TrainingEvent)>(
         &mut self,
         attempt: &mut Attempt,
         rate: HdmiForumFrl,
         config: &TrainingConfig,
+        record: &mut F,
     ) -> Result<State, Error<C, P>> {
         self.send_ltp(LanePatterns::default())?;
+        record(TrainingEvent::RateLowered {
+            from: attempt.rate,
+            to: rate,
+        });
 
         attempt.rate = rate;
         attempt.lanes = Lanes::new(rate);
         self.adjust_equalization(attempt.lanes.eq_params())?;
         self.phy.set_frl_rate(rate).map_err(TrainingError::Phy)?;
         self.clear(FLT_UPDATE)?;
-        self.scdc
-            .write_frl_config(FrlConfig {
-                rate,
-                ffe_levels: config.ffe_levels.limited_to(rate),
-            })
-            .map_err(TrainingError::Scdc)?;
+        self.write_rate(rate, config, record)?;
         Ok(State::Train)
     }
 
     /// LTS:L: leave both ends in TMDS. Stops the training patterns, returns the PHY to
     /// TMDS, turns FRL off in `Config_1` and clears `FLT_update` if it is set, so a failed
     /// attempt never leaves the sink configured for a rate the source is not driving.
-    fn exit_to_tmds(&mut self) -> Result<(), Error<C, P>> {
+    fn exit_to_tmds<F: FnMut(TrainingEvent)>(&mut self, record: &mut F) -> Result<(), Error<C, P>> {
         self.send_ltp(LanePatterns::default())?;
         self.phy
             .set_frl_rate(HdmiForumFrl::NotSupported)
@@ -458,27 +529,51 @@ impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
         if self.read_update_flags()?.flt_update {
             self.clear(FLT_UPDATE)?;
         }
+        record(TrainingEvent::ExitedToTmds);
         Ok(())
     }
 
-    /// Polls `FLT_ready` up to `limit` times. Returns whether it asserted.
-    fn poll_flt_ready(&mut self, limit: u32) -> Result<bool, Error<C, P>> {
-        for _ in 0..limit {
+    /// Writes `Config_1` with `rate` and the FFE levels limited for it.
+    fn write_rate<F: FnMut(TrainingEvent)>(
+        &mut self,
+        rate: HdmiForumFrl,
+        config: &TrainingConfig,
+        record: &mut F,
+    ) -> Result<(), Error<C, P>> {
+        let ffe_levels = config.ffe_levels.limited_to(rate);
+        self.scdc
+            .write_frl_config(FrlConfig { rate, ffe_levels })
+            .map_err(TrainingError::Scdc)?;
+        record(TrainingEvent::RateConfigured { rate, ffe_levels });
+        Ok(())
+    }
+
+    /// Polls `FLT_ready` up to `limit` times. Returns the number of polls it took to
+    /// assert, or `None` if it did not.
+    fn poll_flt_ready(&mut self, limit: u32) -> Result<Option<u32>, Error<C, P>> {
+        for polls in 1..=limit {
             if self.scdc.read_flt_ready().map_err(TrainingError::Scdc)? {
-                return Ok(true);
+                return Ok(Some(polls));
             }
         }
-        Ok(false)
+        Ok(None)
     }
 
     /// Reads `Source_Test_Configuration` into the attempt and clears
     /// `Source_Test_Update`.
-    fn read_source_test(&mut self, attempt: &mut Attempt) -> Result<(), Error<C, P>> {
+    fn read_source_test<F: FnMut(TrainingEvent)>(
+        &mut self,
+        attempt: &mut Attempt,
+        record: &mut F,
+    ) -> Result<(), Error<C, P>> {
         let source_test = self
             .scdc
             .read_source_test_config()
             .map_err(TrainingError::Scdc)?;
         attempt.no_timeout = source_test.flt_no_timeout;
+        record(TrainingEvent::SourceTestConfigRead {
+            flt_no_timeout: source_test.flt_no_timeout,
+        });
         self.clear(SOURCE_TEST_UPDATE)
     }
 

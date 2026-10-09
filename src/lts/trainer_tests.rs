@@ -768,3 +768,258 @@ fn phy_errors_are_returned() {
         assert_eq!(result, Err(TrainingError::Phy(())), "{op:?}");
     }
 }
+
+// --- Traces
+
+#[cfg(feature = "alloc")]
+mod traced {
+    use super::*;
+    use crate::lts::trace::{TrainingEvent, TrainingTrace};
+
+    fn trace(
+        sink: SimSink,
+        rates: &[HdmiForumFrl],
+        config: &TrainingConfig,
+    ) -> (TrainingOutcome, TrainingTrace) {
+        FrlTrainer::new(sink, SimPhy::new())
+            .train_traced(rates, config)
+            .unwrap()
+    }
+
+    fn ffe_3() -> TrainingConfig {
+        TrainingConfig {
+            ffe_levels: FfeLevels::new(3).unwrap(),
+            ..TrainingConfig::default()
+        }
+    }
+
+    /// The first example trace in the architecture doc.
+    #[test]
+    fn documented_trace_of_a_successful_attempt() {
+        let sink = SimSink::new()
+            .flt_ready_after(2)
+            .round(
+                0,
+                requests(LtpReq::Lfsr0, LtpReq::Lfsr1, LtpReq::Lfsr2, LtpReq::Lfsr3),
+            )
+            .round(
+                0,
+                requests(LtpReq::None, LtpReq::FfeChange, LtpReq::None, LtpReq::None),
+            )
+            .round(38, all(LtpReq::None))
+            .frl_start_after(5);
+        let (outcome, trace) = trace(sink, &[R12], &ffe_3());
+        assert_eq!(outcome, TrainingOutcome::Success { achieved_rate: R12 });
+        assert_eq!(
+            trace.events,
+            [
+                TrainingEvent::FltReady { after_polls: 3 },
+                TrainingEvent::RateConfigured {
+                    rate: R12,
+                    ffe_levels: FfeLevels::new(3).unwrap(),
+                },
+                TrainingEvent::LtpRequested {
+                    requests: requests(LtpReq::Lfsr0, LtpReq::Lfsr1, LtpReq::Lfsr2, LtpReq::Lfsr3),
+                },
+                TrainingEvent::LtpRequested {
+                    requests: requests(LtpReq::None, LtpReq::FfeChange, LtpReq::None, LtpReq::None),
+                },
+                TrainingEvent::FfeRaised { lane: 1, level: 1 },
+                TrainingEvent::TrainingPassed { after_polls: 41 },
+                TrainingEvent::FrlStart { after_polls: 6 },
+            ]
+        );
+    }
+
+    /// The second example trace in the architecture doc: the sink asks for a lower rate.
+    #[test]
+    fn documented_trace_of_a_rate_drop() {
+        let sink = SimSink::new()
+            .flt_ready_after(1)
+            .round(0, all(LtpReq::RateChange))
+            .round(5, all(LtpReq::Lfsr0))
+            .round(5, all(LtpReq::None))
+            .frl_start_after(3);
+        let (outcome, trace) = trace(sink, &[R12, R10], &ffe_3());
+        assert_eq!(outcome, TrainingOutcome::Success { achieved_rate: R10 });
+        let three = FfeLevels::new(3).unwrap();
+        assert_eq!(
+            trace.events,
+            [
+                TrainingEvent::FltReady { after_polls: 2 },
+                TrainingEvent::RateConfigured {
+                    rate: R12,
+                    ffe_levels: three,
+                },
+                TrainingEvent::LtpRequested {
+                    requests: all(LtpReq::RateChange),
+                },
+                TrainingEvent::RateLowered { from: R12, to: R10 },
+                TrainingEvent::RateConfigured {
+                    rate: R10,
+                    ffe_levels: three,
+                },
+                TrainingEvent::LtpRequested {
+                    requests: all(LtpReq::Lfsr0),
+                },
+                TrainingEvent::TrainingPassed { after_polls: 12 },
+                TrainingEvent::FrlStart { after_polls: 4 },
+            ]
+        );
+    }
+
+    #[test]
+    fn timeouts_record_the_limit_and_end_in_tmds() {
+        let config = TrainingConfig {
+            flt_ready_polls: 4,
+            ltp_polls: 5,
+            frl_start_polls: 6,
+            ..TrainingConfig::default()
+        };
+        let cases = [
+            (SimSink::new(), TrainingEvent::FltReadyTimeout { polls: 4 }),
+            (
+                SimSink::new().flt_ready_after(0),
+                TrainingEvent::TrainingTimeout { polls: 5 },
+            ),
+            (
+                SimSink::new()
+                    .flt_ready_after(0)
+                    .round(0, all(LtpReq::None)),
+                TrainingEvent::FrlStartTimeout { polls: 6 },
+            ),
+        ];
+        for (sink, timeout) in cases {
+            let (_, trace) = trace(sink, &[RATE], &config);
+            assert_eq!(
+                trace.events[trace.events.len() - 2..],
+                [timeout, TrainingEvent::ExitedToTmds]
+            );
+        }
+    }
+
+    #[test]
+    fn exhausted_rates_end_in_tmds() {
+        let sink = SimSink::new()
+            .flt_ready_after(0)
+            .round(0, all(LtpReq::RateChange));
+        let (_, trace) = trace(sink, &[RATE], &TrainingConfig::default());
+        assert_eq!(
+            trace.events[trace.events.len() - 3..],
+            [
+                TrainingEvent::LtpRequested {
+                    requests: all(LtpReq::RateChange),
+                },
+                TrainingEvent::RatesExhausted,
+                TrainingEvent::ExitedToTmds,
+            ]
+        );
+    }
+
+    #[test]
+    fn source_test_reads_and_retrains_are_recorded() {
+        let sink = SimSink::new()
+            .source_test(SourceTestConfig::default())
+            .flt_ready_after(0)
+            .round(0, all(LtpReq::None))
+            .round_with_source_test(0, all(LtpReq::Lfsr0), NO_TIMEOUT)
+            .round(0, all(LtpReq::None))
+            .frl_start_after(0);
+        let (_, trace) = trace(sink, &[RATE], &TrainingConfig::default());
+        let notable: Vec<_> = trace
+            .events
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    TrainingEvent::SourceTestConfigRead { .. } | TrainingEvent::RetrainRequested
+                )
+            })
+            .collect();
+        assert_eq!(
+            notable,
+            [
+                &TrainingEvent::SourceTestConfigRead {
+                    flt_no_timeout: false
+                },
+                &TrainingEvent::RetrainRequested,
+                &TrainingEvent::SourceTestConfigRead {
+                    flt_no_timeout: true
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn a_held_ffe_level_is_not_recorded_as_raised() {
+        let config = TrainingConfig {
+            ffe_levels: FfeLevels::new(1).unwrap(),
+            ..TrainingConfig::default()
+        };
+        let sink = SimSink::new()
+            .flt_ready_after(0)
+            .round(0, all(LtpReq::FfeChange))
+            .round(0, all(LtpReq::FfeChange))
+            .round(0, all(LtpReq::None))
+            .frl_start_after(0);
+        let (_, trace) = trace(sink, &[RATE], &config);
+        let raised = trace
+            .events
+            .iter()
+            .filter(|e| matches!(e, TrainingEvent::FfeRaised { .. }))
+            .count();
+        assert_eq!(raised, 4);
+    }
+
+    #[test]
+    fn the_trace_carries_the_rates_and_config() {
+        let config = ffe_3();
+        let (_, trace) = trace(SimSink::new(), &[R12, R10], &config);
+        assert_eq!(trace.rates, [R12, R10]);
+        assert_eq!(trace.config, config);
+    }
+
+    #[test]
+    fn traced_and_untraced_outcomes_match() {
+        let sink = || {
+            SimSink::new()
+                .flt_ready_after(0)
+                .round(0, all(LtpReq::Lfsr1))
+                .round(0, all(LtpReq::None))
+                .frl_start_after(0)
+        };
+        let mut trainer = FrlTrainer::new(sink(), SimPhy::new());
+        let (outcome, trace) = trainer
+            .train_at_rate_traced(RATE, &TrainingConfig::default())
+            .unwrap();
+        let (untraced, _, _) = run(sink(), &[RATE], &TrainingConfig::default());
+        assert_eq!(outcome, untraced);
+        assert_eq!(trace.rates, [RATE]);
+    }
+
+    #[test]
+    fn an_empty_rate_list_has_no_events() {
+        let (outcome, trace) = trace(SimSink::new(), &[], &TrainingConfig::default());
+        assert_eq!(outcome, fallback(FallbackReason::RatesExhausted));
+        assert!(trace.events.is_empty());
+    }
+
+    #[test]
+    fn traced_errors_are_returned() {
+        let mut trainer =
+            FrlTrainer::new(SimSink::new().fail(SinkOp::ReadUpdateFlags), SimPhy::new());
+        assert_eq!(
+            trainer.train_traced(&[RATE], &TrainingConfig::default()),
+            Err(TrainingError::Scdc(()))
+        );
+    }
+
+    #[test]
+    fn training_trace_new_sets_fields() {
+        let events = Vec::from([TrainingEvent::ExitedToTmds]);
+        let trace = TrainingTrace::new(Vec::from([RATE]), ffe_3(), events.clone());
+        assert_eq!(trace.rates, [RATE]);
+        assert_eq!(trace.config, ffe_3());
+        assert_eq!(trace.events, events);
+    }
+}
