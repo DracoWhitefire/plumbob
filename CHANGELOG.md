@@ -71,7 +71,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 
 - **`display-types` updated to 0.4** — tracks DisplayID 2.x support added in `piaf` 0.4.1.
-- **`hdmi-hal` updated to 0.4.1** — aligns with display-types 0.4 across the stack.
+- **`hdmi-hal` updated to 0.5** — the release with the per-lane `send_ltp`,
+  `set_frl_output` and the HDMI 2.1 `LtpPattern` values that training uses (see
+  *Breaking changes*). plumbob 0.1.3 does not build against hdmi-hal 0.4.1, which moved
+  to display-types 0.4; this release uses display-types 0.4 throughout.
 
 ### Internal
 
