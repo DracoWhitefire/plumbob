@@ -6,4 +6,8 @@
 // Nothing here is reachable from the public API until the switch-over.
 #![allow(dead_code)]
 
+pub(crate) mod scdc;
 pub(crate) mod types;
+
+#[cfg(test)]
+mod sim;
