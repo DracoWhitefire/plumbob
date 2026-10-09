@@ -641,6 +641,92 @@ fn every_timeout_ends_in_tmds() {
     }
 }
 
+/// Runs `sink` and `phy` over [`RATE`] with the default config.
+fn run_with(sink: SimSink, phy: SimPhy) -> (Result<TrainingOutcome, Error>, SimSink, SimPhy) {
+    let mut trainer = FrlTrainer::new(sink, phy);
+    let result = trainer.train(&[RATE], &TrainingConfig::default());
+    let (sink, phy) = trainer.into_parts();
+    (result, sink, phy)
+}
+
+type Error = TrainingError<(), ()>;
+
+#[test]
+fn every_lts_l_step_is_attempted_when_one_fails() {
+    // `FLT_ready` never asserts, so LTS:L is the only place the PHY is called and
+    // `Config_1` is written; its `Update_0` read is the second one.
+    let cases = [
+        (
+            SimSink::new(),
+            SimPhy::new().fail(PhyOp::SendLtp),
+            Err(TrainingError::Phy(())),
+        ),
+        (
+            SimSink::new(),
+            SimPhy::new().fail(PhyOp::SetFrlRate),
+            Err(TrainingError::Phy(())),
+        ),
+        (
+            SimSink::new().fail(SinkOp::WriteFrlConfig),
+            SimPhy::new(),
+            Err(TrainingError::Scdc(())),
+        ),
+        (
+            SimSink::new().fail_call(SinkOp::ReadUpdateFlags, 2),
+            SimPhy::new(),
+            Err(TrainingError::Scdc(())),
+        ),
+    ];
+    for (sink, phy, expected) in cases {
+        let (result, sink, phy) = run_with(sink, phy);
+        assert_eq!(result, expected);
+        let stopped = phy
+            .calls
+            .contains(&PhyCall::SendLtp(LanePatterns::default()));
+        let phy_in_tmds = phy_rates(&phy) == [HdmiForumFrl::NotSupported];
+        let sink_in_tmds = frl_configs(&sink) == [HdmiForumFrl::NotSupported];
+        let flags_read = count(&sink, |call| matches!(call, SinkCall::ReadUpdateFlags(_))) == 2;
+        // Exactly one step failed; the other three ran.
+        let ran = [stopped, phy_in_tmds, sink_in_tmds, flags_read];
+        assert_eq!(ran.iter().filter(|ran| !**ran).count(), 1, "{ran:?}");
+    }
+}
+
+#[test]
+fn a_failed_flt_update_clear_in_lts_l_is_returned() {
+    // The final RateChange is left pending, so LTS:L clears it: the last clear.
+    let sink = || {
+        SimSink::new()
+            .flt_ready_after(0)
+            .round(0, all(LtpReq::RateChange))
+    };
+    let (_, reference, _) = run_with(sink(), SimPhy::new());
+    let clears = count(&reference, |call| {
+        matches!(call, SinkCall::ClearUpdateFlags(_))
+    });
+    let (result, sink, phy) = run_with(
+        sink().fail_call(SinkOp::ClearUpdateFlags, clears as u32),
+        SimPhy::new(),
+    );
+    assert_eq!(result, Err(TrainingError::Scdc(())));
+    assert_eq!(frl_configs(&sink).last(), Some(&HdmiForumFrl::NotSupported));
+    assert_eq!(phy_rates(&phy).last(), Some(&HdmiForumFrl::NotSupported));
+}
+
+#[test]
+fn lts_l_returns_its_first_error() {
+    let (result, sink, _) = run_with(
+        SimSink::new().fail(SinkOp::WriteFrlConfig),
+        SimPhy::new().fail(PhyOp::SendLtp),
+    );
+    assert_eq!(result, Err(TrainingError::Phy(())));
+    // The PHY failing first did not stop the sink's `Update_0` read.
+    assert_eq!(
+        count(&sink, |call| matches!(call, SinkCall::ReadUpdateFlags(_))),
+        2
+    );
+}
+
 // --- FLT_no_timeout
 
 #[test]

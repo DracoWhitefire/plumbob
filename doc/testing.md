@@ -31,8 +31,9 @@ Tests for the owned protocol types cover:
   `Config_1` write with an FRL rate); `FRL_start` after N polls once the rounds are used
   up; an optional source test configuration. A rate drop is a round of `RateChange`, and
   a retrain during LTS:P is a round after the all-`None` one. It records every call in
-  order and can fail any one operation.
-- `SimPhy` — records every PHY call in order and can fail any one operation.
+  order and can fail any one operation, on every call or only on its N-th call.
+- `SimPhy` — records every PHY call in order and can fail any one operation, on every
+  call or only on its N-th call.
 
 The sim has its own tests, so it is fully covered before the state machine uses it.
 
@@ -49,8 +50,9 @@ The sim has its own tests, so it is fully covered before the state machine uses 
   rate drop
 - LTS:4: stepping down through the list, resetting the lanes, moving to a 3-lane rate, a
   fresh poll limit per rate, and running out of rates
-- LTS:L: the exact exit sequence, clearing a pending `FLT_update`, and every timeout
-  ending in TMDS
+- LTS:L: the exact exit sequence, clearing a pending `FLT_update`, every timeout
+  ending in TMDS, and every step attempted when one of them fails, with the first error
+  returned
 - `TrainingError::Scdc` and `TrainingError::Phy` propagating from every SCDC and PHY
   operation the state machine uses
 

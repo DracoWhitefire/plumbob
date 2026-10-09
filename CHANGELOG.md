@@ -36,7 +36,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `FLT_no_timeout` cap and the retrain count follow the AMD driver.
 - **`TrainingOutcome::FallbackRequired` carries a `reason`** (`FallbackReason`:
   `FltReadyTimeout`, `TrainingTimeout`, `FrlStartTimeout`, `RatesExhausted` or
-  `RetrainsExhausted`), and every fallback leaves the sink and PHY in TMDS.
+  `RetrainsExhausted`), and every fallback leaves the sink and PHY in TMDS. LTS:L attempts
+  every step even when one fails, so an error on one end does not keep the other in FRL.
 - **`HdmiPhy` calls follow hdmi-hal's per-lane model**: `send_ltp` receives the full
   per-lane pattern set, `adjust_equalization` the per-lane TxFFE levels, and
   `set_frl_output(GapOnly)` is sent during training and LTS:P.

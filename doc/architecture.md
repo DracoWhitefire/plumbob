@@ -181,7 +181,8 @@ Before returning `FallbackRequired`, plumbob leaves both ends in a defined state
 the training patterns, returns the PHY to TMDS (`set_frl_rate(NotSupported)`), writes
 `Config_1` with `HdmiForumFrl::NotSupported` (FRL off) and clears `FLT_update` if it is
 set. A failed attempt never leaves the sink configured for an FRL rate the source is not
-driving.
+driving. Every step is attempted even if an earlier one fails, so a PHY error cannot keep
+the sink in FRL, nor an SCDC error the PHY; the first error is returned.
 
 ---
 

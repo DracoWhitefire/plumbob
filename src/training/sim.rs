@@ -2,7 +2,7 @@
 //!
 //! [`SimSink`] answers the state machine's SCDC calls from a short script and records
 //! every call it receives. [`SimPhy`] records every PHY call. Both can be told to fail a
-//! given operation.
+//! given operation, on every call or on one call only.
 
 extern crate std;
 
@@ -79,7 +79,7 @@ pub struct SimSink {
     rounds: VecDeque<Round>,
     frl_start_after: Option<u32>,
     source_test: SourceTestConfig,
-    fail: Option<SinkOp>,
+    fail: Option<Failure<SinkOp>>,
 
     flt_ready_polls: u32,
     configured: bool,
@@ -134,16 +134,22 @@ impl SimSink {
         self
     }
 
+    /// Fails every call of `op`.
     pub fn fail(mut self, op: SinkOp) -> Self {
-        self.fail = Some(op);
+        self.fail = Some(Failure::every(op));
         self
     }
 
-    fn check(&self, op: SinkOp) -> Result<(), ()> {
-        if self.fail == Some(op) {
-            Err(())
-        } else {
-            Ok(())
+    /// Fails only the `nth` call of `op`, counting from 1.
+    pub fn fail_call(mut self, op: SinkOp, nth: u32) -> Self {
+        self.fail = Some(Failure::nth(op, nth));
+        self
+    }
+
+    fn check(&mut self, op: SinkOp) -> Result<(), ()> {
+        match &mut self.fail {
+            Some(failure) => failure.check(op),
+            None => Ok(()),
         }
     }
 }
@@ -244,6 +250,43 @@ impl ScdcClient for SimSink {
     }
 }
 
+/// A failure to inject: every call of `op`, or only its `nth` call.
+#[derive(Debug, Clone, Copy)]
+struct Failure<Op> {
+    op: Op,
+    nth: Option<u32>,
+    calls: u32,
+}
+
+impl<Op: PartialEq> Failure<Op> {
+    fn every(op: Op) -> Self {
+        Self {
+            op,
+            nth: None,
+            calls: 0,
+        }
+    }
+
+    fn nth(op: Op, nth: u32) -> Self {
+        Self {
+            op,
+            nth: Some(nth),
+            calls: 0,
+        }
+    }
+
+    fn check(&mut self, op: Op) -> Result<(), ()> {
+        if op != self.op {
+            return Ok(());
+        }
+        self.calls += 1;
+        match self.nth {
+            Some(nth) if nth != self.calls => Ok(()),
+            _ => Err(()),
+        }
+    }
+}
+
 /// A PHY operation, for failure injection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum PhyOp {
@@ -267,7 +310,7 @@ pub enum PhyCall {
 /// A PHY that records every call.
 #[derive(Debug, Default)]
 pub struct SimPhy {
-    fail: Option<PhyOp>,
+    fail: Option<Failure<PhyOp>>,
     /// Every call received, in order. Failed calls are not recorded.
     pub calls: Vec<PhyCall>,
 }
@@ -277,14 +320,21 @@ impl SimPhy {
         Self::default()
     }
 
+    /// Fails every call of `op`.
     pub fn fail(mut self, op: PhyOp) -> Self {
-        self.fail = Some(op);
+        self.fail = Some(Failure::every(op));
+        self
+    }
+
+    /// Fails only the `nth` call of `op`, counting from 1.
+    pub fn fail_call(mut self, op: PhyOp, nth: u32) -> Self {
+        self.fail = Some(Failure::nth(op, nth));
         self
     }
 
     fn record(&mut self, op: PhyOp, call: PhyCall) -> Result<(), ()> {
-        if self.fail == Some(op) {
-            return Err(());
+        if let Some(failure) = &mut self.fail {
+            failure.check(op)?;
         }
         self.calls.push(call);
         Ok(())
@@ -599,5 +649,22 @@ mod tests {
             }
             assert_eq!(phy.calls.len(), ops.len() - 1);
         }
+    }
+
+    #[test]
+    fn fail_call_fails_only_that_call() {
+        let mut sink = SimSink::new().fail_call(SinkOp::ReadFltReady, 2);
+        let results = [
+            sink.read_flt_ready(),
+            sink.read_flt_ready(),
+            sink.read_flt_ready(),
+        ];
+        assert_eq!(results.map(|result| result.is_err()), [false, true, false]);
+        assert!(sink.read_update_flags().is_ok());
+
+        let mut phy = SimPhy::new().fail_call(PhyOp::SendLtp, 1);
+        assert!(phy.send_ltp(LanePatterns::default()).is_err());
+        assert!(phy.send_ltp(LanePatterns::default()).is_ok());
+        assert!(phy.set_frl_output(FrlOutput::GapOnly).is_ok());
     }
 }

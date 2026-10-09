@@ -468,25 +468,33 @@ impl<Io: TrainingIo> Machine<'_, Io> {
     /// LTS:L: leave both ends in TMDS. Stops the training patterns, returns the PHY to
     /// TMDS, turns FRL off in `Config_1` and clears `FLT_update` if it is set, so a failed
     /// attempt never leaves the sink configured for a rate the source is not driving.
+    ///
+    /// Every step is attempted even when an earlier one fails, so a PHY error cannot keep
+    /// the sink in FRL, nor an SCDC error the PHY. The first error is returned.
     async fn exit_to_tmds<F: FnMut(TrainingEvent)>(
         &mut self,
         record: &mut F,
     ) -> Result<(), Error<Io>> {
-        self.send_ltp(LanePatterns::default()).await?;
-        self.io
+        let patterns = self.send_ltp(LanePatterns::default()).await;
+        let phy = self
+            .io
             .set_frl_rate(HdmiForumFrl::NotSupported)
             .await
-            .map_err(TrainingError::Phy)?;
-        self.io
+            .map_err(TrainingError::Phy);
+        let sink = self
+            .io
             .write_frl_config(FrlConfig {
                 rate: HdmiForumFrl::NotSupported,
                 ffe_levels: FfeLevels::default(),
             })
             .await
-            .map_err(TrainingError::Scdc)?;
-        if self.read_update_flags().await?.flt_update {
-            self.clear(FLT_UPDATE).await?;
-        }
+            .map_err(TrainingError::Scdc);
+        let flt_update = match self.read_update_flags().await {
+            Ok(flags) if flags.flt_update => self.clear(FLT_UPDATE).await,
+            Ok(_) => Ok(()),
+            Err(e) => Err(e),
+        };
+        patterns.and(phy).and(sink).and(flt_update)?;
         record(TrainingEvent::ExitedToTmds);
         Ok(())
     }
