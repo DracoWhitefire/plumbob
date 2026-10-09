@@ -45,7 +45,8 @@ The sim has its own tests, so it is fully covered before the state machine uses 
   only under `FLT_no_timeout`, 0xE raising and holding a lane's TxFFE level, a partial
   0xF, and lane 3 ignored at the 3-lane rates
 - `FLT_no_timeout` suspending the limits (from LTS:2 or LTS:3) up to its cap
-- Retraining from LTS:P
+- Retraining from LTS:P, bounded by `max_retrains` (including 0) and counted across a
+  rate drop
 - LTS:4: stepping down through the list, resetting the lanes, moving to a 3-lane rate, a
   fresh poll limit per rate, and running out of rates
 - LTS:L: the exact exit sequence, clearing a pending `FLT_update`, and every timeout
@@ -58,7 +59,8 @@ The sim has its own tests, so it is fully covered before the state machine uses 
 The `alloc`-gated tests exercise `train_traced` and `train_at_rate_traced` and assert on:
 
 - The two example traces in [`architecture.md`](architecture.md), event for event
-- Each timeout recording its limit and ending with `ExitedToTmds`, and `RatesExhausted`
+- Each timeout recording its limit and ending with `ExitedToTmds`, `RatesExhausted`, and
+  `RetrainsExhausted`
 - `SourceTestConfigRead` and `RetrainRequested` events, and no `FfeRaised` for a level
   already at the maximum
 - `TrainingTrace` carrying the rates and the `TrainingConfig`, so poll counts in events

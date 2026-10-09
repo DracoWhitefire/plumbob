@@ -25,6 +25,9 @@ pub enum FallbackReason {
     /// LTS:4: the sink requested a lower rate than the last one in the list (or the
     /// list was empty).
     RatesExhausted,
+    /// LTS:P: the sink requested retraining (`FLT_update`) after
+    /// [`TrainingConfig::max_retrains`] retrains had been used.
+    RetrainsExhausted,
 }
 
 /// The result of a training attempt.
@@ -69,11 +72,17 @@ pub struct TrainingConfig {
     pub flt_ready_polls: u32,
     /// Poll limit for LTS:3. Default 100 (200 ms at 2 ms per poll).
     pub ltp_polls: u32,
-    /// Poll limit for `FRL_start` in LTS:P. Default 125 (250 ms at 2 ms per poll).
+    /// Poll limit for `FRL_start` in LTS:P. Default 100 (200 ms at 2 ms per poll, the
+    /// `FRL_start` wait of the AMD and Intel drivers).
     pub frl_start_polls: u32,
     /// Hard cap on the LTS:2 and LTS:3 polls while the sink sets `FLT_no_timeout`.
-    /// Default 100 000.
+    /// Default 500 (1 s at 2 ms per poll, the AMD driver's cap).
     pub no_timeout_poll_cap: u32,
+    /// How many times one `train` call returns from LTS:P to LTS:3 when the sink requests
+    /// retraining (`FLT_update`). The next request after that ends the attempt with
+    /// [`FallbackReason::RetrainsExhausted`]; 0 falls back on the first one. Default 3,
+    /// the AMD driver's retry count (which reruns the whole procedure rather than LTS:3).
+    pub max_retrains: u32,
 }
 
 impl Default for TrainingConfig {
@@ -82,8 +91,9 @@ impl Default for TrainingConfig {
             ffe_levels: FfeLevels::default(),
             flt_ready_polls: 50,
             ltp_polls: 100,
-            frl_start_polls: 125,
-            no_timeout_poll_cap: 100_000,
+            frl_start_polls: 100,
+            no_timeout_poll_cap: 500,
+            max_retrains: 3,
         }
     }
 }
@@ -258,6 +268,8 @@ struct Attempt {
     lanes: Lanes,
     /// The sink's `FLT_no_timeout`, as last read.
     no_timeout: bool,
+    /// Returns from LTS:P to LTS:3 so far.
+    retrains: u32,
 }
 
 impl Attempt {
@@ -358,13 +370,14 @@ impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
             rate,
             lanes: Lanes::new(rate),
             no_timeout: false,
+            retrains: 0,
         };
         let mut state = State::Prepare;
         loop {
             state = match state {
                 State::Prepare => self.prepare(&mut attempt, config, record)?,
                 State::Train => self.train_lanes(&mut attempt, config, record)?,
-                State::Pass => self.pass(&attempt, config, record)?,
+                State::Pass => self.pass(&mut attempt, config, record)?,
                 State::LowerRate => match rates.next() {
                     Some(next) => self.lower_rate(&mut attempt, next, config, record)?,
                     None => {
@@ -471,9 +484,10 @@ impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
     }
 
     /// LTS:P: send gap characters until the sink sets `FRL_start`, or asks to retrain.
+    /// A retrain returns to LTS:3 while `max_retrains` allows; the next one falls back.
     fn pass<F: FnMut(TrainingEvent)>(
         &mut self,
-        attempt: &Attempt,
+        attempt: &mut Attempt,
         config: &TrainingConfig,
         record: &mut F,
     ) -> Result<State, Error<C, P>> {
@@ -489,6 +503,13 @@ impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
                 return Ok(State::Success);
             }
             if flags.flt_update {
+                if attempt.retrains >= config.max_retrains {
+                    record(TrainingEvent::RetrainsExhausted {
+                        retrains: attempt.retrains,
+                    });
+                    return Ok(State::Fallback(FallbackReason::RetrainsExhausted));
+                }
+                attempt.retrains += 1;
                 record(TrainingEvent::RetrainRequested);
                 return Ok(State::Train);
             }

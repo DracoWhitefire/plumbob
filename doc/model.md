@@ -79,13 +79,14 @@ Per-attempt configuration, constructed via `Default` and overridden as needed:
 | `ffe_levels` | `0` | Highest TxFFE level advertised in `Config_1` (limited per rate) |
 | `flt_ready_polls` | `50` | Poll limit for `FLT_ready` in LTS:2 (100 ms at 2 ms/poll) |
 | `ltp_polls` | `100` | Poll limit for LTS:3 (200 ms at 2 ms/poll) |
-| `frl_start_polls` | `125` | Poll limit for `FRL_start` in LTS:P (250 ms at 2 ms/poll) |
-| `no_timeout_poll_cap` | `100_000` | Hard cap on polls while the sink sets `FLT_no_timeout` |
+| `frl_start_polls` | `100` | Poll limit for `FRL_start` in LTS:P (200 ms at 2 ms/poll) |
+| `no_timeout_poll_cap` | `500` | Hard cap on polls while the sink sets `FLT_no_timeout` (1 s) |
+| `max_retrains` | `3` | Returns from LTS:P to LTS:3 allowed per `train` call |
 
 Poll limits are exact counts: N means exactly N polls before the state gives up. The
-defaults reproduce the spec's 100 ms and 200 ms timeouts (and the Xilinx driver's 250 ms
-`FRL_start` wait) at one poll every 2 ms; callers polling at a different cadence should
-scale them.
+defaults reproduce the spec's 100 ms and 200 ms timeouts (and the AMD and Intel drivers'
+200 ms `FRL_start` wait) at one poll every 2 ms; callers polling at a different cadence
+should scale them. The `FLT_no_timeout` cap and the retrain count follow the AMD driver.
 
 `TrainingConfig` is `#[non_exhaustive]` and derives `Clone` and `Copy`.
 
@@ -95,8 +96,9 @@ These are distinct result types representing different failure modes:
 
 - **`TrainingOutcome::FallbackRequired { reason }`** — training did not succeed at any of
   the rates passed in. `reason` says why: `FltReadyTimeout`, `TrainingTimeout` or
-  `FrlStartTimeout` (a poll limit expired in LTS:2, LTS:3 or LTS:P), or `RatesExhausted`
-  (the sink kept requesting a lower rate past the end of the list). `FallbackReason` is
+  `FrlStartTimeout` (a poll limit expired in LTS:2, LTS:3 or LTS:P), `RatesExhausted`
+  (the sink kept requesting a lower rate past the end of the list), or `RetrainsExhausted`
+  (the sink kept requesting retraining past `max_retrains`). `FallbackReason` is
   `#[non_exhaustive]`. A sink's request for a lower rate within the list is not an
   outcome: `train` steps down (LTS:4) and continues.
 - **`TrainingError::Scdc(e)` / `TrainingError::Phy(e)`** — a hard I/O failure from the

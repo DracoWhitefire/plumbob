@@ -28,19 +28,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`FrlConfig` is `Config_1`**: the rate and FFE levels. `dsc_frl_max` is removed, as is
   `TrainingConfig::dsc_frl_max`.
 - **`TrainingConfig` has poll limits per state**: `flt_ready_polls` (default 50),
-  `ltp_polls` (100), `frl_start_polls` (125) and `no_timeout_poll_cap` (100 000), replacing
-  `flt_ready_timeout`, `frl_start_timeout` and `ltp_timeout` (each 1000). The defaults
-  reproduce the spec's 100 ms and 200 ms timeouts, and a 250 ms `FRL_start` wait, at one
-  poll every 2 ms.
+  `ltp_polls` (100), `frl_start_polls` (100) and `no_timeout_poll_cap` (500), replacing
+  `flt_ready_timeout`, `frl_start_timeout` and `ltp_timeout` (each 1000), plus
+  `max_retrains` (3). The defaults reproduce the spec's 100 ms and 200 ms timeouts and the
+  AMD and Intel drivers' 200 ms `FRL_start` wait at one poll every 2 ms; the
+  `FLT_no_timeout` cap and the retrain count follow the AMD driver.
 - **`TrainingOutcome::FallbackRequired` carries a `reason`** (`FallbackReason`:
-  `FltReadyTimeout`, `TrainingTimeout`, `FrlStartTimeout` or `RatesExhausted`), and every
-  fallback leaves the sink and PHY in TMDS.
+  `FltReadyTimeout`, `TrainingTimeout`, `FrlStartTimeout`, `RatesExhausted` or
+  `RetrainsExhausted`), and every fallback leaves the sink and PHY in TMDS.
 - **`HdmiPhy` calls follow hdmi-hal's per-lane model**: `send_ltp` receives the full
   per-lane pattern set, `adjust_equalization` the per-lane TxFFE levels, and
   `set_frl_output(GapOnly)` is sent during training and LTS:P.
 - **`TrainingEvent` records the new states** (`FltReady`, `RateConfigured`,
   `LtpRequested`, `FfeRaised`, `TrainingPassed`, `RateLowered`, `RatesExhausted`,
-  `RetrainRequested`, `FrlStart`, `ExitedToTmds`, the three timeouts and
+  `RetrainRequested`, `RetrainsExhausted`, `FrlStart`, `ExitedToTmds`, the three timeouts and
   `SourceTestConfigRead`), and `TrainingTrace` records the list of rates instead of a
   single `rate`.
 
@@ -54,7 +55,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and holds it there, and a Nyquist clock request is honoured only under `FLT_no_timeout`.
 - **`FLT_no_timeout` support** — when the sink sets it in `Source_Test_Configuration`, the
   LTS:2 and LTS:3 poll limits are suspended, up to `no_timeout_poll_cap`.
-- **Retraining from LTS:P** — a `FLT_update` before `FRL_start` returns to LTS:3.
+- **Retraining from LTS:P** — a `FLT_update` before `FRL_start` returns to LTS:3, up to
+  `TrainingConfig::max_retrains` times per call (default 3); the next request ends the
+  attempt with `RetrainsExhausted`, so training always terminates.
 - `LtpRequests`, `UpdateFlags` and `SourceTestConfig` — the per-lane requests, the
   `Update_0` flags and the `Source_Test_Configuration` field the state machine uses.
 

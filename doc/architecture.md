@@ -153,9 +153,15 @@ sink's request does.
    - **`frl_start`** — clear it and return `Success`. The caller starts video
      (`set_frl_output(Active)`) on the PHY it gets back from `into_parts`, or through the
      trainer it keeps.
-   - **`flt_update`** — the sink requests retraining: go back to LTS:3.
+   - **`flt_update`** — the sink requests retraining: go back to LTS:3, at most
+     `TrainingConfig::max_retrains` times per `train` call. The next request after that
+     goes to LTS:L and returns `FallbackRequired { reason: RetrainsExhausted }`.
 3. If neither arrives within the limit, go to LTS:L and return
    `FallbackRequired { reason: FrlStartTimeout }`.
+
+After `Success` the sink can still request retraining during active video by setting
+`FLT_update`; plumbob does not watch for it. The caller polls `Update_0` (the Xilinx
+driver checks every 250 ms) and calls `train` again when it is set.
 
 ### LTS:4 — Lower rate
 
@@ -274,6 +280,8 @@ pub enum FallbackReason {
     /// LTS:4: the sink requested a lower rate than the last one in the list
     /// (or the list was empty).
     RatesExhausted,
+    /// LTS:P: the sink requested retraining after max_retrains retrains.
+    RetrainsExhausted,
 }
 
 #[non_exhaustive]
@@ -285,10 +293,12 @@ pub struct TrainingConfig {
     pub flt_ready_polls: u32,
     /// Poll limit for LTS:3. Default 100 (200 ms at 2 ms per poll).
     pub ltp_polls: u32,
-    /// Poll limit for FRL_start in LTS:P. Default 125 (250 ms at 2 ms per poll).
+    /// Poll limit for FRL_start in LTS:P. Default 100 (200 ms at 2 ms per poll).
     pub frl_start_polls: u32,
-    /// Hard cap on polls while the sink sets FLT_no_timeout. Default 100 000.
+    /// Hard cap on polls while the sink sets FLT_no_timeout. Default 500.
     pub no_timeout_poll_cap: u32,
+    /// Returns from LTS:P to LTS:3 allowed per train call. Default 3.
+    pub max_retrains: u32,
 }
 ```
 
@@ -346,6 +356,8 @@ pub enum TrainingEvent {
     TrainingTimeout { polls: u32 },
     /// LTS:P: the sink requested retraining (FLT_update) before FRL_start.
     RetrainRequested,
+    /// LTS:P: the sink requested retraining once more after max_retrains retrains.
+    RetrainsExhausted { retrains: u32 },
     /// LTS:P: FRL_start asserted. Training succeeded.
     FrlStart { after_polls: u32 },
     /// LTS:P: FRL_start did not assert.
@@ -538,15 +550,23 @@ and recorded by `hdmi-hal-i2c-dev`'s `StubPhy`):
 - The sink's rate-drop request is handled inside `train` (LTS:4) over the caller's rate
   list, and every non-success is `FallbackRequired { reason }` with a non-exhaustive
   `FallbackReason`.
-- Poll limits default to 50 / 100 / 125 polls (100 / 200 / 250 ms at 2 ms per poll), with
-  `FLT_no_timeout` honoured up to `no_timeout_poll_cap` (100 000 polls).
+- Poll limits default to 50 / 100 / 100 polls (100 / 200 / 200 ms at 2 ms per poll), with
+  `FLT_no_timeout` honoured up to `no_timeout_poll_cap` (500 polls). The 200 ms
+  `FRL_start` wait is the AMD and Intel drivers' (the Xilinx driver has none), and the
+  500-poll cap is the AMD driver's (the Xilinx driver has none, the Intel series does not
+  handle `FLT_no_timeout`).
 - A lane's TxFFE level is raised up to the advertised maximum and held there.
 - A Nyquist clock request (0x3) without `FLT_no_timeout` leaves the lane's previous pattern
   in place; plumbob tracks and sends the full per-lane set.
 - FRL output control (`set_frl_output`) is part of `HdmiPhy`.
 - In LTS:P, `FRL_start` is checked before `FLT_update` when both are set.
 - Retraining from LTS:P keeps each lane's pattern and TxFFE level and starts LTS:3 with a
-  fresh poll limit; levels are reset only in LTS:2 and LTS:4.
+  fresh poll limit; levels are reset only in LTS:2 and LTS:4. Retraining is bounded by
+  `max_retrains` (default 3) per `train` call, so the LTS:P ↔ LTS:3 cycle always ends.
+  The reference drivers differ here: Xilinx returns to LTS:3 without a limit (its state
+  machine is timer-driven, not blocking), AMD reruns the whole procedure up to 3 times,
+  and Intel falls back to TMDS on the first request. The default borrows AMD's count;
+  `max_retrains: 0` gives Intel's behaviour.
 - A 0xF on some lanes but not all keeps those lanes' state, like 0x0; only 0xF on every
   active lane lowers the rate.
 - The state machine does not call `read_ced`; CED counters are diagnostics.

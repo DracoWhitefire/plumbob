@@ -96,8 +96,9 @@ fn training_config_defaults() {
     assert_eq!(config.ffe_levels, FfeLevels::default());
     assert_eq!(config.flt_ready_polls, 50);
     assert_eq!(config.ltp_polls, 100);
-    assert_eq!(config.frl_start_polls, 125);
-    assert_eq!(config.no_timeout_poll_cap, 100_000);
+    assert_eq!(config.frl_start_polls, 100);
+    assert_eq!(config.no_timeout_poll_cap, 500);
+    assert_eq!(config.max_retrains, 3);
 }
 
 // --- TrainingError
@@ -747,6 +748,87 @@ fn flt_update_in_lts_p_returns_to_lts_3() {
     );
 }
 
+/// A sink that passes training and then asks to retrain `retrains` times.
+fn retraining_sink(retrains: usize) -> SimSink {
+    let mut sink = SimSink::new()
+        .flt_ready_after(0)
+        .round(0, all(LtpReq::None));
+    for _ in 0..retrains {
+        sink = sink.round(0, all(LtpReq::None));
+    }
+    sink.frl_start_after(0)
+}
+
+fn retrain_count(phy: &SimPhy) -> usize {
+    // Each pass through LTS:P sets gap-only output once.
+    phy.calls
+        .iter()
+        .filter(|c| **c == PhyCall::SetFrlOutput(FrlOutput::GapOnly))
+        .count()
+        - 2
+}
+
+#[test]
+fn retrains_up_to_max_retrains_then_falls_back() {
+    let config = TrainingConfig {
+        max_retrains: 3,
+        ..TrainingConfig::default()
+    };
+    // Three retrains are allowed; the fourth request ends the attempt.
+    let (outcome, sink, phy) = run(retraining_sink(4), &[RATE], &config);
+    assert_eq!(outcome, fallback(FallbackReason::RetrainsExhausted));
+    assert_eq!(retrain_count(&phy), 3);
+    assert_eq!(phy_rates(&phy).last(), Some(&HdmiForumFrl::NotSupported));
+    assert_eq!(frl_configs(&sink).last(), Some(&HdmiForumFrl::NotSupported));
+}
+
+#[test]
+fn retrains_within_max_retrains_succeed() {
+    let config = TrainingConfig {
+        max_retrains: 3,
+        ..TrainingConfig::default()
+    };
+    let (outcome, _, phy) = run(retraining_sink(3), &[RATE], &config);
+    assert_eq!(
+        outcome,
+        TrainingOutcome::Success {
+            achieved_rate: RATE
+        }
+    );
+    assert_eq!(retrain_count(&phy), 3);
+}
+
+#[test]
+fn max_retrains_0_falls_back_on_the_first_request() {
+    let config = TrainingConfig {
+        max_retrains: 0,
+        ..TrainingConfig::default()
+    };
+    let (outcome, _, phy) = run(retraining_sink(1), &[RATE], &config);
+    assert_eq!(outcome, fallback(FallbackReason::RetrainsExhausted));
+    assert_eq!(retrain_count(&phy), 0);
+}
+
+#[test]
+fn the_retrain_budget_covers_the_whole_call() {
+    // One retrain at 12 Gbps uses the budget; after stepping down to 10 Gbps, the next
+    // request exhausts it.
+    let config = TrainingConfig {
+        max_retrains: 1,
+        ..TrainingConfig::default()
+    };
+    let sink = SimSink::new()
+        .flt_ready_after(0)
+        .round(0, all(LtpReq::None))
+        .round(0, all(LtpReq::RateChange))
+        .round(0, all(LtpReq::None))
+        .round(0, all(LtpReq::None))
+        .frl_start_after(0);
+    let (outcome, sink, _) = run(sink, &[R12, R10], &config);
+    assert_eq!(outcome, fallback(FallbackReason::RetrainsExhausted));
+    assert_eq!(frl_configs(&sink), [R12, R10, HdmiForumFrl::NotSupported]);
+}
+
 // --- Errors
 
 /// A sink that exercises every SCDC operation the state machine uses.
@@ -933,6 +1015,35 @@ mod traced {
                 },
                 TrainingEvent::RatesExhausted,
                 TrainingEvent::ExitedToTmds,
+            ]
+        );
+    }
+
+    #[test]
+    fn exhausted_retrains_end_in_tmds() {
+        let config = TrainingConfig {
+            max_retrains: 1,
+            ..TrainingConfig::default()
+        };
+        let (_, trace) = trace(retraining_sink(2), &[RATE], &config);
+        let tail: Vec<_> = trace
+            .events
+            .iter()
+            .filter(|e| {
+                matches!(
+                    e,
+                    TrainingEvent::RetrainRequested
+                        | TrainingEvent::RetrainsExhausted { .. }
+                        | TrainingEvent::ExitedToTmds
+                )
+            })
+            .collect();
+        assert_eq!(
+            tail,
+            [
+                &TrainingEvent::RetrainRequested,
+                &TrainingEvent::RetrainsExhausted { retrains: 1 },
+                &TrainingEvent::ExitedToTmds,
             ]
         );
     }

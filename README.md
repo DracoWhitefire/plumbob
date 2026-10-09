@@ -116,8 +116,8 @@ flowchart TD
     P4 -- next rate --> P3
     P4 -- "list exhausted" --> PL
     PP -- FRL_start --> S
-    PP -- FLT_update --> P3
-    PP -- timeout --> PL
+    PP -- "FLT_update (retrain)" --> P3
+    PP -- "timeout or retrains exhausted" --> PL
     PL --> F
 ```
 
@@ -131,17 +131,22 @@ the full per-lane set is sent to the PHY after every `FLT_update`. All lanes rep
 0x0 passes training; all lanes reporting 0xF asks for a lower rate.
 
 **LTS:P** sends gap characters until the sink sets `FRL_start` (success) or `FLT_update`
-(retrain). After `Success`, the caller starts video with `set_frl_output(Active)`.
+(retrain, up to `TrainingConfig::max_retrains` times per call). After `Success`, the caller
+starts video with `set_frl_output(Active)`. After `Success` the sink can still request retraining during active video by setting
+`FLT_update`; plumbob does not watch for it. The caller polls `Update_0` (the Xilinx
+driver checks every 250 ms) and calls `train` again when it is set.
 
 **LTS:4** moves to the next rate in the list and continues LTS:3 there. **LTS:L**
 returns both ends to TMDS before any `FallbackRequired`.
 
 Poll limits are exact counts: N means exactly N polls before the state gives up. The
-defaults (50 / 100 / 125 polls) reproduce the spec's 100 ms and 200 ms timeouts, and a
-250 ms `FRL_start` wait, at one poll every 2 ms. The inter-poll delay is the
-implementer's responsibility and belongs inside the polled `ScdcClient` methods. When the
-sink sets `FLT_no_timeout`, the LTS:2 and LTS:3 limits are suspended, up to
-`TrainingConfig::no_timeout_poll_cap`.
+defaults (50 / 100 / 100 polls) reproduce the spec's 100 ms and 200 ms timeouts, and the
+200 ms `FRL_start` wait of the AMD and Intel drivers, at one poll every 2 ms. The
+inter-poll delay is the implementer's responsibility and belongs inside the polled
+`ScdcClient` methods. When the sink sets `FLT_no_timeout`, the LTS:2 and LTS:3 limits are
+suspended, up to `TrainingConfig::no_timeout_poll_cap` (default 500 polls, the AMD
+driver's cap). Retraining from LTS:P is bounded by `TrainingConfig::max_retrains`
+(default 3); the next request after that ends the attempt with `RetrainsExhausted`.
 
 See [`doc/architecture.md`](doc/architecture.md) for the procedure step by step.
 

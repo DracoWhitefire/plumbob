@@ -71,8 +71,14 @@ pub enum TrainingEvent {
         /// Polls made: the limit.
         polls: u32,
     },
-    /// LTS:P: the sink requested retraining (`FLT_update`) before `FRL_start`.
+    /// LTS:P: the sink requested retraining (`FLT_update`) before `FRL_start`; training
+    /// returns to LTS:3.
     RetrainRequested,
+    /// LTS:P: the sink requested retraining once more after `max_retrains` retrains.
+    RetrainsExhausted {
+        /// Retrains made: `max_retrains`.
+        retrains: u32,
+    },
     /// LTS:P: `FRL_start` asserted. Training succeeded.
     FrlStart {
         /// Polls of `Update_0` in LTS:P, including the one that saw it.
