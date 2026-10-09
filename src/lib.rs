@@ -16,15 +16,16 @@
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
-mod lts;
 mod scdc;
 mod trace;
 mod training;
 mod types;
 
 pub use scdc::ScdcClient;
-pub use training::{FrlTrainer, TrainingConfig, TrainingError, TrainingOutcome};
-pub use types::{CedCount, CedCounters, FfeLevels, FrlConfig, LtpReq, TrainingStatus};
+pub use training::{FallbackReason, FrlTrainer, TrainingConfig, TrainingError, TrainingOutcome};
+pub use types::{
+    CedCount, CedCounters, FfeLevels, FrlConfig, LtpReq, LtpRequests, SourceTestConfig, UpdateFlags,
+};
 
 #[cfg(feature = "alloc")]
 pub use trace::{TrainingEvent, TrainingTrace};

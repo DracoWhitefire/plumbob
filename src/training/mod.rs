@@ -1,26 +1,46 @@
 use display_types::cea861::hdmi_forum::HdmiForumFrl;
-use hdmi_hal::phy::{HdmiPhy, LanePatterns, LtpPattern};
-
-#[cfg(feature = "alloc")]
-use alloc::vec::Vec;
+use hdmi_hal::phy::{
+    EqParams, FrlOutput, HdmiPhy, LaneEqParams, LanePatterns, LtpPattern, TxFfeLevel,
+};
 
 use crate::scdc::ScdcClient;
 use crate::trace::TrainingEvent;
-use crate::types::{FfeLevels, FrlConfig, LtpReq, TrainingStatus};
+use crate::types::{FfeLevels, FrlConfig, LtpReq, LtpRequests, UpdateFlags};
 
-/// Outcome of a training attempt at a single FRL rate.
+#[cfg(feature = "alloc")]
+use crate::trace::TrainingTrace;
+#[cfg(feature = "alloc")]
+use alloc::vec::Vec;
+
+/// Why a training attempt ended without a link.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FallbackReason {
+    /// LTS:2: `FLT_ready` did not assert within the poll limit.
+    FltReadyTimeout,
+    /// LTS:3: the lanes did not pass within the poll limit.
+    TrainingTimeout,
+    /// LTS:P: `FRL_start` did not assert within the poll limit.
+    FrlStartTimeout,
+    /// LTS:4: the sink requested a lower rate than the last one in the list (or the
+    /// list was empty).
+    RatesExhausted,
+}
+
+/// The result of a training attempt.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrainingOutcome {
-    /// All lanes satisfied. The link is ready at this rate.
+    /// Training passed and the sink set `FRL_start`. The link is ready at this rate.
     Success {
         /// The FRL rate at which training succeeded.
         achieved_rate: HdmiForumFrl,
     },
-    /// Training did not converge within the configured timeout.
-    ///
-    /// The caller should retry at a lower rate or fall back to TMDS.
-    FallbackRequired,
+    /// Training did not succeed at any of the rates.
+    FallbackRequired {
+        /// Why the attempt ended.
+        reason: FallbackReason,
+    },
 }
 
 /// Hard error that terminated a training attempt.
@@ -37,58 +57,227 @@ pub enum TrainingError<ScdcErr, PhyErr> {
 
 /// Per-attempt training configuration.
 ///
-/// Construct via [`TrainingConfig::default`] and override individual fields as
-/// needed for your polling cadence and hardware constraints.
+/// Construct via [`TrainingConfig::default`] and override fields as needed. Poll limits
+/// are exact counts: N means exactly N polls before the state gives up. The defaults
+/// assume one poll every 2 ms.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TrainingConfig {
-    /// FFE levels advertised to the sink in Config_0.
+    /// Highest TxFFE level the source supports, written to `Config_1` (limited per rate).
     pub ffe_levels: FfeLevels,
-    /// Whether to set DSC_FRL_Max in Config_0.
-    ///
-    /// Set to `true` when the negotiated configuration requires DSC transport.
-    /// plumbob passes this through into `FrlConfig` without interpreting it.
-    /// Defaults to `false`.
-    pub dsc_frl_max: bool,
-    /// Maximum number of polls to attempt while waiting for `flt_ready` (phase 2).
-    ///
-    /// The loop reads the training status register up to this many times. If
-    /// `flt_ready` has not been asserted after exactly `flt_ready_timeout` polls,
-    /// the attempt returns [`TrainingOutcome::FallbackRequired`]. A value of `0`
-    /// means no polls are attempted and the phase times out immediately.
-    pub flt_ready_timeout: u32,
-    /// Maximum number of polls to attempt while waiting for `frl_start` (phase 3).
-    ///
-    /// Identical semantics to [`flt_ready_timeout`](Self::flt_ready_timeout): at
-    /// most `frl_start_timeout` polls are made before the attempt returns
-    /// [`TrainingOutcome::FallbackRequired`].
-    pub frl_start_timeout: u32,
-    /// Maximum number of poll iterations in the LTP training loop (phase 4).
-    ///
-    /// Identical semantics to [`flt_ready_timeout`](Self::flt_ready_timeout): at
-    /// most `ltp_timeout` iterations run before the attempt returns
-    /// [`TrainingOutcome::FallbackRequired`].
-    pub ltp_timeout: u32,
+    /// Poll limit for `FLT_ready` in LTS:2. Default 50 (100 ms at 2 ms per poll).
+    pub flt_ready_polls: u32,
+    /// Poll limit for LTS:3. Default 100 (200 ms at 2 ms per poll).
+    pub ltp_polls: u32,
+    /// Poll limit for `FRL_start` in LTS:P. Default 125 (250 ms at 2 ms per poll).
+    pub frl_start_polls: u32,
+    /// Hard cap on the LTS:2 and LTS:3 polls while the sink sets `FLT_no_timeout`.
+    /// Default 100 000.
+    pub no_timeout_poll_cap: u32,
 }
 
 impl Default for TrainingConfig {
     fn default() -> Self {
         Self {
-            ffe_levels: FfeLevels::Ffe0,
-            dsc_frl_max: false,
-            flt_ready_timeout: 1000,
-            frl_start_timeout: 1000,
-            ltp_timeout: 1000,
+            ffe_levels: FfeLevels::default(),
+            flt_ready_polls: 50,
+            ltp_polls: 100,
+            frl_start_polls: 125,
+            no_timeout_poll_cap: 100_000,
         }
     }
 }
 
+const FLT_UPDATE: UpdateFlags = UpdateFlags {
+    source_test_update: false,
+    frl_start: false,
+    flt_update: true,
+};
+
+const FRL_START: UpdateFlags = UpdateFlags {
+    source_test_update: false,
+    frl_start: true,
+    flt_update: false,
+};
+
+const SOURCE_TEST_UPDATE: UpdateFlags = UpdateFlags {
+    source_test_update: true,
+    frl_start: false,
+    flt_update: false,
+};
+
+/// The number of lanes in use at `rate`: 3 for the 3-lane rates, 4 otherwise.
+fn lane_count(rate: HdmiForumFrl) -> usize {
+    match rate {
+        HdmiForumFrl::Rate3Gbps3Lanes | HdmiForumFrl::Rate6Gbps3Lanes => 3,
+        _ => 4,
+    }
+}
+
+/// The same pattern (or none) on every lane in use.
+fn uniform(count: usize, pattern: Option<LtpPattern>) -> LanePatterns {
+    let lane = |i| if i < count { pattern } else { None };
+    LanePatterns {
+        lane0: lane(0),
+        lane1: lane(1),
+        lane2: lane(2),
+        lane3: lane(3),
+    }
+}
+
+/// The equalization settings for one lane at the given TxFFE level.
+fn lane_eq(level: u8) -> LaneEqParams {
+    let mut params = LaneEqParams::default();
+    // Levels are kept at or below `FfeLevels::MAX` (7), so the fallback is never used.
+    params.tx_ffe_level = TxFfeLevel::new(level).unwrap_or(TxFfeLevel::MAX);
+    params
+}
+
+/// Each lane's current pattern and TxFFE level, held by plumbob through LTS:3. The PHY
+/// applies exactly what it is given.
+#[derive(Debug)]
+struct Lanes {
+    count: usize,
+    patterns: [Option<LtpPattern>; 4],
+    levels: [u8; 4],
+}
+
+impl Lanes {
+    /// Every lane with no pattern and TxFFE level 0.
+    fn new(rate: HdmiForumFrl) -> Self {
+        Self {
+            count: lane_count(rate),
+            patterns: [None; 4],
+            levels: [0; 4],
+        }
+    }
+
+    /// Updates each lane from the sink's request for it, recording each TxFFE raise.
+    /// Returns whether any TxFFE level changed.
+    fn apply<F: FnMut(TrainingEvent)>(
+        &mut self,
+        requests: LtpRequests,
+        no_timeout: bool,
+        max_level: u8,
+        record: &mut F,
+    ) -> bool {
+        let requests = [
+            requests.lane0,
+            requests.lane1,
+            requests.lane2,
+            requests.lane3,
+        ];
+        let mut ffe_changed = false;
+        for (lane, request) in requests.into_iter().enumerate().take(self.count) {
+            match request {
+                // Without FLT_no_timeout the lane keeps its previous pattern, as the
+                // Xilinx driver does (spec Table 6-32, LTP3 row).
+                LtpReq::NyquistClock if !no_timeout => {}
+                LtpReq::FfeChange => {
+                    // Held at the maximum once reached.
+                    if self.levels[lane] < max_level {
+                        self.levels[lane] += 1;
+                        ffe_changed = true;
+                        record(TrainingEvent::FfeRaised {
+                            // At most 4 lanes and level 7: both fit in a u8.
+                            lane: lane as u8,
+                            level: self.levels[lane],
+                        });
+                    }
+                }
+                // 0x0 (and a 0xF on only some lanes) keeps the lane's pattern and level.
+                request => {
+                    if let Some(pattern) = request.pattern() {
+                        self.patterns[lane] = Some(pattern);
+                    }
+                }
+            }
+        }
+        ffe_changed
+    }
+
+    /// Whether every lane in use made the given request.
+    fn all(&self, requests: LtpRequests, request: LtpReq) -> bool {
+        [
+            requests.lane0,
+            requests.lane1,
+            requests.lane2,
+            requests.lane3,
+        ][..self.count]
+            .iter()
+            .all(|r| *r == request)
+    }
+
+    fn patterns(&self) -> LanePatterns {
+        let lane = |i: usize| {
+            if i < self.count {
+                self.patterns[i]
+            } else {
+                None
+            }
+        };
+        LanePatterns {
+            lane0: lane(0),
+            lane1: lane(1),
+            lane2: lane(2),
+            lane3: lane(3),
+        }
+    }
+
+    fn eq_params(&self) -> EqParams {
+        let mut params = EqParams::new();
+        params.lane0 = lane_eq(self.levels[0]);
+        params.lane1 = lane_eq(self.levels[1]);
+        params.lane2 = lane_eq(self.levels[2]);
+        params.lane3 = (self.count == 4).then(|| lane_eq(self.levels[3]));
+        params
+    }
+}
+
+/// The link training states.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum State {
+    /// LTS:2.
+    Prepare,
+    /// LTS:3.
+    Train,
+    /// LTS:P.
+    Pass,
+    /// LTS:4.
+    LowerRate,
+    /// Training passed and the sink set `FRL_start`.
+    Success,
+    /// The attempt ends without a link.
+    Fallback(FallbackReason),
+}
+
+/// The state of one call to `train`.
+#[derive(Debug)]
+struct Attempt {
+    rate: HdmiForumFrl,
+    lanes: Lanes,
+    /// The sink's `FLT_no_timeout`, as last read.
+    no_timeout: bool,
+}
+
+impl Attempt {
+    /// The poll limit for LTS:2 and LTS:3: `normal`, or the cap while the sink sets
+    /// `FLT_no_timeout`.
+    fn limit(&self, config: &TrainingConfig, normal: u32) -> u32 {
+        if self.no_timeout {
+            config.no_timeout_poll_cap
+        } else {
+            normal
+        }
+    }
+}
+
+type Error<C, P> = TrainingError<<C as ScdcClient>::Error, <P as HdmiPhy>::Error>;
+
 /// The central training type. Owns an `ScdcClient` and an `HdmiPhy`.
 ///
-/// `FrlTrainer` is reusable across multiple `train_at_rate` calls. A caller
-/// performing rate fallback calls `train_at_rate` repeatedly on the same trainer,
-/// stepping down through FRL tiers, without reconstructing it between attempts.
-/// Use `into_parts` to recover the SCDC client and PHY when training is finished.
+/// Reusable across training attempts; use [`into_parts`](Self::into_parts) to recover
+/// the SCDC client and PHY when training is finished.
 pub struct FrlTrainer<C, P> {
     scdc: C,
     phy: P,
@@ -105,191 +294,322 @@ impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
         (self.scdc, self.phy)
     }
 
-    /// Runs the full four-phase FRL training sequence at the given rate.
-    ///
-    /// Returns [`TrainingOutcome::Success`] when all lanes satisfy their LTP
-    /// requests, or [`TrainingOutcome::FallbackRequired`] if any phase times out.
-    /// A [`TrainingError`] is returned only on hard I/O failures.
+    /// Trains at a single rate: `train(&[rate], config)`.
     pub fn train_at_rate(
         &mut self,
         rate: HdmiForumFrl,
         config: &TrainingConfig,
-    ) -> Result<TrainingOutcome, TrainingError<C::Error, P::Error>> {
-        self.train_inner(rate, config, &mut |_| {})
+    ) -> Result<TrainingOutcome, Error<C, P>> {
+        self.train(&[rate], config)
     }
 
-    /// Like [`FrlTrainer::train_at_rate`], but also returns a `TrainingTrace`
-    /// recording the full event sequence.
+    /// Trains over `rates` in order, stepping down when the sink requests it.
+    ///
+    /// Returns [`TrainingOutcome::Success`] once the sink sets `FRL_start`, or
+    /// [`TrainingOutcome::FallbackRequired`] with the reason the attempt ended. An empty
+    /// list returns `FallbackRequired { reason: RatesExhausted }` without touching the
+    /// sink. A [`TrainingError`] is returned only on SCDC or PHY failures.
+    pub fn train(
+        &mut self,
+        rates: &[HdmiForumFrl],
+        config: &TrainingConfig,
+    ) -> Result<TrainingOutcome, Error<C, P>> {
+        self.run(rates, config, &mut |_| {})
+    }
+
+    /// Like [`train_at_rate`](Self::train_at_rate), and also returns a [`TrainingTrace`]
+    /// of the attempt.
     #[cfg(feature = "alloc")]
     pub fn train_at_rate_traced(
         &mut self,
         rate: HdmiForumFrl,
         config: &TrainingConfig,
-    ) -> Result<(TrainingOutcome, crate::trace::TrainingTrace), TrainingError<C::Error, P::Error>>
-    {
-        let mut events = Vec::new();
-        let outcome = self.train_inner(rate, config, &mut |e| events.push(e))?;
-        Ok((
-            outcome,
-            crate::trace::TrainingTrace {
-                rate,
-                config: *config,
-                events,
-            },
-        ))
+    ) -> Result<(TrainingOutcome, TrainingTrace), Error<C, P>> {
+        self.train_traced(&[rate], config)
     }
 
-    /// Polls `read_training_status` until `condition` is satisfied or `timeout`
-    /// iterations have elapsed. Emits the appropriate event via `record` in both
-    /// cases. Returns `None` when the condition was met (caller should proceed) or
-    /// `Some(TrainingOutcome::FallbackRequired)` on timeout.
-    ///
-    /// `i` counts polls attempted so far. At the point the condition is met it
-    /// reflects how many prior reads failed; at timeout it equals `timeout` exactly.
-    fn poll_until<F>(
+    /// Like [`train`](Self::train), and also returns a [`TrainingTrace`] of the attempt.
+    #[cfg(feature = "alloc")]
+    pub fn train_traced(
         &mut self,
-        timeout: u32,
-        condition: impl Fn(&TrainingStatus) -> bool,
-        on_success: impl FnOnce(u32) -> TrainingEvent,
-        on_timeout: impl FnOnce(u32) -> TrainingEvent,
+        rates: &[HdmiForumFrl],
+        config: &TrainingConfig,
+    ) -> Result<(TrainingOutcome, TrainingTrace), Error<C, P>> {
+        let mut events = Vec::new();
+        let outcome = self.run(rates, config, &mut |event| events.push(event))?;
+        Ok((outcome, TrainingTrace::new(rates.to_vec(), *config, events)))
+    }
+
+    /// The state machine. `record` is called with each [`TrainingEvent`] as it occurs;
+    /// the untraced path passes a closure that does nothing, which the compiler removes.
+    fn run<F: FnMut(TrainingEvent)>(
+        &mut self,
+        rates: &[HdmiForumFrl],
+        config: &TrainingConfig,
         record: &mut F,
-    ) -> Result<Option<TrainingOutcome>, TrainingError<C::Error, P::Error>>
-    where
-        F: FnMut(TrainingEvent),
-    {
-        let mut i = 0u32;
+    ) -> Result<TrainingOutcome, Error<C, P>> {
+        let mut rates = rates.iter().copied();
+        let Some(rate) = rates.next() else {
+            return Ok(TrainingOutcome::FallbackRequired {
+                reason: FallbackReason::RatesExhausted,
+            });
+        };
+        let mut attempt = Attempt {
+            rate,
+            lanes: Lanes::new(rate),
+            no_timeout: false,
+        };
+        let mut state = State::Prepare;
         loop {
-            let status = self
-                .scdc
-                .read_training_status()
-                .map_err(TrainingError::Scdc)?;
-            if condition(&status) {
-                record(on_success(i));
-                return Ok(None);
-            }
-            i += 1;
-            if i >= timeout {
-                record(on_timeout(i));
-                return Ok(Some(TrainingOutcome::FallbackRequired));
-            }
+            state = match state {
+                State::Prepare => self.prepare(&mut attempt, config, record)?,
+                State::Train => self.train_lanes(&mut attempt, config, record)?,
+                State::Pass => self.pass(&attempt, config, record)?,
+                State::LowerRate => match rates.next() {
+                    Some(next) => self.lower_rate(&mut attempt, next, config, record)?,
+                    None => {
+                        record(TrainingEvent::RatesExhausted);
+                        State::Fallback(FallbackReason::RatesExhausted)
+                    }
+                },
+                State::Success => {
+                    return Ok(TrainingOutcome::Success {
+                        achieved_rate: attempt.rate,
+                    });
+                }
+                State::Fallback(reason) => {
+                    self.exit_to_tmds(record)?;
+                    return Ok(TrainingOutcome::FallbackRequired { reason });
+                }
+            };
         }
     }
 
-    /// Core four-phase training sequence.
-    ///
-    /// `record` is called with each [`TrainingEvent`] as it occurs. Pass
-    /// `&mut |_| {}` for the non-traced path; the compiler eliminates the
-    /// call entirely in optimised builds.
-    fn train_inner<F>(
+    /// LTS:2: wait for the sink, configure the PHY and write `Config_0` and `Config_1`.
+    fn prepare<F: FnMut(TrainingEvent)>(
         &mut self,
+        attempt: &mut Attempt,
+        config: &TrainingConfig,
+        record: &mut F,
+    ) -> Result<State, Error<C, P>> {
+        if self.read_update_flags()?.source_test_update {
+            self.read_source_test(attempt, record)?;
+        }
+
+        let limit = attempt.limit(config, config.flt_ready_polls);
+        match self.poll_flt_ready(limit)? {
+            Some(polls) => record(TrainingEvent::FltReady { after_polls: polls }),
+            None => {
+                record(TrainingEvent::FltReadyTimeout { polls: limit });
+                return Ok(State::Fallback(FallbackReason::FltReadyTimeout));
+            }
+        }
+
+        self.clear(FLT_UPDATE)?;
+        self.adjust_equalization(attempt.lanes.eq_params())?;
+
+        let count = attempt.lanes.count;
+        self.phy
+            .set_frl_rate(attempt.rate)
+            .map_err(TrainingError::Phy)?;
+        self.send_ltp(uniform(count, Some(LtpPattern::NyquistClock)))?;
+
+        self.send_ltp(uniform(count, None))?;
+        self.set_frl_output(FrlOutput::GapOnly)?;
+
+        self.scdc
+            .write_config_0_defaults()
+            .map_err(TrainingError::Scdc)?;
+        self.write_rate(attempt.rate, config, record)?;
+        Ok(State::Train)
+    }
+
+    /// LTS:3: follow the sink's per-lane requests until it passes the lanes, asks for a
+    /// lower rate, or the poll limit runs out.
+    fn train_lanes<F: FnMut(TrainingEvent)>(
+        &mut self,
+        attempt: &mut Attempt,
+        config: &TrainingConfig,
+        record: &mut F,
+    ) -> Result<State, Error<C, P>> {
+        let max_level = config.ffe_levels.limited_to(attempt.rate).value();
+        let mut polls = 0;
+        loop {
+            let limit = attempt.limit(config, config.ltp_polls);
+            if polls >= limit {
+                record(TrainingEvent::TrainingTimeout { polls: limit });
+                return Ok(State::Fallback(FallbackReason::TrainingTimeout));
+            }
+            let flags = self.read_update_flags()?;
+            polls += 1;
+            if !flags.flt_update {
+                continue;
+            }
+            if flags.source_test_update {
+                self.read_source_test(attempt, record)?;
+            }
+
+            let requests = self.scdc.read_ltp_requests().map_err(TrainingError::Scdc)?;
+            if attempt.lanes.all(requests, LtpReq::None) {
+                record(TrainingEvent::TrainingPassed { after_polls: polls });
+                return Ok(State::Pass);
+            }
+            record(TrainingEvent::LtpRequested { requests });
+            if attempt.lanes.all(requests, LtpReq::RateChange) {
+                return Ok(State::LowerRate);
+            }
+
+            let ffe_changed = attempt
+                .lanes
+                .apply(requests, attempt.no_timeout, max_level, record);
+            self.send_ltp(attempt.lanes.patterns())?;
+            if ffe_changed {
+                self.adjust_equalization(attempt.lanes.eq_params())?;
+            }
+            self.clear(FLT_UPDATE)?;
+        }
+    }
+
+    /// LTS:P: send gap characters until the sink sets `FRL_start`, or asks to retrain.
+    fn pass<F: FnMut(TrainingEvent)>(
+        &mut self,
+        attempt: &Attempt,
+        config: &TrainingConfig,
+        record: &mut F,
+    ) -> Result<State, Error<C, P>> {
+        self.send_ltp(uniform(attempt.lanes.count, None))?;
+        self.set_frl_output(FrlOutput::GapOnly)?;
+        self.clear(FLT_UPDATE)?;
+
+        for polls in 1..=config.frl_start_polls {
+            let flags = self.read_update_flags()?;
+            if flags.frl_start {
+                self.clear(FRL_START)?;
+                record(TrainingEvent::FrlStart { after_polls: polls });
+                return Ok(State::Success);
+            }
+            if flags.flt_update {
+                record(TrainingEvent::RetrainRequested);
+                return Ok(State::Train);
+            }
+        }
+        record(TrainingEvent::FrlStartTimeout {
+            polls: config.frl_start_polls,
+        });
+        Ok(State::Fallback(FallbackReason::FrlStartTimeout))
+    }
+
+    /// LTS:4: continue training at `rate`, the next one in the list. The sink stays in
+    /// FRL; `FLT_ready` is not awaited again.
+    fn lower_rate<F: FnMut(TrainingEvent)>(
+        &mut self,
+        attempt: &mut Attempt,
         rate: HdmiForumFrl,
         config: &TrainingConfig,
         record: &mut F,
-    ) -> Result<TrainingOutcome, TrainingError<C::Error, P::Error>>
-    where
-        F: FnMut(TrainingEvent),
-    {
-        // Phase 1 — Configuration
-        self.scdc
-            .write_frl_config(FrlConfig {
-                rate,
-                ffe_levels: config.ffe_levels,
-                dsc_frl_max: config.dsc_frl_max,
-            })
-            .map_err(TrainingError::Scdc)?;
-        self.phy.set_frl_rate(rate).map_err(TrainingError::Phy)?;
-        record(TrainingEvent::RateConfigured {
-            rate,
-            ffe_levels: config.ffe_levels,
+    ) -> Result<State, Error<C, P>> {
+        self.send_ltp(LanePatterns::default())?;
+        record(TrainingEvent::RateLowered {
+            from: attempt.rate,
+            to: rate,
         });
 
-        // Phase 2 — Readiness: poll until the sink asserts flt_ready.
-        if let Some(outcome) = self.poll_until(
-            config.flt_ready_timeout,
-            |s| s.flt_ready,
-            |i| TrainingEvent::FltReadyReceived {
-                after_iterations: i,
-            },
-            |i| TrainingEvent::FltReadyTimeout {
-                iterations_elapsed: i,
-            },
-            record,
-        )? {
-            return Ok(outcome);
-        }
-
-        // Phase 3 — Initiation: poll until the sink asserts frl_start.
-        if let Some(outcome) = self.poll_until(
-            config.frl_start_timeout,
-            |s| s.frl_start,
-            |i| TrainingEvent::FrlStartReceived {
-                after_iterations: i,
-            },
-            |i| TrainingEvent::FrlStartTimeout {
-                iterations_elapsed: i,
-            },
-            record,
-        )? {
-            return Ok(outcome);
-        }
-
-        // Phase 4 — LTP loop.
-        self.ltp_loop(rate, config, record)
+        attempt.rate = rate;
+        attempt.lanes = Lanes::new(rate);
+        self.adjust_equalization(attempt.lanes.eq_params())?;
+        self.phy.set_frl_rate(rate).map_err(TrainingError::Phy)?;
+        self.clear(FLT_UPDATE)?;
+        self.write_rate(rate, config, record)?;
+        Ok(State::Train)
     }
 
-    /// Phase 4: drive LTP patterns until the sink signals all lanes satisfied.
-    ///
-    /// `read_ced` is called on each iteration; it will feed per-lane equalization
-    /// adjustments once `LaneEqParams` fields are defined in hdmi-hal.
-    /// `LtpPatternRequested` is emitted only on transitions, not every poll.
-    fn ltp_loop<F>(
+    /// LTS:L: leave both ends in TMDS. Stops the training patterns, returns the PHY to
+    /// TMDS, turns FRL off in `Config_1` and clears `FLT_update` if it is set, so a failed
+    /// attempt never leaves the sink configured for a rate the source is not driving.
+    fn exit_to_tmds<F: FnMut(TrainingEvent)>(&mut self, record: &mut F) -> Result<(), Error<C, P>> {
+        self.send_ltp(LanePatterns::default())?;
+        self.phy
+            .set_frl_rate(HdmiForumFrl::NotSupported)
+            .map_err(TrainingError::Phy)?;
+        self.scdc
+            .write_frl_config(FrlConfig {
+                rate: HdmiForumFrl::NotSupported,
+                ffe_levels: FfeLevels::default(),
+            })
+            .map_err(TrainingError::Scdc)?;
+        if self.read_update_flags()?.flt_update {
+            self.clear(FLT_UPDATE)?;
+        }
+        record(TrainingEvent::ExitedToTmds);
+        Ok(())
+    }
+
+    /// Writes `Config_1` with `rate` and the FFE levels limited for it.
+    fn write_rate<F: FnMut(TrainingEvent)>(
         &mut self,
         rate: HdmiForumFrl,
         config: &TrainingConfig,
         record: &mut F,
-    ) -> Result<TrainingOutcome, TrainingError<C::Error, P::Error>>
-    where
-        F: FnMut(TrainingEvent),
-    {
-        let mut i = 0u32;
-        let mut last_ltp: Option<LtpReq> = None;
-        loop {
-            let status = self
-                .scdc
-                .read_training_status()
-                .map_err(TrainingError::Scdc)?;
-            if status.ltp_req == LtpReq::None {
-                record(TrainingEvent::AllLanesSatisfied {
-                    after_iterations: i,
-                });
-                return Ok(TrainingOutcome::Success {
-                    achieved_rate: rate,
-                });
-            }
-            if Some(status.ltp_req) != last_ltp {
-                record(TrainingEvent::LtpPatternRequested {
-                    pattern: status.ltp_req,
-                });
-                last_ltp = Some(status.ltp_req);
-            }
-            let _ced = self.scdc.read_ced().map_err(TrainingError::Scdc)?;
-            let pattern: Option<LtpPattern> = status.ltp_req.into();
-            self.phy
-                .send_ltp(LanePatterns {
-                    lane0: pattern,
-                    lane1: pattern,
-                    lane2: pattern,
-                    lane3: pattern,
-                })
-                .map_err(TrainingError::Phy)?;
-            i += 1;
-            if i >= config.ltp_timeout {
-                record(TrainingEvent::LtpLoopTimeout {
-                    iterations_elapsed: i,
-                });
-                return Ok(TrainingOutcome::FallbackRequired);
+    ) -> Result<(), Error<C, P>> {
+        let ffe_levels = config.ffe_levels.limited_to(rate);
+        self.scdc
+            .write_frl_config(FrlConfig { rate, ffe_levels })
+            .map_err(TrainingError::Scdc)?;
+        record(TrainingEvent::RateConfigured { rate, ffe_levels });
+        Ok(())
+    }
+
+    /// Polls `FLT_ready` up to `limit` times. Returns the number of polls it took to
+    /// assert, or `None` if it did not.
+    fn poll_flt_ready(&mut self, limit: u32) -> Result<Option<u32>, Error<C, P>> {
+        for polls in 1..=limit {
+            if self.scdc.read_flt_ready().map_err(TrainingError::Scdc)? {
+                return Ok(Some(polls));
             }
         }
+        Ok(None)
+    }
+
+    /// Reads `Source_Test_Configuration` into the attempt and clears
+    /// `Source_Test_Update`.
+    fn read_source_test<F: FnMut(TrainingEvent)>(
+        &mut self,
+        attempt: &mut Attempt,
+        record: &mut F,
+    ) -> Result<(), Error<C, P>> {
+        let source_test = self
+            .scdc
+            .read_source_test_config()
+            .map_err(TrainingError::Scdc)?;
+        attempt.no_timeout = source_test.flt_no_timeout;
+        record(TrainingEvent::SourceTestConfigRead {
+            flt_no_timeout: source_test.flt_no_timeout,
+        });
+        self.clear(SOURCE_TEST_UPDATE)
+    }
+
+    fn read_update_flags(&mut self) -> Result<UpdateFlags, Error<C, P>> {
+        self.scdc.read_update_flags().map_err(TrainingError::Scdc)
+    }
+
+    fn clear(&mut self, flags: UpdateFlags) -> Result<(), Error<C, P>> {
+        self.scdc
+            .clear_update_flags(flags)
+            .map_err(TrainingError::Scdc)
+    }
+
+    fn send_ltp(&mut self, patterns: LanePatterns) -> Result<(), Error<C, P>> {
+        self.phy.send_ltp(patterns).map_err(TrainingError::Phy)
+    }
+
+    fn set_frl_output(&mut self, output: FrlOutput) -> Result<(), Error<C, P>> {
+        self.phy.set_frl_output(output).map_err(TrainingError::Phy)
+    }
+
+    fn adjust_equalization(&mut self, params: EqParams) -> Result<(), Error<C, P>> {
+        self.phy
+            .adjust_equalization(params)
+            .map_err(TrainingError::Phy)
     }
 }
 

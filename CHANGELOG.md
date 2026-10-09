@@ -7,6 +7,57 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking changes
+
+- **The training state machine follows the HDMI 2.1 link training states.** Training now
+  runs LTS:2 (prepare) → LTS:3 (train) → LTS:P (pass), with LTS:4 (lower rate) on the
+  sink's request and LTS:L (exit to TMDS) on every failure. The previous four-phase
+  sequence waited for `FRL_start` before the LTP loop, which a real sink never completes.
+- **`ScdcClient` has one method per register operation**: `read_flt_ready`,
+  `read_update_flags`, `clear_update_flags`, `read_ltp_requests`,
+  `read_source_test_config`, `write_config_0_defaults`, `write_frl_config` and `read_ced`.
+  `read_training_status` and `TrainingStatus` are removed. Implementations still enforce
+  the poll interval (2 ms by default) inside the polled methods.
+- **`LtpReq` has the HDMI 2.1 request values** — 0x0 (none), 0x1–0x8 (all ones, all
+  zeros, Nyquist clock, DDE compliance, LFSR 0–3), 0xE (`FfeChange`) and 0xF
+  (`RateChange`) — and is read per lane as `LtpRequests`. The previous values (1–4 =
+  LFSR 0–3) were wrong. `From<LtpReq> for LtpPattern` is replaced by `LtpReq::pattern()`.
+- **`FfeLevels` is a level index, 0–7**, constructed with `FfeLevels::new` instead of
+  `Ffe0`–`Ffe7` variants, and written to `Config_1` limited for the rate
+  (`FfeLevels::limited_to`: at most 3 up to 12 Gbps).
+- **`FrlConfig` is `Config_1`**: the rate and FFE levels. `dsc_frl_max` is removed, as is
+  `TrainingConfig::dsc_frl_max`.
+- **`TrainingConfig` has poll limits per state**: `flt_ready_polls` (default 50),
+  `ltp_polls` (100), `frl_start_polls` (125) and `no_timeout_poll_cap` (100 000), replacing
+  `flt_ready_timeout`, `frl_start_timeout` and `ltp_timeout` (each 1000). The defaults
+  reproduce the spec's 100 ms and 200 ms timeouts, and a 250 ms `FRL_start` wait, at one
+  poll every 2 ms.
+- **`TrainingOutcome::FallbackRequired` carries a `reason`** (`FallbackReason`:
+  `FltReadyTimeout`, `TrainingTimeout`, `FrlStartTimeout` or `RatesExhausted`), and every
+  fallback leaves the sink and PHY in TMDS.
+- **`HdmiPhy` calls follow hdmi-hal's per-lane model**: `send_ltp` receives the full
+  per-lane pattern set, `adjust_equalization` the per-lane TxFFE levels, and
+  `set_frl_output(GapOnly)` is sent during training and LTS:P.
+- **`TrainingEvent` records the new states** (`FltReady`, `RateConfigured`,
+  `LtpRequested`, `FfeRaised`, `TrainingPassed`, `RateLowered`, `RatesExhausted`,
+  `RetrainRequested`, `FrlStart`, `ExitedToTmds`, the three timeouts and
+  `SourceTestConfigRead`), and `TrainingTrace` records the list of rates instead of a
+  single `rate`.
+
+### Added
+
+- **`FrlTrainer::train(rates, config)`** — trains over a caller-supplied list of rates,
+  stepping down when the sink requests a lower rate (LTS:4). `train_at_rate` is `train`
+  with one rate. `train_traced` is its traced form, alongside `train_at_rate_traced`.
+- **Per-lane training** — plumbob tracks each lane's pattern and TxFFE level: pattern
+  requests apply per lane, 0xE raises the lane's TxFFE level up to the advertised maximum
+  and holds it there, and a Nyquist clock request is honoured only under `FLT_no_timeout`.
+- **`FLT_no_timeout` support** — when the sink sets it in `Source_Test_Configuration`, the
+  LTS:2 and LTS:3 poll limits are suspended, up to `no_timeout_poll_cap`.
+- **Retraining from LTS:P** — a `FLT_update` before `FRL_start` returns to LTS:3.
+- `LtpRequests`, `UpdateFlags` and `SourceTestConfig` — the per-lane requests, the
+  `Update_0` flags and the `Source_Test_Configuration` field the state machine uses.
+
 ### Changed
 
 - **`display-types` updated to 0.4** — tracks DisplayID 2.x support added in `piaf` 0.4.1.
