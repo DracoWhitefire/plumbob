@@ -24,7 +24,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   LFSR 0–3) were wrong. `From<LtpReq> for LtpPattern` is replaced by `LtpReq::pattern()`.
 - **`FfeLevels` is a level index, 0–7**, constructed with `FfeLevels::new` instead of
   `Ffe0`–`Ffe7` variants, and written to `Config_1` limited for the rate
-  (`FfeLevels::limited_to`: at most 3 up to 12 Gbps).
+  (`FfeLevels::limited_to`: at most 3 up to 12 Gbps). It has `FfeLevels::MAX` and
+  `value()`, and derives `Default` (0), `PartialOrd` and `Ord`.
 - **`FrlConfig` is `Config_1`**: the rate and FFE levels. `dsc_frl_max` is removed, as is
   `TrainingConfig::dsc_frl_max`.
 - **`TrainingConfig` has poll limits per state**: `flt_ready_polls` (default 50),
@@ -42,8 +43,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`TrainingEvent` records the new states** (`FltReady`, `RateConfigured`,
   `LtpRequested`, `FfeRaised`, `TrainingPassed`, `RateLowered`, `RatesExhausted`,
   `RetrainRequested`, `RetrainsExhausted`, `FrlStart`, `ExitedToTmds`, the three timeouts and
-  `SourceTestConfigRead`), and `TrainingTrace` records the list of rates instead of a
-  single `rate`.
+  `SourceTestConfigRead`). They replace `FltReadyReceived`, `FrlStartReceived`,
+  `LtpPatternRequested`, `AllLanesSatisfied` and `LtpLoopTimeout`, and the timeout events
+  count `polls` instead of `iterations_elapsed`.
+- **`TrainingTrace` records the list of rates**: its `rate` field is replaced by
+  `rates: Vec<HdmiForumFrl>`, and `TrainingTrace::new` takes the rates instead of a
+  single rate.
 
 ### Added
 
@@ -64,7 +69,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `plumbob-async` drives the same function asynchronously, so the two cannot drift.
   Implementing `TrainingIo` drives training from any other environment.
 - **`TrainingEvent` is available without the `alloc` feature**, for `lts::run`'s event
-  callback; only `TrainingTrace` and the traced methods need `alloc`.
+  callback; only `TrainingTrace` and the traced methods need `alloc`. It now derives
+  `Copy`.
+- `LtpReq` is `#[repr(u8)]`, so its values are the request nibbles.
 - `LtpRequests`, `UpdateFlags` and `SourceTestConfig` — the per-lane requests, the
   `Update_0` flags and the `Source_Test_Configuration` field the state machine uses.
 
