@@ -16,6 +16,7 @@
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
+mod lts;
 mod scdc;
 mod trace;
 mod training;
