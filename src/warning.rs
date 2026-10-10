@@ -163,7 +163,10 @@ mod tests {
         trained.observe(&undefined(0, 0x9, true));
         assert!(matches!(
             trained.iter_warnings().next(),
-            Some(TrainingWarning::UndefinedLtpRequest { count: u32::MAX, .. })
+            Some(TrainingWarning::UndefinedLtpRequest {
+                count: u32::MAX,
+                ..
+            })
         ));
     }
 
