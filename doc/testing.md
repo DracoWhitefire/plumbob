@@ -59,6 +59,8 @@ The sim has its own tests, so it is fully covered before the state machine uses 
   `ExitedToTmds` and `ExitToTmdsFailed` events, and `exit_to_tmds_on_error: false`
   leaving both ends untouched (`TmdsExit::Skipped`)
 - A fallback whose LTS:L fails returning `TrainingError::ExitFailed` with each end's error
+- `exit_to_tmds` on demand: the LTS:L sequence, taking down a link an error left in FRL,
+  each end's error on failure, and `lts::exit_to_tmds` recording its event
 
 ### Trace tests (requires `alloc` feature)
 

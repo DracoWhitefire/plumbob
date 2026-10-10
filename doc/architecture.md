@@ -187,14 +187,20 @@ the sink in FRL, nor an SCDC error the PHY.
 LTS:L also follows an SCDC or PHY error, wherever it happens: the spec's exit from a
 failed attempt applies whatever made it fail. The error is returned as
 `TrainingError::Scdc` or `TrainingError::Phy`, with `exit: TmdsExit` saying what LTS:L
-did — `Exited`, or `Failed` with the first error of each end whose steps failed (an end
-without one is in TMDS). If LTS:L fails after a fallback, `train` returns
-`TrainingError::ExitFailed` with the fallback reason and each end's error instead of
+did — `Exited`, or `Failed` with an `ExitError`: the first error of each end whose steps
+failed (an end without one is in TMDS). If LTS:L fails after a fallback, `train` returns
+`TrainingError::ExitFailed` with the fallback reason and the `ExitError` instead of
 `FallbackRequired`. The trace records `ExitedToTmds` or `ExitToTmdsFailed`.
 
 `TrainingConfig::exit_to_tmds_on_error` (default `true`) turns the exit after an error
 off, for callers that want the sink and PHY as the error left them — a validation tool
 reading the sink's registers, for example. The error then reports `TmdsExit::Skipped`.
+
+LTS:L is also available on its own, as `FrlTrainer::exit_to_tmds` (and
+`lts::exit_to_tmds` for other drivers): a link that trained has to come down again when
+the display is disabled or unplugged, or before a mode change, and a caller that turned
+`exit_to_tmds_on_error` off decides when to leave FRL. It can be called in any state and
+returns `Result<(), ExitError>`.
 
 ---
 
@@ -333,6 +339,8 @@ impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
         -> (Result<TrainingOutcome, TrainingError<C::Error, P::Error>>, TrainingTrace);
     pub fn train_at_rate_traced(&mut self, rate: HdmiForumFrl, config: &TrainingConfig)
         -> (Result<TrainingOutcome, TrainingError<C::Error, P::Error>>, TrainingTrace);
+    /// LTS:L on demand: take the link down to TMDS.
+    pub fn exit_to_tmds(&mut self) -> Result<(), ExitError<C::Error, P::Error>>;
     // `new` and `into_parts` construct the trainer and recover the client and PHY.
 }
 
@@ -342,7 +350,7 @@ pub enum TrainingError<ScdcErr, PhyErr> {
     Scdc { error: ScdcErr, exit: TmdsExit<ScdcErr, PhyErr> },
     Phy { error: PhyErr, exit: TmdsExit<ScdcErr, PhyErr> },
     /// The attempt fell back, and LTS:L then failed.
-    ExitFailed { reason: FallbackReason, scdc: Option<ScdcErr>, phy: Option<PhyErr> },
+    ExitFailed { reason: FallbackReason, error: ExitError<ScdcErr, PhyErr> },
 }
 
 /// What LTS:L did after an SCDC or PHY error.
@@ -351,9 +359,12 @@ pub enum TmdsExit<ScdcErr, PhyErr> {
     Exited,
     /// `TrainingConfig::exit_to_tmds_on_error` is off.
     Skipped,
-    /// Each end's first error; an end with `None` is in TMDS.
-    Failed { scdc: Option<ScdcErr>, phy: Option<PhyErr> },
+    Failed(ExitError<ScdcErr, PhyErr>),
 }
+
+/// LTS:L failed: each end's first error; an end with `None` is in TMDS.
+#[non_exhaustive]
+pub struct ExitError<ScdcErr, PhyErr> { pub scdc: Option<ScdcErr>, pub phy: Option<PhyErr> }
 ```
 
 ---
@@ -550,9 +561,14 @@ pub async fn run<Io: TrainingIo, F: FnMut(TrainingEvent)>(
     config: &TrainingConfig,
     record: &mut F,
 ) -> Result<TrainingOutcome, TrainingError<Io::ScdcError, Io::PhyError>>;
+
+pub async fn exit_to_tmds<Io: TrainingIo, F: FnMut(TrainingEvent)>(
+    io: &mut Io,
+    record: &mut F,
+) -> Result<(), ExitError<Io::ScdcError, Io::PhyError>>;
 ```
 
-`run` is the procedure described above: the same outcomes, errors and `TrainingEvent`s,
+`run` is the procedure described above, and `exit_to_tmds` its LTS:L on its own: the same outcomes, errors and `TrainingEvent`s,
 with no I/O of its own. Drivers supply the I/O:
 
 - **`FrlTrainer` (sync).** An adapter implements `TrainingIo` over the trainer's

@@ -50,10 +50,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`TrainingError` reports what happened to the link.** An SCDC or PHY error is now
   followed by LTS:L, returning both ends to TMDS as a fallback does, and the variants
   are struct variants carrying the outcome: `Scdc { error, exit }` and
-  `Phy { error, exit }`, with `exit` a `TmdsExit` (`Exited`, `Failed { scdc, phy }` with
+  `Phy { error, exit }`, with `exit` a `TmdsExit` (`Exited`, `Failed(ExitError)` with
   each end's LTS:L error, or `Skipped`). A fallback whose LTS:L fails returns the new
-  `ExitFailed { reason, scdc, phy }` instead of `FallbackRequired`. `TrainingError` is
-  now `#[non_exhaustive]`.
+  `ExitFailed { reason, error }` instead of `FallbackRequired`. `TrainingError` is now
+  `#[non_exhaustive]`.
 - **The traced methods return the trace whatever the result**: `train_traced` and
   `train_at_rate_traced` return `(Result<TrainingOutcome, TrainingError>, TrainingTrace)`
   instead of `Result<(TrainingOutcome, TrainingTrace), TrainingError>`, so an attempt
@@ -86,8 +86,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `LtpReq` is `#[repr(u8)]`, so its values are the request nibbles.
 - **`TrainingConfig::exit_to_tmds_on_error`** (default `true`) — turn the LTS:L after an
   error off to leave the sink and PHY as the error left them (`TmdsExit::Skipped`).
-- `TmdsExit` and `TrainingEvent::ExitToTmdsFailed { scdc, phy }`, recording which ends'
-  LTS:L steps failed.
+- **`FrlTrainer::exit_to_tmds`** — LTS:L on demand, to take an FRL link down when the
+  display is disabled or unplugged, before a mode change, or after an error with
+  `exit_to_tmds_on_error` off. `lts::exit_to_tmds` is the same over `TrainingIo`, with
+  events.
+- `TmdsExit`, `ExitError` (each end's first LTS:L error) and
+  `TrainingEvent::ExitToTmdsFailed { scdc, phy }`, recording which ends' LTS:L steps
+  failed.
 - `LtpRequests`, `UpdateFlags` and `SourceTestConfig` — the per-lane requests, the
   `Update_0` flags and the `Source_Test_Configuration` field the state machine uses.
 

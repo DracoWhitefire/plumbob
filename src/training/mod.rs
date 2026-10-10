@@ -75,15 +75,12 @@ pub enum TrainingError<ScdcErr, PhyErr> {
         /// LTS:L after the error.
         exit: TmdsExit<ScdcErr, PhyErr>,
     },
-    /// The attempt fell back for `reason`, and LTS:L then failed. Each end's first LTS:L
-    /// error; an end with `None` completed its steps and is in TMDS.
+    /// The attempt fell back for `reason`, and LTS:L then failed.
     ExitFailed {
         /// Why the attempt fell back.
         reason: FallbackReason,
-        /// The first error of LTS:L's SCDC steps (`Config_1`, `FLT_update`), if any.
-        scdc: Option<ScdcErr>,
-        /// The first error of LTS:L's PHY steps (patterns, rate), if any.
-        phy: Option<PhyErr>,
+        /// LTS:L's errors.
+        error: ExitError<ScdcErr, PhyErr>,
     },
 }
 
@@ -96,14 +93,23 @@ pub enum TmdsExit<ScdcErr, PhyErr> {
     /// LTS:L was not run, because [`TrainingConfig::exit_to_tmds_on_error`] is off. Both
     /// ends are as the error left them.
     Skipped,
-    /// LTS:L ran and at least one step failed. Each end's first error; an end with `None`
-    /// completed its steps and is in TMDS.
-    Failed {
-        /// The first error of LTS:L's SCDC steps (`Config_1`, `FLT_update`), if any.
-        scdc: Option<ScdcErr>,
-        /// The first error of LTS:L's PHY steps (patterns, rate), if any.
-        phy: Option<PhyErr>,
-    },
+    /// LTS:L ran and at least one step failed.
+    Failed(ExitError<ScdcErr, PhyErr>),
+}
+
+/// LTS:L failed: the first error of each end whose steps failed.
+///
+/// LTS:L attempts every step even when one fails, so an end with `None` completed its
+/// steps and is in TMDS. At least one end has an error. Returned by
+/// [`FrlTrainer::exit_to_tmds`] and [`lts::exit_to_tmds`], and carried by
+/// [`TmdsExit::Failed`] and [`TrainingError::ExitFailed`].
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExitError<ScdcErr, PhyErr> {
+    /// The first error of LTS:L's SCDC steps (`Config_1`, `FLT_update`), if any.
+    pub scdc: Option<ScdcErr>,
+    /// The first error of LTS:L's PHY steps (patterns, rate), if any.
+    pub phy: Option<PhyErr>,
 }
 
 /// Per-attempt training configuration.
@@ -172,6 +178,21 @@ impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
     /// Consumes the trainer and returns the SCDC client and PHY.
     pub fn into_parts(self) -> (C, P) {
         (self.scdc, self.phy)
+    }
+
+    /// LTS:L on demand: stops the training patterns, returns the PHY to TMDS, turns FRL
+    /// off in `Config_1` and clears `FLT_update` if it is set.
+    ///
+    /// For taking an FRL link down outside [`train`](Self::train) — when the display is
+    /// disabled or unplugged, or before a mode change — and after an error with
+    /// [`TrainingConfig::exit_to_tmds_on_error`] off. Safe to call in any state, and
+    /// again. Every step is attempted even when one fails.
+    pub fn exit_to_tmds(&mut self) -> Result<(), ExitError<C::Error, P::Error>> {
+        let mut io = SyncIo {
+            scdc: &mut self.scdc,
+            phy: &mut self.phy,
+        };
+        block_on(lts::exit_to_tmds(&mut io, &mut |_| {}))
     }
 
     /// Trains at a single rate: `train(&[rate], config)`.

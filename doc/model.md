@@ -106,15 +106,18 @@ These are distinct result types representing different failure modes:
   hard I/O failure from the SCDC client or PHY. Something failed at the transport level,
   unrelated to whether the link could have trained at this rate. `exit` is a `TmdsExit`:
   LTS:L ran afterwards and both ends are in TMDS (`Exited`); it ran and a step failed
-  (`Failed { scdc, phy }`, each end's first error, `None` for an end that is in TMDS); or
-  it was turned off with `exit_to_tmds_on_error` (`Skipped`).
-- **`TrainingError::ExitFailed { reason, scdc, phy }`** — the attempt fell back for
-  `reason`, and LTS:L then failed; `scdc` and `phy` as in `TmdsExit::Failed`.
+  (`Failed(ExitError)`); or it was turned off with `exit_to_tmds_on_error` (`Skipped`).
+  An `ExitError` has each end's first LTS:L error, `scdc` and `phy`, with `None` for an
+  end that completed its steps and is in TMDS.
+- **`TrainingError::ExitFailed { reason, error }`** — the attempt fell back for `reason`,
+  and LTS:L then failed with the `ExitError` `error`.
+
+`FrlTrainer::exit_to_tmds` runs LTS:L on its own and returns `Result<(), ExitError>`.
 
 `FallbackRequired` always leaves the sink in TMDS (LTS:L). This distinction matters for
 diagnostics: an outcome chain ending in TMDS is expected on marginal hardware; a
-`TrainingError` means the bus or PHY needs attention. `TrainingError` and `TmdsExit` are
-`#[non_exhaustive]`.
+`TrainingError` means the bus or PHY needs attention. `TrainingError`, `TmdsExit` and
+`ExitError` are `#[non_exhaustive]`.
 
 ---
 

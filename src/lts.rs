@@ -13,7 +13,9 @@ use display_types::cea861::hdmi_forum::HdmiForumFrl;
 use hdmi_hal::phy::{EqParams, FrlOutput, LaneEqParams, LanePatterns, LtpPattern, TxFfeLevel};
 
 use crate::trace::TrainingEvent;
-use crate::training::{FallbackReason, TmdsExit, TrainingConfig, TrainingError, TrainingOutcome};
+use crate::training::{
+    ExitError, FallbackReason, TmdsExit, TrainingConfig, TrainingError, TrainingOutcome,
+};
 use crate::types::{FfeLevels, FrlConfig, LtpReq, LtpRequests, SourceTestConfig, UpdateFlags};
 
 /// The SCDC and PHY operations the link training state machine performs.
@@ -84,10 +86,17 @@ enum Fault<ScdcErr, PhyErr> {
 
 type Failure<Io> = Fault<<Io as TrainingIo>::ScdcError, <Io as TrainingIo>::PhyError>;
 
-/// The first error of each end in a failed LTS:L.
-struct ExitErrors<ScdcErr, PhyErr> {
-    scdc: Option<ScdcErr>,
-    phy: Option<PhyErr>,
+/// Performs LTS:L through `io`: stops the training patterns, returns the PHY to TMDS,
+/// turns FRL off in `Config_1` and clears `FLT_update` if it is set.
+///
+/// This is [`FrlTrainer::exit_to_tmds`](crate::FrlTrainer::exit_to_tmds), with `record`
+/// called with `ExitedToTmds` or `ExitToTmdsFailed`. Every step is attempted even when
+/// one fails; on failure, the error has each end's first error.
+pub async fn exit_to_tmds<Io: TrainingIo, F: FnMut(TrainingEvent)>(
+    io: &mut Io,
+    record: &mut F,
+) -> Result<(), ExitError<Io::ScdcError, Io::PhyError>> {
+    Machine { io }.exit_to_tmds(record).await
 }
 
 pub(crate) const FLT_UPDATE: UpdateFlags = UpdateFlags {
@@ -299,15 +308,13 @@ impl<Io: TrainingIo> Machine<'_, Io> {
             Ok(Ok(achieved_rate)) => Ok(TrainingOutcome::Success { achieved_rate }),
             Ok(Err(reason)) => match self.exit_to_tmds(record).await {
                 Ok(()) => Ok(TrainingOutcome::FallbackRequired { reason }),
-                Err(ExitErrors { scdc, phy }) => {
-                    Err(TrainingError::ExitFailed { reason, scdc, phy })
-                }
+                Err(error) => Err(TrainingError::ExitFailed { reason, error }),
             },
             Err(fault) => {
                 let exit = if config.exit_to_tmds_on_error {
                     match self.exit_to_tmds(record).await {
                         Ok(()) => TmdsExit::Exited,
-                        Err(ExitErrors { scdc, phy }) => TmdsExit::Failed { scdc, phy },
+                        Err(error) => TmdsExit::Failed(error),
                     }
                 } else {
                     TmdsExit::Skipped
@@ -514,7 +521,7 @@ impl<Io: TrainingIo> Machine<'_, Io> {
     async fn exit_to_tmds<F: FnMut(TrainingEvent)>(
         &mut self,
         record: &mut F,
-    ) -> Result<(), ExitErrors<Io::ScdcError, Io::PhyError>> {
+    ) -> Result<(), ExitError<Io::ScdcError, Io::PhyError>> {
         let patterns = self.io.send_ltp(LanePatterns::default()).await;
         let phy_rate = self.io.set_frl_rate(HdmiForumFrl::NotSupported).await;
         let config = self
@@ -539,7 +546,7 @@ impl<Io: TrainingIo> Machine<'_, Io> {
             scdc: scdc.is_some(),
             phy: phy.is_some(),
         });
-        Err(ExitErrors { scdc, phy })
+        Err(ExitError { scdc, phy })
     }
 
     /// Writes `Config_1` with `rate` and the FFE levels limited for it.

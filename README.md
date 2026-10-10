@@ -85,6 +85,9 @@ match trainer.train(&rates, &config)? {
 }
 ```
 
+To take a trained link down again — the display is disabled or unplugged, or a mode
+change is coming — call `trainer.exit_to_tmds()`, which runs LTS:L on its own.
+
 For a complete worked example with simulated SCDC and PHY backends, see
 [`examples/simulate`](examples/simulate/).
 
