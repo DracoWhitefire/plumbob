@@ -40,8 +40,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ltp_polls` (100), `frl_start_polls` (100) and `no_timeout_poll_cap` (500), replacing
   `flt_ready_timeout`, `frl_start_timeout` and `ltp_timeout` (each 1000), plus
   `max_retrains` (3). The defaults reproduce the spec's 100 ms and 200 ms timeouts and the
-  AMD and Intel drivers' 200 ms `FRL_start` wait at one poll every 2 ms; the
-  `FLT_no_timeout` cap and the retrain count follow the AMD driver.
+  AMD and Intel drivers' 200 ms `FRL_start` wait at one poll every 2 ms; the values of
+  the `FLT_no_timeout` cap and the retrain count follow the AMD driver.
 - **`TrainingOutcome::FallbackRequired` carries a `reason`** (`FallbackReason`:
   `FltReadyTimeout`, `TrainingTimeout`, `FrlStartTimeout`, `RatesExhausted` or
   `RetrainsExhausted`), and every fallback leaves the sink and PHY in TMDS. LTS:L attempts
@@ -78,8 +78,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Per-lane training** — plumbob tracks each lane's pattern and TxFFE level: pattern
   requests apply per lane, 0xE raises the lane's TxFFE level up to the advertised maximum
   and holds it there, and a Nyquist clock request is honoured only under `FLT_no_timeout`.
-- **`FLT_no_timeout` support** — when the sink sets it in `Source_Test_Configuration`, the
-  LTS:2 and LTS:3 poll limits are suspended, up to `no_timeout_poll_cap`. The register is
+- **`FLT_no_timeout` support** — when the sink sets it in `Source_Test_Configuration`, it
+  is under compliance test: the LTS:2, LTS:3 and LTS:P limits are replaced by
+  `no_timeout_poll_cap`, and when that runs out the attempt returns the new
+  `TrainingOutcome::NoTimeoutHold { rate }` (event `NoTimeoutCapReached`) without leaving
+  FRL, so plumbob never ends a test link on its own timer. The retrain bound
+  (`max_retrains`) still applies and still falls back: it is not a timer but what ends
+  the LTS:P ↔ LTS:3 cycle. The register is
   read at the start of every attempt, so a setting left in place applies to retries and
   retrains as well, not only to the attempt that saw `Source_Test_Update`.
 - **Retraining from LTS:P** — a `FLT_update` before `FRL_start` returns to LTS:3, up to

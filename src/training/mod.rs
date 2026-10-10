@@ -30,7 +30,8 @@ pub enum FallbackReason {
     /// list was empty).
     RatesExhausted,
     /// LTS:P: the sink requested retraining (`FLT_update`) after
-    /// [`TrainingConfig::max_retrains`] retrains had been used.
+    /// [`TrainingConfig::max_retrains`] retrains had been used. Also under
+    /// `FLT_no_timeout`, where the poll limits would hold the link instead.
     RetrainsExhausted,
 }
 
@@ -47,6 +48,16 @@ pub enum TrainingOutcome {
     FallbackRequired {
         /// Why the attempt ended.
         reason: FallbackReason,
+    },
+    /// The sink set `FLT_no_timeout` — it is under compliance test — and plumbob's
+    /// [`no_timeout_poll_cap`](TrainingConfig::no_timeout_poll_cap) ran out. The test
+    /// equipment is in control of the link, so plumbob leaves it as it is, with no LTS:L:
+    /// in LTS:3 or LTS:P the PHY and `Config_1` stay at `rate`; in LTS:2 nothing has been
+    /// configured yet. The caller decides what comes next — keep the link up for the test,
+    /// train again, or [`exit_to_tmds`](FrlTrainer::exit_to_tmds).
+    NoTimeoutHold {
+        /// The rate being trained when the cap ran out.
+        rate: HdmiForumFrl,
     },
 }
 
@@ -130,13 +141,19 @@ pub struct TrainingConfig {
     /// Poll limit for `FRL_start` in LTS:P. Default 100 (200 ms at 2 ms per poll, the
     /// `FRL_start` wait of the AMD and Intel drivers).
     pub frl_start_polls: u32,
-    /// Hard cap on the LTS:2 and LTS:3 polls while the sink sets `FLT_no_timeout`.
-    /// Default 500 (1 s at 2 ms per poll, the AMD driver's cap).
+    /// The LTS:2, LTS:3 and LTS:P poll limit while the sink sets `FLT_no_timeout`. When it
+    /// runs out the attempt ends with [`TrainingOutcome::NoTimeoutHold`], leaving the link
+    /// as it is. Default 500 (1 s at 2 ms per poll, the AMD driver's cap).
     pub no_timeout_poll_cap: u32,
     /// How many times one `train` call returns from LTS:P to LTS:3 when the sink requests
     /// retraining (`FLT_update`). The next request after that ends the attempt with
     /// [`FallbackReason::RetrainsExhausted`]; 0 falls back on the first one. Default 3,
     /// the AMD driver's retry count (which reruns the whole procedure rather than LTS:3).
+    ///
+    /// Unlike the poll limits, this bound holds under `FLT_no_timeout` as well: it is what
+    /// guarantees that the LTS:P ↔ LTS:3 cycle ends, so exhausting it falls back rather
+    /// than ending in [`TrainingOutcome::NoTimeoutHold`]. A compliance test that needs
+    /// more retrains raises it.
     pub max_retrains: u32,
     /// Whether an SCDC or PHY error is followed by LTS:L, returning both ends to TMDS as a
     /// fallback does. Default `true`. Turn it off to leave the sink and PHY as the error

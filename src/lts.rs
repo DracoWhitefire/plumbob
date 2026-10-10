@@ -301,6 +301,15 @@ enum State {
     Success,
     /// The attempt ends without a link.
     Fallback(FallbackReason),
+    /// The `FLT_no_timeout` poll cap ran out: the link is left as it is.
+    Hold,
+}
+
+/// How the states end, before LTS:L.
+enum End {
+    Success(HdmiForumFrl),
+    Fallback(FallbackReason),
+    Hold(HdmiForumFrl),
 }
 
 /// The state of one call to `train`.
@@ -315,13 +324,33 @@ struct Attempt {
 }
 
 impl Attempt {
-    /// The poll limit for LTS:2 and LTS:3: `normal`, or the cap while the sink sets
-    /// `FLT_no_timeout`.
+    /// The poll limit for LTS:2, LTS:3 and LTS:P: `normal`, or the cap while the sink
+    /// sets `FLT_no_timeout`.
     fn limit(&self, config: &TrainingConfig, normal: u32) -> u32 {
         if self.no_timeout {
             config.no_timeout_poll_cap
         } else {
             normal
+        }
+    }
+
+    /// A state's poll limit ran out after `polls` polls. Normally the attempt falls back
+    /// for `reason`, recording `timeout`. Under `FLT_no_timeout` the cap ran out instead:
+    /// the test equipment is in control, so the attempt holds the link as it is rather
+    /// than leaving FRL on its own timer, as the Xilinx and AMD drivers do.
+    fn timed_out<F: FnMut(TrainingEvent)>(
+        &self,
+        polls: u32,
+        timeout: TrainingEvent,
+        reason: FallbackReason,
+        record: &mut F,
+    ) -> State {
+        if self.no_timeout {
+            record(TrainingEvent::NoTimeoutCapReached { polls });
+            State::Hold
+        } else {
+            record(timeout);
+            State::Fallback(reason)
         }
     }
 }
@@ -346,8 +375,10 @@ impl<Io: TrainingIo> Machine<'_, Io> {
             });
         };
         match self.states(rate, lower, config, record).await {
-            Ok(Ok(achieved_rate)) => Ok(TrainingOutcome::Success { achieved_rate }),
-            Ok(Err(reason)) => match self.exit_to_tmds(record).await {
+            Ok(End::Success(achieved_rate)) => Ok(TrainingOutcome::Success { achieved_rate }),
+            // Under FLT_no_timeout the test equipment is in control: no LTS:L.
+            Ok(End::Hold(rate)) => Ok(TrainingOutcome::NoTimeoutHold { rate }),
+            Ok(End::Fallback(reason)) => match self.exit_to_tmds(record).await {
                 Ok(()) => Ok(TrainingOutcome::FallbackRequired { reason }),
                 Err(error) => Err(TrainingError::ExitFailed { reason, error }),
             },
@@ -376,7 +407,7 @@ impl<Io: TrainingIo> Machine<'_, Io> {
         lower: &[HdmiForumFrl],
         config: &TrainingConfig,
         record: &mut F,
-    ) -> Result<Result<HdmiForumFrl, FallbackReason>, Failure<Io>> {
+    ) -> Result<End, Failure<Io>> {
         let mut rates = lower.iter().copied();
         let mut attempt = Attempt {
             rate,
@@ -397,8 +428,9 @@ impl<Io: TrainingIo> Machine<'_, Io> {
                         State::Fallback(FallbackReason::RatesExhausted)
                     }
                 },
-                State::Success => return Ok(Ok(attempt.rate)),
-                State::Fallback(reason) => return Ok(Err(reason)),
+                State::Success => return Ok(End::Success(attempt.rate)),
+                State::Fallback(reason) => return Ok(End::Fallback(reason)),
+                State::Hold => return Ok(End::Hold(attempt.rate)),
             };
         }
     }
@@ -420,8 +452,12 @@ impl<Io: TrainingIo> Machine<'_, Io> {
         match self.poll_flt_ready(limit).await? {
             Some(polls) => record(TrainingEvent::FltReady { after_polls: polls }),
             None => {
-                record(TrainingEvent::FltReadyTimeout { polls: limit });
-                return Ok(State::Fallback(FallbackReason::FltReadyTimeout));
+                return Ok(attempt.timed_out(
+                    limit,
+                    TrainingEvent::FltReadyTimeout { polls: limit },
+                    FallbackReason::FltReadyTimeout,
+                    record,
+                ));
             }
         }
 
@@ -460,8 +496,12 @@ impl<Io: TrainingIo> Machine<'_, Io> {
         loop {
             let limit = attempt.limit(config, config.ltp_polls);
             if polls >= limit {
-                record(TrainingEvent::TrainingTimeout { polls: limit });
-                return Ok(State::Fallback(FallbackReason::TrainingTimeout));
+                return Ok(attempt.timed_out(
+                    limit,
+                    TrainingEvent::TrainingTimeout { polls: limit },
+                    FallbackReason::TrainingTimeout,
+                    record,
+                ));
             }
             let flags = self.read_update_flags().await?;
             polls += 1;
@@ -509,7 +549,8 @@ impl<Io: TrainingIo> Machine<'_, Io> {
         self.set_frl_output(FrlOutput::GapOnly).await?;
         self.clear(FLT_UPDATE).await?;
 
-        for polls in 1..=config.frl_start_polls {
+        let limit = attempt.limit(config, config.frl_start_polls);
+        for polls in 1..=limit {
             let flags = self.read_update_flags().await?;
             if flags.frl_start {
                 self.clear(FRL_START).await?;
@@ -528,10 +569,12 @@ impl<Io: TrainingIo> Machine<'_, Io> {
                 return Ok(State::Train);
             }
         }
-        record(TrainingEvent::FrlStartTimeout {
-            polls: config.frl_start_polls,
-        });
-        Ok(State::Fallback(FallbackReason::FrlStartTimeout))
+        Ok(attempt.timed_out(
+            limit,
+            TrainingEvent::FrlStartTimeout { polls: limit },
+            FallbackReason::FrlStartTimeout,
+            record,
+        ))
     }
 
     /// LTS:4: continue training at `rate`, the next one in the list. The sink stays in

@@ -100,6 +100,14 @@ pub enum TrainingEvent {
         /// Polls made: the limit.
         polls: u32,
     },
+    /// LTS:2, LTS:3 or LTS:P: the sink sets `FLT_no_timeout` and the
+    /// [`no_timeout_poll_cap`](crate::TrainingConfig::no_timeout_poll_cap) ran out. The
+    /// attempt ends with `NoTimeoutHold`, leaving the link as it is. The state is the one
+    /// the events before it lead into.
+    NoTimeoutCapReached {
+        /// Polls made in the state: the cap.
+        polls: u32,
+    },
     /// LTS:L: the sink and PHY were returned to TMDS.
     ExitedToTmds,
     /// LTS:L: a step failed. Every step was attempted; an end whose steps all succeeded

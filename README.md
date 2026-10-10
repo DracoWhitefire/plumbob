@@ -122,6 +122,7 @@ flowchart TD
     PL["LTS:L — exit to TMDS"]
     S(["Success { achieved_rate }"])
     F(["FallbackRequired { reason }"])
+    H(["NoTimeoutHold { rate }"])
 
     A --> P2
     P2 -- FLT_ready --> P3
@@ -135,6 +136,7 @@ flowchart TD
     PP -- "FLT_update (retrain)" --> P3
     PP -- "timeout or retrains exhausted" --> PL
     PL --> F
+    P2 & P3 & PP -. "FLT_no_timeout: cap reached" .-> H
 ```
 
 **LTS:2** waits for the sink to assert `FLT_ready`, resets every lane's TxFFE level,
@@ -159,9 +161,11 @@ Poll limits are exact counts: N means exactly N polls before the state gives up.
 defaults (50 / 100 / 100 polls) reproduce the spec's 100 ms and 200 ms timeouts, and the
 200 ms `FRL_start` wait of the AMD and Intel drivers, at one poll every 2 ms. The
 inter-poll delay is the implementer's responsibility and belongs inside the polled
-`ScdcClient` methods. When the sink sets `FLT_no_timeout`, the LTS:2 and LTS:3 limits are
-suspended, up to `TrainingConfig::no_timeout_poll_cap` (default 500 polls, the AMD
-driver's cap). Retraining from LTS:P is bounded by `TrainingConfig::max_retrains`
+`ScdcClient` methods. When the sink sets `FLT_no_timeout` it is under compliance test: the
+LTS:2, LTS:3 and LTS:P limits are replaced by `TrainingConfig::no_timeout_poll_cap`
+(default 500 polls), and when that runs out `train` returns `NoTimeoutHold { rate }`
+without leaving FRL — the test equipment is in control, and the caller decides what
+comes next. Retraining from LTS:P is bounded by `TrainingConfig::max_retrains`
 (default 3); the next request after that ends the attempt with `RetrainsExhausted`.
 
 See [`doc/architecture.md`](doc/architecture.md) for the procedure step by step.

@@ -112,7 +112,8 @@ The number of active lanes follows from the rate: 3 for `Rate3Gbps3Lanes` and
    re-read when the flag is raised.
 2. Poll `StatusFlags::flt_ready` until the sink asserts it. If it does not within
    `TrainingConfig::flt_ready_polls`, go to LTS:L and return
-   `FallbackRequired { reason: FltReadyTimeout }`.
+   `FallbackRequired { reason: FltReadyTimeout }` — or, under `FLT_no_timeout`, hold the
+   link (see below).
 3. Clear `FLT_update`. Reset every lane's TxFFE level to 0 on the PHY.
 4. Configure the PHY for the rate (`set_frl_rate`) and drive the Nyquist clock pattern on
    all lanes while the sink's receiver locks.
@@ -154,8 +155,8 @@ pattern and TxFFE level 0. Repeat, at most `TrainingConfig::ltp_polls` times:
 4. Clear `FLT_update` so the sink can post its next request.
 
 If training has not passed within the poll limit, go to LTS:L and return
-`FallbackRequired { reason: TrainingTimeout }`. A timeout does not step down: only the
-sink's request does.
+`FallbackRequired { reason: TrainingTimeout }` — or, under `FLT_no_timeout`, hold the link
+(see below). A timeout does not step down: only the sink's request does.
 
 ### LTS:P — Pass
 
@@ -169,7 +170,31 @@ sink's request does.
      `TrainingConfig::max_retrains` times per `train` call. The next request after that
      goes to LTS:L and returns `FallbackRequired { reason: RetrainsExhausted }`.
 3. If neither arrives within the limit, go to LTS:L and return
-   `FallbackRequired { reason: FrlStartTimeout }`.
+   `FallbackRequired { reason: FrlStartTimeout }` — or, under `FLT_no_timeout`, hold the
+   link (see below).
+
+
+### `FLT_no_timeout` — holding the link
+
+When the sink sets `FLT_no_timeout` it is under compliance test, and the test equipment
+controls the link. The LTS:2, LTS:3 and LTS:P limits are then replaced by
+`TrainingConfig::no_timeout_poll_cap`, and when that runs out plumbob does not fall back:
+it records `NoTimeoutCapReached` and returns `TrainingOutcome::NoTimeoutHold { rate }`
+with **no LTS:L**, leaving the link as it is (in LTS:3 or LTS:P the PHY and `Config_1`
+stay at `rate`; in LTS:2 nothing has been configured yet). Neither reference driver
+leaves FRL on its own timer under `FLT_no_timeout`: the Xilinx driver has no limit at all
+there, and the AMD driver returns success when its 500-poll cap runs out and skips the
+`FRL_start` wait. plumbob keeps a cap so that `train` always returns, and reports the
+truth rather than success; the caller decides whether to keep the link up for the test,
+train again, or call `exit_to_tmds`.
+
+One bound still falls back under `FLT_no_timeout`: a sink that keeps requesting
+retraining past `max_retrains` ends the attempt with `RetrainsExhausted` and LTS:L, as
+it does without the flag. This is deliberate. The cap is a source-side timer, which a
+test must be able to suspend; the retrain bound is not a timer but the guarantee that the
+LTS:P ↔ LTS:3 cycle ends. A sink that requests retraining without end is stuck, or its
+`FLT_update` is never cleared — the failure that made the bound necessary — and holding
+such a link would hide that. A test that needs more retrains raises `max_retrains`.
 
 After `Success` the sink can still request retraining during active video by setting
 `FLT_update`; plumbob does not watch for it. The caller polls `Update_0` (the Xilinx
@@ -315,6 +340,8 @@ pub enum TrainingOutcome {
     Success { achieved_rate: HdmiForumFrl },
     /// Training did not succeed at any of the rates; the sink is back in TMDS.
     FallbackRequired { reason: FallbackReason },
+    /// FLT_no_timeout: the poll cap ran out; the link is left as it is, at `rate`.
+    NoTimeoutHold { rate: HdmiForumFrl },
 }
 
 #[non_exhaustive]
@@ -343,7 +370,7 @@ pub struct TrainingConfig {
     pub ltp_polls: u32,
     /// Poll limit for FRL_start in LTS:P. Default 100 (200 ms at 2 ms per poll).
     pub frl_start_polls: u32,
-    /// Hard cap on polls while the sink sets FLT_no_timeout. Default 500.
+    /// The LTS:2, LTS:3 and LTS:P limit while the sink sets FLT_no_timeout. Default 500.
     pub no_timeout_poll_cap: u32,
     /// Returns from LTS:P to LTS:3 allowed per train call. Default 3.
     pub max_retrains: u32,
@@ -449,6 +476,8 @@ pub enum TrainingEvent {
     FrlStart { after_polls: u32 },
     /// LTS:P: FRL_start did not assert.
     FrlStartTimeout { polls: u32 },
+    /// FLT_no_timeout: the poll cap ran out (LTS:2, LTS:3 or LTS:P); the link is held.
+    NoTimeoutCapReached { polls: u32 },
     /// LTS:L: the sink was returned to TMDS.
     ExitedToTmds,
     /// LTS:L: a step failed on the SCDC side, the PHY side, or both.
@@ -691,9 +720,12 @@ and recorded by `hdmi-hal-i2c-dev`'s `StubPhy`):
   `FallbackReason`.
 - Poll limits default to 50 / 100 / 100 polls (100 / 200 / 200 ms at 2 ms per poll), with
   `FLT_no_timeout` honoured up to `no_timeout_poll_cap` (500 polls). The 200 ms
-  `FRL_start` wait is the AMD and Intel drivers' (the Xilinx driver has none), and the
-  500-poll cap is the AMD driver's (the Xilinx driver has none, the Intel series does not
-  handle `FLT_no_timeout`).
+  `FRL_start` wait is the AMD and Intel drivers' (the Xilinx driver has none). The number
+  500 is the AMD driver's cap, but what happens when it runs out is plumbob's: AMD applies
+  it in LTS:3 only and returns success; plumbob applies it in LTS:2, LTS:3 and LTS:P and
+  returns `NoTimeoutHold` without LTS:L. Both agree with the Xilinx driver, which has no
+  limit, that the source does not leave FRL on its own timer under test. The Intel series
+  does not handle `FLT_no_timeout`.
 - A lane's TxFFE level is raised up to the advertised maximum and held there.
 - A Nyquist clock request (0x3) without `FLT_no_timeout` leaves the lane's previous pattern
   in place; plumbob tracks and sends the full per-lane set.
@@ -705,7 +737,9 @@ and recorded by `hdmi-hal-i2c-dev`'s `StubPhy`):
   The reference drivers differ here: Xilinx returns to LTS:3 without a limit (its state
   machine is timer-driven, not blocking), AMD reruns the whole procedure up to 3 times,
   and Intel falls back to TMDS on the first request. The default borrows AMD's count;
-  `max_retrains: 0` gives Intel's behaviour.
+  `max_retrains: 0` gives Intel's behaviour. The bound applies under `FLT_no_timeout`
+  too: unlike the poll limits it is not suspended there, and exhausting it falls back
+  rather than holding the link (see "`FLT_no_timeout` — holding the link").
 - A 0xF on some lanes but not all keeps those lanes' state, like 0x0; only 0xF on every
   active lane lowers the rate.
 - The state machine does not call `read_ced`; CED counters are diagnostics.

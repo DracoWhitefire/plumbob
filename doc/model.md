@@ -84,14 +84,15 @@ Per-attempt configuration, constructed via `Default` and overridden as needed:
 | `flt_ready_polls` | `50` | Poll limit for `FLT_ready` in LTS:2 (100 ms at 2 ms/poll) |
 | `ltp_polls` | `100` | Poll limit for LTS:3 (200 ms at 2 ms/poll) |
 | `frl_start_polls` | `100` | Poll limit for `FRL_start` in LTS:P (200 ms at 2 ms/poll) |
-| `no_timeout_poll_cap` | `500` | Hard cap on polls while the sink sets `FLT_no_timeout` (1 s) |
-| `max_retrains` | `3` | Returns from LTS:P to LTS:3 allowed per `train` call |
+| `no_timeout_poll_cap` | `500` | The LTS:2, LTS:3 and LTS:P limit while the sink sets `FLT_no_timeout` (1 s); then `NoTimeoutHold` |
+| `max_retrains` | `3` | Returns from LTS:P to LTS:3 allowed per `train` call; applies under `FLT_no_timeout` too |
 | `exit_to_tmds_on_error` | `true` | Whether an SCDC or PHY error is followed by LTS:L |
 
 Poll limits are exact counts: N means exactly N polls before the state gives up. The
 defaults reproduce the spec's 100 ms and 200 ms timeouts (and the AMD and Intel drivers'
 200 ms `FRL_start` wait) at one poll every 2 ms; callers polling at a different cadence
-should scale them. The `FLT_no_timeout` cap and the retrain count follow the AMD driver.
+should scale them. The `FLT_no_timeout` cap's value and the retrain count follow the AMD
+driver; what happens when the cap runs out is plumbob's (see `NoTimeoutHold` below).
 
 `TrainingConfig` is `#[non_exhaustive]` and derives `Clone` and `Copy`.
 
@@ -122,6 +123,10 @@ These are distinct result types representing different failure modes:
   (the sink kept requesting retraining past `max_retrains`). `FallbackReason` is
   `#[non_exhaustive]`. A sink's request for a lower rate within the list is not an
   outcome: `train` steps down (LTS:4) and continues.
+- **`TrainingOutcome::NoTimeoutHold { rate }`** — the sink set `FLT_no_timeout` (it is
+  under compliance test) and `no_timeout_poll_cap` ran out in LTS:2, LTS:3 or LTS:P.
+  plumbob leaves the link as it is, with no LTS:L, because the test equipment controls
+  it; the caller keeps it up, trains again, or calls `exit_to_tmds`.
 - **`TrainingError::Scdc { error, exit }` / `TrainingError::Phy { error, exit }`** — a
   hard I/O failure from the SCDC client or PHY. Something failed at the transport level,
   unrelated to whether the link could have trained at this rate. `exit` is a `TmdsExit`:

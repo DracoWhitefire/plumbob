@@ -978,7 +978,10 @@ fn flt_no_timeout_holds_for_every_attempt_while_it_is_set() {
     let mut trainer = FrlTrainer::new(SimSink::new().source_test(NO_TIMEOUT), SimPhy::new());
     for _ in 0..2 {
         let trained = trainer.train(&[RATE], &config).unwrap();
-        assert_eq!(trained.outcome, fallback(FallbackReason::FltReadyTimeout));
+        assert_eq!(
+            trained.outcome,
+            TrainingOutcome::NoTimeoutHold { rate: RATE }
+        );
     }
     let (sink, _) = trainer.into_parts();
     let polls = count(&sink, |c| matches!(c, SinkCall::ReadFltReady(_)));
@@ -994,15 +997,69 @@ fn flt_no_timeout_holds_for_every_attempt_while_it_is_set() {
 }
 
 #[test]
-fn flt_no_timeout_is_capped() {
+fn the_no_timeout_cap_holds_the_link_in_every_state() {
     let config = TrainingConfig {
         no_timeout_poll_cap: 3,
         ..TrainingConfig::default()
     };
-    let sink = SimSink::new().source_test(NO_TIMEOUT);
-    let (outcome, sink, _) = run(sink, &[RATE], &config);
-    assert_eq!(outcome, fallback(FallbackReason::FltReadyTimeout));
-    assert_eq!(count(&sink, |c| matches!(c, SinkCall::ReadFltReady(_))), 3);
+    let lts_2 = SimSink::new().source_test(NO_TIMEOUT);
+    let lts_3 = SimSink::new().source_test(NO_TIMEOUT).flt_ready_after(0);
+    let lts_p = SimSink::new()
+        .source_test(NO_TIMEOUT)
+        .flt_ready_after(0)
+        .round(0, all(LtpReq::None));
+    for (state, sink, configured) in [
+        ("LTS:2", lts_2, false),
+        ("LTS:3", lts_3, true),
+        ("LTS:P", lts_p, true),
+    ] {
+        let (outcome, sink, phy) = run(sink, &[RATE], &config);
+        assert_eq!(
+            outcome,
+            TrainingOutcome::NoTimeoutHold { rate: RATE },
+            "{state}"
+        );
+        // No LTS:L: nothing is taken down. Past LTS:2, both ends stay at the rate.
+        let expected: &[HdmiForumFrl] = if configured { &[RATE] } else { &[] };
+        assert_eq!(phy_rates(&phy), expected, "{state}");
+        assert_eq!(frl_configs(&sink), expected, "{state}");
+    }
+}
+
+#[test]
+fn the_no_timeout_cap_is_the_limit_in_lts_p() {
+    let config = TrainingConfig {
+        frl_start_polls: 2,
+        no_timeout_poll_cap: 7,
+        ..TrainingConfig::default()
+    };
+    let sink = SimSink::new()
+        .source_test(NO_TIMEOUT)
+        .flt_ready_after(0)
+        .round(0, all(LtpReq::None))
+        .frl_start_after(5);
+    let (outcome, _, _) = run(sink, &[RATE], &config);
+    // FRL_start after 5 polls: past frl_start_polls, within the cap.
+    assert_eq!(
+        outcome,
+        TrainingOutcome::Success {
+            achieved_rate: RATE
+        }
+    );
+}
+
+#[test]
+fn without_flt_no_timeout_lts_p_still_falls_back() {
+    let config = TrainingConfig {
+        frl_start_polls: 2,
+        ..TrainingConfig::default()
+    };
+    let sink = SimSink::new()
+        .flt_ready_after(0)
+        .round(0, all(LtpReq::None))
+        .frl_start_after(5);
+    let (outcome, _, _) = run(sink, &[RATE], &config);
+    assert_eq!(outcome, fallback(FallbackReason::FrlStartTimeout));
 }
 
 #[test]
@@ -1108,6 +1165,20 @@ fn retrains_up_to_max_retrains_then_falls_back() {
     let (outcome, sink, phy) = run(retraining_sink(4), &[RATE], &config);
     assert_eq!(outcome, fallback(FallbackReason::RetrainsExhausted));
     assert_eq!(retrain_count(&phy), 3);
+    assert_eq!(phy_rates(&phy).last(), Some(&HdmiForumFrl::NotSupported));
+    assert_eq!(frl_configs(&sink).last(), Some(&HdmiForumFrl::NotSupported));
+}
+
+#[test]
+fn exhausted_retrains_fall_back_under_flt_no_timeout_too() {
+    // The retrain bound is not a timer: FLT_no_timeout does not turn it into a hold.
+    let config = TrainingConfig {
+        max_retrains: 1,
+        ..TrainingConfig::default()
+    };
+    let sink = retraining_sink(2).source_test(NO_TIMEOUT);
+    let (outcome, sink, phy) = run(sink, &[RATE], &config);
+    assert_eq!(outcome, fallback(FallbackReason::RetrainsExhausted));
     assert_eq!(phy_rates(&phy).last(), Some(&HdmiForumFrl::NotSupported));
     assert_eq!(frl_configs(&sink).last(), Some(&HdmiForumFrl::NotSupported));
 }
@@ -1667,6 +1738,25 @@ mod traced {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn the_no_timeout_cap_is_recorded_instead_of_a_timeout() {
+        let config = TrainingConfig {
+            no_timeout_poll_cap: 3,
+            ..TrainingConfig::default()
+        };
+        let sink = SimSink::new()
+            .source_test(NO_TIMEOUT)
+            .flt_ready_after(0)
+            .round(0, all(LtpReq::None));
+        let (outcome, trace) = trace(sink, &[RATE], &config);
+        assert_eq!(outcome, TrainingOutcome::NoTimeoutHold { rate: RATE });
+        assert_eq!(
+            trace.events.last(),
+            Some(&TrainingEvent::NoTimeoutCapReached { polls: 3 })
+        );
+        assert!(!trace.events.contains(&TrainingEvent::ExitedToTmds));
     }
 
     #[test]
