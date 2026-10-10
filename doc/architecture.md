@@ -613,7 +613,7 @@ The full training state machine is available. `FrlTrainer<C, P>` is stack-alloca
 (`LtpReq`, `LtpRequests`, `FfeLevels`, `UpdateFlags`, `CedCounters`, …) are stack-allocated. No heap
 use anywhere in the training loop. This tier covers bare-metal and firmware targets.
 
-The training future is 472 bytes in this tier, and 448 with `alloc` (where `Trained`
+The training future is 408 bytes in this tier, and 384 with `alloc` (where `Trained`
 holds its warnings in a `Vec` rather than inline), measured over the sync driver's I/O
 with Rust 1.94; an `async` I/O implementation adds the size of its own futures. Where it
 lives depends on the driver: `FrlTrainer` (sync) keeps it on the caller's stack for the
@@ -659,12 +659,14 @@ pub trait TrainingIo {
     // …
 }
 
-pub async fn run<Io: TrainingIo, F: FnMut(TrainingEvent)>(
+// A plain `fn` returning a future, used exactly like an `async fn`; it saves an async
+// layer in the future the caller holds (see "`no_std`, `alloc`, and `async`").
+pub fn run<Io: TrainingIo, F: FnMut(TrainingEvent)>(
     io: &mut Io,
     rates: &[HdmiForumFrl],
     config: &TrainingConfig,
     record: &mut F,
-) -> Result<Trained, TrainingError<Io::ScdcError, Io::PhyError>>;
+) -> impl Future<Output = Result<Trained, TrainingError<Io::ScdcError, Io::PhyError>>>;
 
 pub async fn exit_to_tmds<Io: TrainingIo, F: FnMut(TrainingEvent)>(
     io: &mut Io,

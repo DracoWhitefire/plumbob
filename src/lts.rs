@@ -72,23 +72,15 @@ pub trait TrainingIo {
 /// On an SCDC or PHY error, `run` performs LTS:L before returning, unless
 /// [`TrainingConfig::exit_to_tmds_on_error`] is off; the returned [`TrainingError`] says
 /// whether both ends reached TMDS.
-pub async fn run<Io: TrainingIo, F: FnMut(TrainingEvent)>(
+// A plain `fn` returning the machine's future, rather than an `async fn` awaiting it:
+// one async layer fewer in the future the caller holds.
+pub fn run<Io: TrainingIo, F: FnMut(TrainingEvent)>(
     io: &mut Io,
     rates: &[HdmiForumFrl],
     config: &TrainingConfig,
     record: &mut F,
-) -> Result<Trained, Error<Io>> {
-    // Collects the warnings while the attempt runs; the outcome is set at the end.
-    let mut trained = Trained::new(TrainingOutcome::FallbackRequired {
-        reason: FallbackReason::RatesExhausted,
-    });
-    let mut record = |event: TrainingEvent| {
-        trained.observe(&event);
-        record(event);
-    };
-    let outcome = Machine { io }.run(rates, config, &mut record).await?;
-    trained.outcome = outcome;
-    Ok(trained)
+) -> impl Future<Output = Result<Trained, Error<Io>>> {
+    Machine { io }.run(rates, config, record)
 }
 
 type Error<Io> = TrainingError<<Io as TrainingIo>::ScdcError, <Io as TrainingIo>::PhyError>;
@@ -370,42 +362,53 @@ struct Machine<'a, Io> {
 
 impl<Io: TrainingIo> Machine<'_, Io> {
     /// One attempt: the states, then LTS:L on a fallback or an error. `record` is called
-    /// with each [`TrainingEvent`] as it occurs.
+    /// with each [`TrainingEvent`] as it occurs; the warnings are collected from the same
+    /// events.
     async fn run<F: FnMut(TrainingEvent)>(
-        &mut self,
+        mut self,
         rates: &[HdmiForumFrl],
         config: &TrainingConfig,
         record: &mut F,
-    ) -> Result<TrainingOutcome, Error<Io>> {
+    ) -> Result<Trained, Error<Io>> {
         if let Some((index, &rate)) = invalid_rate(rates) {
             return Err(TrainingError::InvalidRates { index, rate });
         }
         let Some((&rate, lower)) = rates.split_first() else {
             return Err(TrainingError::NoRates);
         };
-        match self.states(rate, lower, config, record).await {
-            Ok(End::Success(achieved_rate)) => Ok(TrainingOutcome::Success { achieved_rate }),
+        // Collects the warnings while the attempt runs; the outcome is set at the end.
+        let mut trained = Trained::new(TrainingOutcome::FallbackRequired {
+            reason: FallbackReason::RatesExhausted,
+        });
+        let mut record = |event: TrainingEvent| {
+            trained.observe(&event);
+            record(event);
+        };
+        let outcome = match self.states(rate, lower, config, &mut record).await {
+            Ok(End::Success(achieved_rate)) => TrainingOutcome::Success { achieved_rate },
             // Under FLT_no_timeout the test equipment is in control: no LTS:L.
-            Ok(End::Hold(rate)) => Ok(TrainingOutcome::NoTimeoutHold { rate }),
-            Ok(End::Fallback(reason)) => match self.exit_to_tmds(record).await {
-                Ok(()) => Ok(TrainingOutcome::FallbackRequired { reason }),
-                Err(error) => Err(TrainingError::ExitFailed { reason, error }),
+            Ok(End::Hold(rate)) => TrainingOutcome::NoTimeoutHold { rate },
+            Ok(End::Fallback(reason)) => match self.exit_to_tmds(&mut record).await {
+                Ok(()) => TrainingOutcome::FallbackRequired { reason },
+                Err(error) => return Err(TrainingError::ExitFailed { reason, error }),
             },
             Err(fault) => {
                 let exit = if config.exit_to_tmds_on_error {
-                    match self.exit_to_tmds(record).await {
+                    match self.exit_to_tmds(&mut record).await {
                         Ok(()) => TmdsExit::Exited,
                         Err(error) => TmdsExit::Failed(error),
                     }
                 } else {
                     TmdsExit::Skipped
                 };
-                Err(match fault {
+                return Err(match fault {
                     Fault::Scdc(error) => TrainingError::Scdc { error, exit },
                     Fault::Phy(error) => TrainingError::Phy { error, exit },
-                })
+                });
             }
-        }
+        };
+        trained.outcome = outcome;
+        Ok(trained)
     }
 
     /// LTS:2 → LTS:3 → LTS:P, with LTS:4, from `rate` down through `lower`. Returns the

@@ -2033,9 +2033,9 @@ mod traced {
 fn the_training_future_stays_within_its_size_budget() {
     // Without `alloc`, `Trained` carries its warnings inline (`MAX_WARNINGS` slots).
     #[cfg(feature = "alloc")]
-    const BUDGET: usize = 448;
+    const BUDGET: usize = 384;
     #[cfg(not(feature = "alloc"))]
-    const BUDGET: usize = 472;
+    const BUDGET: usize = 408;
     let (mut scdc, mut phy) = (SimSink::new(), SimPhy::new());
     let mut io = SyncIo {
         scdc: &mut scdc,

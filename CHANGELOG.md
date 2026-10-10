@@ -139,7 +139,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Internal
 
 - **The training future has a size budget** — a test keeps the `lts::run` future
-  within 472 bytes without `alloc` (448 with it), and CI and the publish workflow now also
+  within 408 bytes without `alloc` (384 with it), and CI and the publish workflow now also
   run the tests with no features, so both budgets are checked.
 - **CI builds for a `no_std` target** — the `Build (no_std)` and `Build (alloc only)`
   steps now build for `thumbv7em-none-eabi`. They previously built for the host, where
