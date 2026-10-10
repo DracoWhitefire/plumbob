@@ -22,6 +22,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   zeros, Nyquist clock, DDE compliance, LFSR 0–3), 0xE (`FfeChange`) and 0xF
   (`RateChange`) — and is read per lane as `LtpRequests`. The previous values (1–4 =
   LFSR 0–3) were wrong. `From<LtpReq> for LtpPattern` is replaced by `LtpReq::pattern()`.
+  The undefined values 0x9–0xD are `LtpReq::Reserved(value)` rather than an error: LTS:3
+  leaves a lane that requests one as it was (as the Xilinx and Intel drivers do),
+  records `TrainingEvent::UndefinedLtpRequest` and returns a `TrainingWarning`, so a
+  stray value, such as on lane 3 at a 3-lane rate, no longer ends training.
+- **`train` and `train_at_rate` return `Trained`**: the `TrainingOutcome` with the
+  `TrainingWarning`s the attempt produced, as piaf, cartouche and concordance return
+  warnings with their results. Read the outcome as `trained.outcome` and the warnings
+  with `trained.iter_warnings()`.
 - **`FfeLevels` is a level index, 0–7**, constructed with `FfeLevels::new` instead of
   `Ffe0`–`Ffe7` variants, and written to `Config_1` limited for the rate
   (`FfeLevels::limited_to`: at most 3 up to 12 Gbps). It has `FfeLevels::MAX` and
@@ -55,9 +63,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ExitFailed { reason, error }` instead of `FallbackRequired`. `TrainingError` is now
   `#[non_exhaustive]`.
 - **The traced methods return the trace whatever the result**: `train_traced` and
-  `train_at_rate_traced` return `(Result<TrainingOutcome, TrainingError>, TrainingTrace)`
-  instead of `Result<(TrainingOutcome, TrainingTrace), TrainingError>`, so an attempt
-  that ended in an error can be explained from its events.
+  `train_at_rate_traced` return `(Result<Trained, TrainingError>, TrainingTrace)` instead
+  of `Result<(TrainingOutcome, TrainingTrace), TrainingError>`, so an attempt that ended
+  in an error can be explained from its events.
 - **`TrainingTrace` records the list of rates**: its `rate` field is replaced by
   `rates: Vec<HdmiForumFrl>`, and `TrainingTrace::new` takes the rates instead of a
   single rate.
@@ -83,7 +91,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`TrainingEvent` is available without the `alloc` feature**, for `lts::run`'s event
   callback; only `TrainingTrace` and the traced methods need `alloc`. It now derives
   `Copy`.
-- `LtpReq` is `#[repr(u8)]`, so its values are the request nibbles.
+- `LtpReq::value()` — a request's 4-bit value.
+- **`TrainingWarning`**, **`Trained`** and **`MAX_WARNINGS`** — non-fatal anomalies
+  returned with the outcome, starting with `UndefinedLtpRequest { lane, value, count,
+  in_use }`. Repeats are merged, so none are dropped without `alloc`.
 - **`TrainingConfig::exit_to_tmds_on_error`** (default `true`) — turn the LTS:L after an
   error off to leave the sink and PHY as the error left them (`TmdsExit::Skipped`).
 - **`FrlTrainer::exit_to_tmds`** — LTS:L on demand, to take an FRL link down when the

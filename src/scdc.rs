@@ -40,7 +40,9 @@ pub trait ScdcClient {
     /// left as they are.
     fn clear_update_flags(&mut self, flags: UpdateFlags) -> Result<(), Self::Error>;
 
-    /// Read the per-lane link training requests from `Status_Flags_1/2`.
+    /// Read the per-lane link training requests from `Status_Flags_1/2`. Undefined values
+    /// (0x9–0xD) are [`LtpReq::Reserved`](crate::LtpReq::Reserved), not an error: whether
+    /// they matter depends on the lanes in use, which the state machine knows.
     fn read_ltp_requests(&mut self) -> Result<LtpRequests, Self::Error>;
 
     /// Read `Source_Test_Configuration` (0x35).

@@ -52,6 +52,17 @@ pub enum TrainingEvent {
         /// Its new TxFFE level.
         level: u8,
     },
+    /// LTS:3: a lane requested a value the specification leaves undefined (0x9–0xD). A
+    /// lane in use keeps its pattern and TxFFE level; lane 3 at a 3-lane rate is not in
+    /// use, and its requests are not acted on whatever their value.
+    UndefinedLtpRequest {
+        /// The lane (0–3).
+        lane: u8,
+        /// The value requested.
+        value: u8,
+        /// Whether the lane is in use at the current rate.
+        in_use: bool,
+    },
     /// LTS:3: all active lanes reported 0x0.
     TrainingPassed {
         /// Polls of `Update_0` in this pass through LTS:3, including the one that saw it.

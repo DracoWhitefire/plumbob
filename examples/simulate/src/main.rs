@@ -183,10 +183,13 @@ fn main() {
 
     let mut trainer = FrlTrainer::new(SimSink::default(), SimPhy);
     let (result, trace) = trainer.train_traced(&rates, &config);
-    let outcome = result.expect("SimSink and SimPhy are infallible");
+    let trained = result.expect("SimSink and SimPhy are infallible");
 
     println!();
-    println!("Outcome: {outcome:?}");
+    println!("Outcome: {:?}", trained.outcome);
+    for warning in trained.iter_warnings() {
+        println!("Warning: {warning:?}");
+    }
     println!();
     println!("Trace ({} events):", trace.events.len());
     for event in &trace.events {

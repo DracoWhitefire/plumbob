@@ -37,6 +37,11 @@ Tests for the owned protocol types cover:
 
 The sim has its own tests, so it is fully covered before the state machine uses it.
 
+### Warning tests (`src/warning.rs`)
+
+Merging: repeats on a lane keep the last value and a count, lane 3 in and out of use are
+kept apart, and the five distinct warnings an attempt can produce fit without `alloc`.
+
 ### State machine tests (`src/training/tests.rs`)
 
 - The main path LTS:2 → LTS:3 → LTS:P, asserting the complete SCDC and PHY call logs
@@ -44,10 +49,13 @@ The sim has its own tests, so it is fully covered before the state machine uses 
   poll
 - LTS:3's per-lane rules: a pattern per lane, 0x0 keeping a lane's pattern, 0x3 driven
   only under `FLT_no_timeout`, 0xE raising and holding a lane's TxFFE level, a partial
-  0xF, and lane 3 ignored at the 3-lane rates
+  0xF, lane 3 ignored at the 3-lane rates, and undefined values (`Reserved`) leaving a
+  lane as it was without counting as a pass or a rate change
 - `FLT_no_timeout` suspending the limits (from LTS:2 or LTS:3) up to its cap
 - Retraining from LTS:P, bounded by `max_retrains` (including 0) and counted across a
   rate drop
+- Warnings: undefined requests returned as `TrainingWarning`s, merged per lane with a
+  count, on a success and on a fallback, and none for a clean attempt
 - LTS:4: stepping down through the list, resetting the lanes, moving to a 3-lane rate, a
   fresh poll limit per rate, and running out of rates
 - LTS:L: the exact exit sequence, clearing a pending `FLT_update`, every timeout
@@ -71,6 +79,8 @@ The `alloc`-gated tests exercise `train_traced` and `train_at_rate_traced` and a
   `RetrainsExhausted`
 - `SourceTestConfigRead` and `RetrainRequested` events, and no `FfeRaised` for a level
   already at the maximum
+- `UndefinedLtpRequest` for an undefined value on every lane, with lane 3 at a 3-lane rate
+  marked as not in use
 - `TrainingTrace` carrying the rates and the `TrainingConfig`, so poll counts in events
   are interpretable against the configured limits
 - Traced and untraced runs agreeing on the outcome

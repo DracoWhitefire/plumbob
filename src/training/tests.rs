@@ -6,6 +6,7 @@ use super::*;
 use crate::lts::{FLT_UPDATE, FRL_START, Lanes, SOURCE_TEST_UPDATE, uniform};
 use crate::types::LtpReq;
 use crate::types::SourceTestConfig;
+use crate::warning::{Trained, TrainingWarning};
 use hdmi_hal::phy::LtpPattern;
 
 const RATE: HdmiForumFrl = HdmiForumFrl::Rate6Gbps4Lanes;
@@ -26,7 +27,7 @@ fn run(
     config: &TrainingConfig,
 ) -> (TrainingOutcome, SimSink, SimPhy) {
     let mut trainer = FrlTrainer::new(sink, SimPhy::new());
-    let outcome = trainer.train(rates, config).unwrap();
+    let outcome = trainer.train(rates, config).unwrap().outcome;
     let (sink, phy) = trainer.into_parts();
     (outcome, sink, phy)
 }
@@ -201,7 +202,8 @@ fn train_at_rate_is_train_with_one_rate() {
     let mut trainer = FrlTrainer::new(sink(), SimPhy::new());
     let outcome = trainer
         .train_at_rate(RATE, &TrainingConfig::default())
-        .unwrap();
+        .unwrap()
+        .outcome;
     let (at_rate, _) = trainer.into_parts();
     let (expected, list, _) = run(sink(), &[RATE], &TrainingConfig::default());
     assert_eq!(outcome, expected);
@@ -391,6 +393,164 @@ fn three_lane_rates_ignore_lane_3() {
         _ => None,
     });
     assert_eq!(eq.map(|eq| eq.lane3), Some(None));
+}
+
+#[test]
+fn a_reserved_request_keeps_the_lanes_state() {
+    let config = TrainingConfig {
+        ffe_levels: FfeLevels::new(3).unwrap(),
+        ..TrainingConfig::default()
+    };
+    let sink = SimSink::new()
+        .flt_ready_after(0)
+        .round(0, all(LtpReq::Lfsr0))
+        .round(0, all(LtpReq::FfeChange))
+        .round(
+            0,
+            requests(
+                LtpReq::Reserved(0x9),
+                LtpReq::AllOnes,
+                LtpReq::Reserved(0xD),
+                LtpReq::None,
+            ),
+        )
+        .round(0, all(LtpReq::None))
+        .frl_start_after(0);
+    let (outcome, _, phy) = run(sink, &[RATE], &config);
+    assert_eq!(
+        outcome,
+        TrainingOutcome::Success {
+            achieved_rate: RATE
+        }
+    );
+    let lfsr0 = Some(LtpPattern::Lfsr0);
+    assert_eq!(
+        ltp_sent(&phy)[2],
+        patterns(lfsr0, Some(LtpPattern::AllOnes), lfsr0, lfsr0)
+    );
+    // The reserved values changed no level: the one raise stands.
+    assert_eq!(levels_sent(&phy), [[1, 1, 1, 1]]);
+}
+
+#[test]
+fn a_reserved_request_is_neither_a_pass_nor_a_rate_change() {
+    let config = TrainingConfig {
+        ltp_polls: 3,
+        ..TrainingConfig::default()
+    };
+    for other in [LtpReq::None, LtpReq::RateChange] {
+        let sink = SimSink::new()
+            .flt_ready_after(0)
+            .round(0, requests(other, other, other, LtpReq::Reserved(0xA)));
+        let (outcome, _, _) = run(sink, &[RATE, HdmiForumFrl::Rate3Gbps3Lanes], &config);
+        assert_eq!(
+            outcome,
+            fallback(FallbackReason::TrainingTimeout),
+            "{other:?}"
+        );
+    }
+}
+
+#[test]
+fn three_lane_rates_ignore_a_reserved_lane_3() {
+    let rate = HdmiForumFrl::Rate6Gbps3Lanes;
+    let sink = SimSink::new()
+        .flt_ready_after(0)
+        .round(
+            0,
+            requests(
+                LtpReq::None,
+                LtpReq::None,
+                LtpReq::None,
+                LtpReq::Reserved(0x9),
+            ),
+        )
+        .frl_start_after(0);
+    let (outcome, _, _) = run(sink, &[rate], &TrainingConfig::default());
+    assert_eq!(
+        outcome,
+        TrainingOutcome::Success {
+            achieved_rate: rate
+        }
+    );
+}
+
+#[test]
+fn undefined_requests_are_returned_as_warnings() {
+    let rate = HdmiForumFrl::Rate6Gbps3Lanes;
+    let lane1 = requests(
+        LtpReq::Lfsr0,
+        LtpReq::Reserved(0x9),
+        LtpReq::Lfsr0,
+        LtpReq::None,
+    );
+    let sink = SimSink::new()
+        .flt_ready_after(0)
+        .round(0, lane1)
+        .round(
+            0,
+            requests(
+                LtpReq::Lfsr0,
+                LtpReq::Reserved(0xB),
+                LtpReq::Lfsr0,
+                LtpReq::Reserved(0xD),
+            ),
+        )
+        .round(0, all(LtpReq::None))
+        .frl_start_after(0);
+    let trained = FrlTrainer::new(sink, SimPhy::new())
+        .train(&[rate], &TrainingConfig::default())
+        .unwrap();
+    assert_eq!(
+        trained.outcome,
+        TrainingOutcome::Success {
+            achieved_rate: rate
+        }
+    );
+    let warnings = [
+        TrainingWarning::UndefinedLtpRequest {
+            lane: 1,
+            value: 0xB,
+            count: 2,
+            in_use: true,
+        },
+        TrainingWarning::UndefinedLtpRequest {
+            lane: 3,
+            value: 0xD,
+            count: 1,
+            in_use: false,
+        },
+    ];
+    assert!(trained.iter_warnings().eq(warnings.iter()));
+}
+
+#[test]
+fn a_fallback_carries_its_warnings() {
+    let config = TrainingConfig {
+        ltp_polls: 2,
+        ..TrainingConfig::default()
+    };
+    let sink = SimSink::new()
+        .flt_ready_after(0)
+        .round(0, all(LtpReq::Reserved(0xA)));
+    let trained = FrlTrainer::new(sink, SimPhy::new())
+        .train(&[RATE], &config)
+        .unwrap();
+    assert_eq!(trained.outcome, fallback(FallbackReason::TrainingTimeout));
+    assert_eq!(trained.iter_warnings().count(), 4);
+}
+
+#[test]
+fn a_clean_attempt_has_no_warnings() {
+    let sink = SimSink::new()
+        .flt_ready_after(0)
+        .round(0, all(LtpReq::Lfsr0))
+        .round(0, all(LtpReq::None))
+        .frl_start_after(0);
+    let trained = FrlTrainer::new(sink, SimPhy::new())
+        .train(&[RATE], &TrainingConfig::default())
+        .unwrap();
+    assert_eq!(trained.iter_warnings().count(), 0);
 }
 
 #[test]
@@ -643,7 +803,9 @@ fn every_timeout_ends_in_tmds() {
 /// Runs `sink` and `phy` over [`RATE`] with the default config.
 fn run_with(sink: SimSink, phy: SimPhy) -> (Result<TrainingOutcome, Error>, SimSink, SimPhy) {
     let mut trainer = FrlTrainer::new(sink, phy);
-    let result = trainer.train(&[RATE], &TrainingConfig::default());
+    let result = trainer
+        .train(&[RATE], &TrainingConfig::default())
+        .map(|trained| trained.outcome);
     let (sink, phy) = trainer.into_parts();
     (result, sink, phy)
 }
@@ -1153,7 +1315,7 @@ mod traced {
         config: &TrainingConfig,
     ) -> (TrainingOutcome, TrainingTrace) {
         let (result, trace) = FrlTrainer::new(sink, SimPhy::new()).train_traced(rates, config);
-        (result.unwrap(), trace)
+        (result.unwrap().outcome, trace)
     }
 
     fn ffe_3() -> TrainingConfig {
@@ -1371,6 +1533,46 @@ mod traced {
     }
 
     #[test]
+    fn reserved_requests_are_recorded_on_every_lane() {
+        let rate = HdmiForumFrl::Rate6Gbps3Lanes;
+        let sink = SimSink::new()
+            .flt_ready_after(0)
+            .round(
+                0,
+                requests(
+                    LtpReq::Lfsr0,
+                    LtpReq::Reserved(0xC),
+                    LtpReq::Lfsr0,
+                    LtpReq::Reserved(0x9),
+                ),
+            )
+            .round(0, all(LtpReq::None))
+            .frl_start_after(0);
+        let (_, trace) = trace(sink, &[rate], &TrainingConfig::default());
+        let undefined: Vec<_> = trace
+            .events
+            .iter()
+            .filter(|e| matches!(e, TrainingEvent::UndefinedLtpRequest { .. }))
+            .collect();
+        // Lane 3 is not in use at a 3-lane rate, and is recorded as such.
+        assert_eq!(
+            undefined,
+            [
+                &TrainingEvent::UndefinedLtpRequest {
+                    lane: 1,
+                    value: 0xC,
+                    in_use: true
+                },
+                &TrainingEvent::UndefinedLtpRequest {
+                    lane: 3,
+                    value: 0x9,
+                    in_use: false
+                },
+            ]
+        );
+    }
+
+    #[test]
     fn the_trace_carries_the_rates_and_config() {
         let config = ffe_3();
         let (_, trace) = trace(SimSink::new(), &[R12, R10], &config);
@@ -1390,7 +1592,7 @@ mod traced {
         let mut trainer = FrlTrainer::new(sink(), SimPhy::new());
         let (outcome, trace) = trainer.train_at_rate_traced(RATE, &TrainingConfig::default());
         let (untraced, _, _) = run(sink(), &[RATE], &TrainingConfig::default());
-        assert_eq!(outcome, Ok(untraced));
+        assert_eq!(outcome.map(|trained| trained.outcome), Ok(untraced));
         assert_eq!(trace.rates, [RATE]);
     }
 
@@ -1457,5 +1659,5 @@ mod traced {
 #[should_panic(expected = "plumbob's sync training waited on I/O")]
 fn the_sync_driver_rejects_a_future_that_waits() {
     // The same output type as the trainer tests' runs, so the check is on that path.
-    let _ = ready::<Result<TrainingOutcome, TrainingError<(), ()>>>(Poll::Pending);
+    let _ = ready::<Result<Trained, TrainingError<(), ()>>>(Poll::Pending);
 }

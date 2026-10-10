@@ -26,6 +26,7 @@ mod scdc;
 mod trace;
 mod training;
 mod types;
+mod warning;
 
 pub use scdc::ScdcClient;
 pub use training::{
@@ -38,3 +39,4 @@ pub use types::{
 pub use trace::TrainingEvent;
 #[cfg(feature = "alloc")]
 pub use trace::TrainingTrace;
+pub use warning::{MAX_WARNINGS, Trained, TrainingWarning};

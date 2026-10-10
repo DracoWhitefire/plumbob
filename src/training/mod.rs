@@ -9,6 +9,7 @@ use crate::lts::{self, TrainingIo};
 use crate::scdc::ScdcClient;
 use crate::trace::TrainingEvent;
 use crate::types::{FfeLevels, FrlConfig, LtpRequests, SourceTestConfig, UpdateFlags};
+use crate::warning::Trained;
 
 #[cfg(feature = "alloc")]
 use crate::trace::TrainingTrace;
@@ -200,7 +201,7 @@ impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
         &mut self,
         rate: HdmiForumFrl,
         config: &TrainingConfig,
-    ) -> Result<TrainingOutcome, Error<C, P>> {
+    ) -> Result<Trained, Error<C, P>> {
         self.train(&[rate], config)
     }
 
@@ -214,7 +215,7 @@ impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
         &mut self,
         rates: &[HdmiForumFrl],
         config: &TrainingConfig,
-    ) -> Result<TrainingOutcome, Error<C, P>> {
+    ) -> Result<Trained, Error<C, P>> {
         self.run(rates, config, &mut |_| {})
     }
 
@@ -225,7 +226,7 @@ impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
         &mut self,
         rate: HdmiForumFrl,
         config: &TrainingConfig,
-    ) -> (Result<TrainingOutcome, Error<C, P>>, TrainingTrace) {
+    ) -> (Result<Trained, Error<C, P>>, TrainingTrace) {
         self.train_traced(&[rate], config)
     }
 
@@ -239,7 +240,7 @@ impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
         &mut self,
         rates: &[HdmiForumFrl],
         config: &TrainingConfig,
-    ) -> (Result<TrainingOutcome, Error<C, P>>, TrainingTrace) {
+    ) -> (Result<Trained, Error<C, P>>, TrainingTrace) {
         let mut events = Vec::new();
         let result = self.run(rates, config, &mut |event| events.push(event));
         (result, TrainingTrace::new(rates.to_vec(), *config, events))
@@ -251,7 +252,7 @@ impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
         rates: &[HdmiForumFrl],
         config: &TrainingConfig,
         record: &mut F,
-    ) -> Result<TrainingOutcome, Error<C, P>> {
+    ) -> Result<Trained, Error<C, P>> {
         let mut io = SyncIo {
             scdc: &mut self.scdc,
             phy: &mut self.phy,

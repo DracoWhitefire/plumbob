@@ -137,6 +137,12 @@ pattern and TxFFE level 0. Repeat, at most `TrainingConfig::ltp_polls` times:
        held at the maximum if the sink keeps asking (the Intel series does this; the
        Xilinx driver wraps to 0 instead).
      - **0x0** — the lane keeps its pattern and level.
+     - **0x9–0xD** (undefined, `LtpReq::Reserved`) — the lane keeps its pattern and
+       level, and the trace records `UndefinedLtpRequest`; the result carries a
+       `TrainingWarning`. The Xilinx and Intel drivers
+       ignore these values too; an undefined value on one lane does not stop the others
+       from training, and on lane 3 at a 3-lane rate it is not looked at, like any lane-3
+       request there.
 
      Then send the full per-lane pattern set to the PHY (`send_ltp`) and, if any TxFFE
      level changed, the per-lane levels (`adjust_equalization`). The PHY applies exactly
@@ -216,18 +222,20 @@ training state machine uses them directly.
 /// Link training pattern requested by the sink for one lane (4-bit field).
 #[non_exhaustive]
 pub enum LtpReq {
-    None            = 0x0,  // lane trained
-    AllOnes         = 0x1,
-    AllZeros        = 0x2,
-    NyquistClock    = 0x3,
-    DdeCompliance   = 0x4,
-    Lfsr0           = 0x5,
-    Lfsr1           = 0x6,
-    Lfsr2           = 0x7,
-    Lfsr3           = 0x8,
-    FfeChange       = 0xE,  // raise this lane's TxFFE level
-    RateChange      = 0xF,  // drop the FRL rate
+    None,           // 0x0: lane trained
+    AllOnes,        // 0x1
+    AllZeros,       // 0x2
+    NyquistClock,   // 0x3
+    DdeCompliance,  // 0x4
+    Lfsr0,          // 0x5
+    Lfsr1,          // 0x6
+    Lfsr2,          // 0x7
+    Lfsr3,          // 0x8
+    FfeChange,      // 0xE: raise this lane's TxFFE level
+    RateChange,     // 0xF: drop the FRL rate
+    Reserved(u8),   // 0x9–0xD: undefined by the specification
 }
+// `LtpReq::value()` returns the 4-bit value.
 
 /// Requests for all four lanes; lane 3 is ignored in 3-lane FRL.
 pub struct LtpRequests { pub lane0: LtpReq, pub lane1: LtpReq, pub lane2: LtpReq, pub lane3: LtpReq }
@@ -283,6 +291,21 @@ one culvert method. A simulated implementation for testing needs only a register
 ### Training types
 
 ```rust
+/// The outcome of an attempt with the warnings it produced.
+#[non_exhaustive]
+pub struct Trained {
+    pub outcome: TrainingOutcome,
+    pub warnings: Vec<TrainingWarning>,  // `[Option<TrainingWarning>; MAX_WARNINGS]`
+                                         // and `num_warnings` without alloc
+}
+
+/// A non-fatal anomaly; repeats are merged.
+#[non_exhaustive]
+pub enum TrainingWarning {
+    /// A lane requested an undefined value (0x9–0xD): `count` times, the last `value`.
+    UndefinedLtpRequest { lane: u8, value: u8, count: u32, in_use: bool },
+}
+
 pub enum TrainingOutcome {
     /// Training passed and the sink set FRL_start. The link is ready at this rate.
     Success { achieved_rate: HdmiForumFrl },
@@ -329,16 +352,16 @@ pub struct TrainingConfig {
 impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
     /// Train over `rates` in order, stepping down when the sink requests it.
     pub fn train(&mut self, rates: &[HdmiForumFrl], config: &TrainingConfig)
-        -> Result<TrainingOutcome, TrainingError<C::Error, P::Error>>;
+        -> Result<Trained, TrainingError<C::Error, P::Error>>;
     /// `train(&[rate], config)`.
     pub fn train_at_rate(&mut self, rate: HdmiForumFrl, config: &TrainingConfig)
-        -> Result<TrainingOutcome, TrainingError<C::Error, P::Error>>;
+        -> Result<Trained, TrainingError<C::Error, P::Error>>;
     /// `train` and `train_at_rate`, also returning a `TrainingTrace` (alloc), whatever
     /// the result.
     pub fn train_traced(&mut self, rates: &[HdmiForumFrl], config: &TrainingConfig)
-        -> (Result<TrainingOutcome, TrainingError<C::Error, P::Error>>, TrainingTrace);
+        -> (Result<Trained, TrainingError<C::Error, P::Error>>, TrainingTrace);
     pub fn train_at_rate_traced(&mut self, rate: HdmiForumFrl, config: &TrainingConfig)
-        -> (Result<TrainingOutcome, TrainingError<C::Error, P::Error>>, TrainingTrace);
+        -> (Result<Trained, TrainingError<C::Error, P::Error>>, TrainingTrace);
     /// LTS:L on demand: take the link down to TMDS.
     pub fn exit_to_tmds(&mut self) -> Result<(), ExitError<C::Error, P::Error>>;
     // `new` and `into_parts` construct the trainer and recover the client and PHY.
@@ -367,6 +390,15 @@ pub enum TmdsExit<ScdcErr, PhyErr> {
 pub struct ExitError<ScdcErr, PhyErr> { pub scdc: Option<ScdcErr>, pub phy: Option<PhyErr> }
 ```
 
+`Trained` follows the stack's convention for non-fatal findings (piaf's `ParsedEdid`,
+cartouche's `Decoded`, concordance's `NegotiatedConfig`): the accepted result carries
+typed warnings next to the value, in a `Vec` with `alloc` and a fixed array without, read
+through `iter_warnings`; failures carry errors, not warnings. One difference fits a
+procedure that polls: a sink may repeat an anomaly on every round, so repeats are merged
+into one warning per kind and lane, with a count. An attempt then produces at most five
+warnings — lanes 0–2, and lane 3 in and out of use — so the 8-slot array without `alloc`
+never drops one. The trace records every occurrence.
+
 ---
 
 ## Diagnostics
@@ -391,6 +423,8 @@ pub enum TrainingEvent {
     LtpRequested { requests: LtpRequests },
     /// LTS:3: a lane's TxFFE level was raised in response to 0xE.
     FfeRaised { lane: u8, level: u8 },
+    /// LTS:3: an active lane requested an undefined value (0x9–0xD); it was ignored.
+    UndefinedLtpRequest { lane: u8, value: u8, in_use: bool },
     /// LTS:3: all active lanes reported 0x0.
     TrainingPassed { after_polls: u32 },
     /// LTS:4: the sink requested a lower rate; training continues at `to`.
@@ -560,7 +594,7 @@ pub async fn run<Io: TrainingIo, F: FnMut(TrainingEvent)>(
     rates: &[HdmiForumFrl],
     config: &TrainingConfig,
     record: &mut F,
-) -> Result<TrainingOutcome, TrainingError<Io::ScdcError, Io::PhyError>>;
+) -> Result<Trained, TrainingError<Io::ScdcError, Io::PhyError>>;
 
 pub async fn exit_to_tmds<Io: TrainingIo, F: FnMut(TrainingEvent)>(
     io: &mut Io,

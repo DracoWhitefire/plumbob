@@ -5,42 +5,63 @@ use hdmi_hal::phy::LtpPattern;
 /// `Status_Flags_1` (lanes 0–1) or `Status_Flags_2` (lanes 2–3).
 ///
 /// Values 0x1–0x8 are patterns the PHY drives on that lane; 0x0, 0xE and 0xF are
-/// signals to the state machine and never reach the PHY. Undefined values (0x9–0xD)
-/// have no variant: the `ScdcClient` implementation rejects them as a protocol error.
+/// signals to the state machine and never reach the PHY. The values the specification
+/// leaves undefined (0x9–0xD) are [`Reserved`](Self::Reserved), so a request can always
+/// be represented and the training layer decides what to do with it: plumbob leaves the
+/// lane as it was.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[repr(u8)]
 pub enum LtpReq {
-    /// No pattern requested: the lane is trained.
-    None = 0x0,
-    /// All ones.
-    AllOnes = 0x1,
-    /// All zeros.
-    AllZeros = 0x2,
-    /// Nyquist clock pattern.
-    NyquistClock = 0x3,
-    /// DDE (Data Dependent Equalization) compliance pattern.
-    DdeCompliance = 0x4,
-    /// LFSR pattern 0.
-    Lfsr0 = 0x5,
-    /// LFSR pattern 1.
-    Lfsr1 = 0x6,
-    /// LFSR pattern 2.
-    Lfsr2 = 0x7,
-    /// LFSR pattern 3.
-    Lfsr3 = 0x8,
-    /// Raise this lane's TxFFE level.
-    FfeChange = 0xE,
-    /// Drop the FRL rate.
-    RateChange = 0xF,
+    /// No pattern requested (0x0): the lane is trained.
+    None,
+    /// All ones (0x1).
+    AllOnes,
+    /// All zeros (0x2).
+    AllZeros,
+    /// Nyquist clock pattern (0x3).
+    NyquistClock,
+    /// DDE (Data Dependent Equalization) compliance pattern (0x4).
+    DdeCompliance,
+    /// LFSR pattern 0 (0x5).
+    Lfsr0,
+    /// LFSR pattern 1 (0x6).
+    Lfsr1,
+    /// LFSR pattern 2 (0x7).
+    Lfsr2,
+    /// LFSR pattern 3 (0x8).
+    Lfsr3,
+    /// Raise this lane's TxFFE level (0xE).
+    FfeChange,
+    /// Drop the FRL rate (0xF).
+    RateChange,
+    /// A value the specification leaves undefined, 0x9–0xD.
+    Reserved(u8),
 }
 
 impl LtpReq {
+    /// The request's 4-bit value.
+    pub const fn value(self) -> u8 {
+        match self {
+            Self::None => 0x0,
+            Self::AllOnes => 0x1,
+            Self::AllZeros => 0x2,
+            Self::NyquistClock => 0x3,
+            Self::DdeCompliance => 0x4,
+            Self::Lfsr0 => 0x5,
+            Self::Lfsr1 => 0x6,
+            Self::Lfsr2 => 0x7,
+            Self::Lfsr3 => 0x8,
+            Self::FfeChange => 0xE,
+            Self::RateChange => 0xF,
+            Self::Reserved(value) => value,
+        }
+    }
+
     /// The pattern this request asks the PHY to drive, or `None` for the requests
-    /// that are signals to the state machine (0x0, 0xE and 0xF).
+    /// that are signals to the state machine (0x0, 0xE and 0xF) and for reserved values.
     pub const fn pattern(self) -> Option<LtpPattern> {
         match self {
-            Self::None | Self::FfeChange | Self::RateChange => None,
+            Self::None | Self::FfeChange | Self::RateChange | Self::Reserved(_) => None,
             Self::AllOnes => Some(LtpPattern::AllOnes),
             Self::AllZeros => Some(LtpPattern::AllZeros),
             Self::NyquistClock => Some(LtpPattern::NyquistClock),
@@ -180,17 +201,18 @@ mod tests {
 
     #[test]
     fn ltp_req_values_match_status_flags_encoding() {
-        assert_eq!(LtpReq::None as u8, 0x0);
-        assert_eq!(LtpReq::AllOnes as u8, 0x1);
-        assert_eq!(LtpReq::AllZeros as u8, 0x2);
-        assert_eq!(LtpReq::NyquistClock as u8, 0x3);
-        assert_eq!(LtpReq::DdeCompliance as u8, 0x4);
-        assert_eq!(LtpReq::Lfsr0 as u8, 0x5);
-        assert_eq!(LtpReq::Lfsr1 as u8, 0x6);
-        assert_eq!(LtpReq::Lfsr2 as u8, 0x7);
-        assert_eq!(LtpReq::Lfsr3 as u8, 0x8);
-        assert_eq!(LtpReq::FfeChange as u8, 0xE);
-        assert_eq!(LtpReq::RateChange as u8, 0xF);
+        assert_eq!(LtpReq::None.value(), 0x0);
+        assert_eq!(LtpReq::AllOnes.value(), 0x1);
+        assert_eq!(LtpReq::AllZeros.value(), 0x2);
+        assert_eq!(LtpReq::NyquistClock.value(), 0x3);
+        assert_eq!(LtpReq::DdeCompliance.value(), 0x4);
+        assert_eq!(LtpReq::Lfsr0.value(), 0x5);
+        assert_eq!(LtpReq::Lfsr1.value(), 0x6);
+        assert_eq!(LtpReq::Lfsr2.value(), 0x7);
+        assert_eq!(LtpReq::Lfsr3.value(), 0x8);
+        assert_eq!(LtpReq::FfeChange.value(), 0xE);
+        assert_eq!(LtpReq::RateChange.value(), 0xF);
+        assert_eq!(LtpReq::Reserved(0xB).value(), 0xB);
     }
 
     #[test]
@@ -223,7 +245,7 @@ mod tests {
             LtpReq::Lfsr2,
             LtpReq::Lfsr3,
         ] {
-            assert_eq!(req.pattern().map(LtpPattern::value), Some(req as u8));
+            assert_eq!(req.pattern().map(LtpPattern::value), Some(req.value()));
         }
     }
 
@@ -232,6 +254,7 @@ mod tests {
         assert_eq!(LtpReq::None.pattern(), None);
         assert_eq!(LtpReq::FfeChange.pattern(), None);
         assert_eq!(LtpReq::RateChange.pattern(), None);
+        assert_eq!(LtpReq::Reserved(0x9).pattern(), None);
     }
 
     // --- FfeLevels ---

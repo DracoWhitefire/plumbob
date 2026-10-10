@@ -44,7 +44,7 @@ impl ScdcClient for MyScdcClient {
     fn read_update_flags(&mut self) -> Result<UpdateFlags, MyError> { todo!() }
     // Write 1 to clear the given Update_0 flags.
     fn clear_update_flags(&mut self, flags: UpdateFlags) -> Result<(), MyError> { todo!() }
-    // Status_Flags_1/2: the per-lane requests (0x9–0xD are a protocol error).
+    // Status_Flags_1/2: the per-lane requests (0x9–0xD as LtpReq::Reserved).
     fn read_ltp_requests(&mut self) -> Result<LtpRequests, MyError> { todo!() }
     // Source_Test_Configuration: FLT_no_timeout.
     fn read_source_test_config(&mut self) -> Result<SourceTestConfig, MyError> { todo!() }
@@ -73,7 +73,8 @@ let rates = [
     HdmiForumFrl::Rate6Gbps4Lanes,
 ];
 
-match trainer.train(&rates, &config)? {
+let trained = trainer.train(&rates, &config)?;
+match trained.outcome {
     TrainingOutcome::Success { achieved_rate } => {
         println!("Trained at {achieved_rate:?}");
         // Start video: phy.set_frl_output(FrlOutput::Active)
@@ -83,7 +84,17 @@ match trainer.train(&rates, &config)? {
     }
     _ => {}
 }
+for warning in trained.iter_warnings() {
+    println!("Warning: {warning:?}");
+}
 ```
+
+`train` returns a `Trained`: the outcome, and the `TrainingWarning`s the attempt
+produced — non-fatal anomalies such as a sink requesting an undefined pattern value,
+which plumbob ignores. They do not change the outcome; they are there so that what the
+sink did is visible without a trace. As elsewhere in the stack, they are a `Vec` with
+the `alloc` feature and a fixed array (`MAX_WARNINGS`) without it; `iter_warnings` reads
+either.
 
 To take a trained link down again — the display is disabled or unplugged, or a mode
 change is coming — call `trainer.exit_to_tmds()`, which runs LTS:L on its own.

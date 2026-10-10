@@ -17,6 +17,7 @@ use crate::training::{
     ExitError, FallbackReason, TmdsExit, TrainingConfig, TrainingError, TrainingOutcome,
 };
 use crate::types::{FfeLevels, FrlConfig, LtpReq, LtpRequests, SourceTestConfig, UpdateFlags};
+use crate::warning::Trained;
 
 /// The SCDC and PHY operations the link training state machine performs.
 ///
@@ -64,6 +65,9 @@ pub trait TrainingIo {
 /// occurs. An empty `rates` returns `FallbackRequired { reason: RatesExhausted }` without
 /// any I/O.
 ///
+/// The outcome comes with the [`TrainingWarning`](crate::TrainingWarning)s the attempt
+/// produced, built from the same events `record` receives.
+///
 /// On an SCDC or PHY error, `run` performs LTS:L before returning, unless
 /// [`TrainingConfig::exit_to_tmds_on_error`] is off; the returned [`TrainingError`] says
 /// whether both ends reached TMDS.
@@ -72,8 +76,18 @@ pub async fn run<Io: TrainingIo, F: FnMut(TrainingEvent)>(
     rates: &[HdmiForumFrl],
     config: &TrainingConfig,
     record: &mut F,
-) -> Result<TrainingOutcome, Error<Io>> {
-    Machine { io }.run(rates, config, record).await
+) -> Result<Trained, Error<Io>> {
+    // Collects the warnings while the attempt runs; the outcome is set at the end.
+    let mut trained = Trained::new(TrainingOutcome::FallbackRequired {
+        reason: FallbackReason::RatesExhausted,
+    });
+    let mut record = |event: TrainingEvent| {
+        trained.observe(&event);
+        record(event);
+    };
+    let outcome = Machine { io }.run(rates, config, &mut record).await?;
+    trained.outcome = outcome;
+    Ok(trained)
 }
 
 type Error<Io> = TrainingError<<Io as TrainingIo>::ScdcError, <Io as TrainingIo>::PhyError>;
@@ -179,8 +193,18 @@ impl Lanes {
             requests.lane3,
         ];
         let mut ffe_changed = false;
-        for (lane, request) in requests.into_iter().enumerate().take(self.count) {
+        for (lane, request) in requests.into_iter().enumerate() {
+            let in_use = lane < self.count;
             match request {
+                // An undefined value is ignored, as the Xilinx and Intel drivers do: a
+                // lane in use keeps its pattern and level. It is recorded on every lane.
+                LtpReq::Reserved(value) => record(TrainingEvent::UndefinedLtpRequest {
+                    lane: lane as u8,
+                    value,
+                    in_use,
+                }),
+                // Lane 3 at a 3-lane rate is not in use.
+                _ if !in_use => {}
                 // Without FLT_no_timeout the lane keeps its previous pattern, as the
                 // Xilinx driver does (spec Table 6-32, LTP3 row).
                 LtpReq::NyquistClock if !no_timeout => {}

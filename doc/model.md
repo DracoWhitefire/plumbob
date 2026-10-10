@@ -32,8 +32,12 @@ pub struct LtpRequests { pub lane0: LtpReq, pub lane1: LtpReq, pub lane2: LtpReq
 Values 0x1–0x8 are patterns the PHY drives on that lane; 0x0, 0xE and 0xF are signals to
 the state machine and never reach the PHY. 0x3 (Nyquist clock) is only driven when the
 sink sets `FLT_no_timeout`; otherwise the lane keeps its previous pattern. plumbob tracks
-every lane's pattern and always sends the PHY the full per-lane set. Lane 3 is ignored in 3-lane FRL. Undefined
-values (0x9–0xD) are rejected by the `ScdcClient` implementation as a protocol error.
+every lane's pattern and always sends the PHY the full per-lane set. Lane 3 is ignored in
+3-lane FRL. The values the specification leaves undefined (0x9–0xD) are
+`LtpReq::Reserved(value)`: an `ScdcClient` implementation passes them on rather than
+failing, and plumbob leaves the lane as it was, records `UndefinedLtpRequest` and
+returns a `TrainingWarning` with the outcome.
+`LtpReq::value()` returns a request's 4-bit value.
 
 ### `FfeLevels`
 
@@ -90,6 +94,22 @@ defaults reproduce the spec's 100 ms and 200 ms timeouts (and the AMD and Intel 
 should scale them. The `FLT_no_timeout` cap and the retrain count follow the AMD driver.
 
 `TrainingConfig` is `#[non_exhaustive]` and derives `Clone` and `Copy`.
+
+### `Trained` and `TrainingWarning`
+
+`train` returns `Trained`: the `TrainingOutcome` and the `TrainingWarning`s the attempt
+produced. A warning is a non-fatal anomaly that did not change the outcome:
+
+| Warning | Meaning |
+|---|---|
+| `UndefinedLtpRequest { lane, value, count, in_use }` | The lane requested an undefined value (0x9–0xD) `count` times, the last being `value`; plumbob left the lane as it was. `in_use` is false for lane 3 at a 3-lane rate. |
+
+Repeats are merged per kind and lane (and `in_use`), so an attempt has at most five
+warnings. With `alloc`, `warnings` is a `Vec`; without it, a `[Option<TrainingWarning>;
+MAX_WARNINGS]` with `num_warnings` in use. `iter_warnings()` reads either.
+`TrainingWarning` and `Trained` are `#[non_exhaustive]`; `Trained` is `Copy` only without
+`alloc`. An attempt that ends in a `TrainingError` has no `Trained`: its trace records
+what happened.
 
 ### `TrainingOutcome` vs. `TrainingError`
 
