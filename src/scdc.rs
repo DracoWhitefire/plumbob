@@ -13,7 +13,9 @@ use crate::types::{CedCounters, FrlConfig, LtpRequests, SourceTestConfig, Update
 ///
 /// - **Correct register mapping.** Returned values must reflect the sink's registers at
 ///   the time of the read. An undefined request value (0x9–0xD) in `Status_Flags_1/2`
-///   has no [`LtpReq`](crate::LtpReq) variant and must be returned as an error.
+///   is returned as [`LtpReq::Reserved`](crate::LtpReq::Reserved) with its raw value,
+///   not as an error: whether it matters depends on the lanes in use, so plumbob decides
+///   (it leaves the lane as it was and reports a `TrainingWarning`).
 ///
 /// - **Bus-level error handling.** Any I²C/DDC timeout, NACK or protocol error must
 ///   surface as `Err(Self::Error)`. Returning a zeroed or default `Ok` value in place of
