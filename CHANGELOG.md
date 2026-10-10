@@ -86,6 +86,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`LtpReq::from_value`** — the request for a raw 4-bit value (`None` above 0xF), for
+  `ScdcClient` implementations and simulators: it gives every value exactly one request,
+  `Reserved` only for 0x9–0xD.
 - **`FrlTrainer::phy`, `phy_mut`, `scdc` and `scdc_mut`** — access to the PHY and SCDC
   client the trainer holds, for example to start video after `Success` without
   `into_parts`.
