@@ -78,12 +78,14 @@ pub struct SimSink {
     flt_ready_after: Option<u32>,
     rounds: VecDeque<Round>,
     frl_start_after: Option<u32>,
+    frl_start_with_round: Option<usize>,
     source_test: SourceTestConfig,
     fail: Option<Failure<SinkOp>>,
 
     flt_ready_polls: u32,
     configured: bool,
     update_polls: u32,
+    rounds_posted: usize,
     flags: UpdateFlags,
 
     /// Every call received, in order. Failed calls are not recorded.
@@ -120,6 +122,13 @@ impl SimSink {
             requests,
             source_test: Some(source_test),
         });
+        self
+    }
+
+    /// Raises `FRL_start` together with `FLT_update` when the round queued at `index`
+    /// (counting from 0) is posted. The sink's final `FRL_start` is not used up by it.
+    pub fn frl_start_with_round(mut self, index: usize) -> Self {
+        self.frl_start_with_round = Some(index);
         self
     }
 
@@ -173,6 +182,10 @@ impl ScdcClient for SimSink {
             match self.rounds.front().copied() {
                 Some(round) if !self.flags.flt_update && self.update_polls >= round.after_polls => {
                     self.flags.flt_update = true;
+                    if self.frl_start_with_round == Some(self.rounds_posted) {
+                        self.flags.frl_start = true;
+                    }
+                    self.rounds_posted += 1;
                     if let Some(config) = round.source_test {
                         self.source_test = config;
                         self.flags.source_test_update = true;
@@ -198,9 +211,12 @@ impl ScdcClient for SimSink {
             self.update_polls = 0;
         }
         if flags.frl_start {
-            // A sink sets FRL_start once; it does not come back after being cleared.
             self.flags.frl_start = false;
-            self.frl_start_after = None;
+            // A sink sets FRL_start once; it does not come back after being cleared. One
+            // raised with a round (`frl_start_with_round`) does not use that up.
+            if self.rounds.is_empty() {
+                self.frl_start_after = None;
+            }
         }
         self.flags.source_test_update &= !flags.source_test_update;
         self.calls.push(SinkCall::ClearUpdateFlags(flags));
@@ -649,6 +665,28 @@ mod tests {
             }
             assert_eq!(phy.calls.len(), ops.len() - 1);
         }
+    }
+
+    #[test]
+    fn frl_start_with_round_raises_both_flags_and_keeps_the_final_start() {
+        let config = FrlConfig {
+            rate: HdmiForumFrl::Rate6Gbps4Lanes,
+            ffe_levels: FfeLevels::default(),
+        };
+        let mut sink = SimSink::new()
+            .round(0, all(LtpReq::None))
+            .round(0, all(LtpReq::None))
+            .frl_start_with_round(1)
+            .frl_start_after(0);
+        sink.write_frl_config(config).unwrap();
+        let both = |flags: UpdateFlags| flags.flt_update && flags.frl_start;
+        assert!(!both(sink.read_update_flags().unwrap()));
+        sink.clear_update_flags(crate::lts::FLT_UPDATE).unwrap();
+        assert!(both(sink.read_update_flags().unwrap()));
+        sink.clear_update_flags(crate::lts::FRL_START).unwrap();
+        sink.clear_update_flags(crate::lts::FLT_UPDATE).unwrap();
+        // The rounds are used up: the sink's own FRL_start still comes.
+        assert!(sink.read_update_flags().unwrap().frl_start);
     }
 
     #[test]

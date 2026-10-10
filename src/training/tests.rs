@@ -1234,6 +1234,49 @@ fn a_retrain_starts_lts_3_from_no_pattern_and_keeps_the_levels() {
     assert_eq!(levels_sent(&phy), [[0, 1, 0, 0]]);
 }
 
+/// A sink that passes LTS:3, then sets FRL_start and FLT_update together in LTS:P (with
+/// a request for `Lfsr1`), then passes again and starts.
+fn both_flags_sink() -> SimSink {
+    SimSink::new()
+        .flt_ready_after(0)
+        .round(0, all(LtpReq::Lfsr0))
+        .round(0, all(LtpReq::None))
+        .round(0, all(LtpReq::Lfsr1))
+        .frl_start_with_round(2)
+        .round(0, all(LtpReq::None))
+        .frl_start_after(0)
+}
+
+#[test]
+fn frl_start_with_a_retrain_request_retrains() {
+    let (outcome, sink, phy) = run(both_flags_sink(), &[RATE], &TrainingConfig::default());
+    assert_eq!(
+        outcome,
+        TrainingOutcome::Success {
+            achieved_rate: RATE
+        }
+    );
+    assert_eq!(retrain_count(&phy), 1);
+    // FRL_start was cleared before retraining, so it could not end the next LTS:P.
+    let clears: Vec<_> = sink
+        .calls
+        .iter()
+        .filter(|c| **c == SinkCall::ClearUpdateFlags(FRL_START))
+        .collect();
+    assert_eq!(clears.len(), 2);
+    assert!(ltp_sent(&phy).contains(&uniform(4, Some(LtpPattern::Lfsr1))));
+}
+
+#[test]
+fn frl_start_with_a_retrain_request_past_max_retrains_falls_back() {
+    let config = TrainingConfig {
+        max_retrains: 0,
+        ..TrainingConfig::default()
+    };
+    let (outcome, _, _) = run(both_flags_sink(), &[RATE], &config);
+    assert_eq!(outcome, fallback(FallbackReason::RetrainsExhausted));
+}
+
 fn retraining_sink(retrains: usize) -> SimSink {
     let mut sink = SimSink::new()
         .flt_ready_after(0)
@@ -1848,6 +1891,17 @@ mod traced {
             Some(&TrainingEvent::NoTimeoutCapReached { polls: 3 })
         );
         assert!(!trace.events.contains(&TrainingEvent::ExitedToTmds));
+    }
+
+    #[test]
+    fn frl_start_with_a_retrain_is_recorded() {
+        let (_, trace) = trace(both_flags_sink(), &[RATE], &TrainingConfig::default());
+        let at = trace
+            .events
+            .iter()
+            .position(|e| *e == TrainingEvent::FrlStartWithRetrain)
+            .expect("recorded");
+        assert_eq!(trace.events[at + 1], TrainingEvent::RetrainRequested);
     }
 
     #[test]

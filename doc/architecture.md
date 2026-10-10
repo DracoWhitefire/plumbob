@@ -174,6 +174,9 @@ If training has not passed within the poll limit, go to LTS:L and return
 1. Stop the training patterns (no pattern on any lane) and send gap characters only
    (`set_frl_output(GapOnly)`). Clear `FLT_update`.
 2. Poll `UpdateFlags`, at most `TrainingConfig::frl_start_polls` times:
+   - **`flt_update`** is checked first. If `frl_start` is set as well, the retrain wins,
+     as in the Xilinx driver: `frl_start` is cleared (so it cannot end the next LTS:P
+     early) and `FrlStartWithRetrain` is recorded; then the retrain below.
    - **`frl_start`** — clear it and return `Success`. The caller starts video
      (`set_frl_output(Active)`) on the PHY it gets back from `into_parts`, or through the
      trainer it keeps.
@@ -484,6 +487,8 @@ pub enum TrainingEvent {
     /// LTS:3: training did not pass within the poll limit.
     TrainingTimeout { polls: u32 },
     /// LTS:P: the sink requested retraining (FLT_update) before FRL_start.
+    /// LTS:P: FRL_start and FLT_update were set together; the retrain wins.
+    FrlStartWithRetrain,
     RetrainRequested,
     /// LTS:P: the sink requested retraining once more after max_retrains retrains.
     RetrainsExhausted { retrains: u32 },
@@ -749,7 +754,11 @@ and recorded by `hdmi-hal-i2c-dev`'s `StubPhy`):
 - A Nyquist clock request (0x3) without `FLT_no_timeout` leaves the lane's previous pattern
   in place; plumbob tracks and sends the full per-lane set.
 - FRL output control (`set_frl_output`) is part of `HdmiPhy`.
-- In LTS:P, `FRL_start` is checked before `FLT_update` when both are set.
+- In LTS:P, when the sink sets `FRL_start` and `FLT_update` together, the retrain wins:
+  `FRL_start` is cleared and LTS:3 resumes, within `max_retrains`. Starting video on a
+  link the sink has asked to retrain would only have to be undone. The Xilinx driver ends
+  up in LTS:3 the same way; AMD passes and retrains later; Intel clears both and passes,
+  discarding the sink's request.
 - Retraining from LTS:P starts LTS:3 from the state LTS:P left — no pattern on any lane,
   each lane's TxFFE level kept — with a fresh poll limit; levels are reset only in LTS:2
   and LTS:4. This follows from plumbob's lane model being what the PHY was last told

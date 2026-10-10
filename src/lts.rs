@@ -576,12 +576,15 @@ impl<Io: TrainingIo> Machine<'_, Io> {
         let limit = attempt.limit(config, config.frl_start_polls);
         for polls in 1..=limit {
             let flags = self.read_update_flags().await?;
-            if flags.frl_start {
-                self.clear(FRL_START).await?;
-                record(TrainingEvent::FrlStart { after_polls: polls });
-                return Ok(State::Success);
-            }
             if flags.flt_update {
+                // The sink asks to retrain. If it set FRL_start as well, the retrain wins,
+                // as in the Xilinx driver: starting video on a link the sink wants
+                // retrained would only have to be undone. FRL_start is cleared so it
+                // cannot end the next LTS:P early.
+                if flags.frl_start {
+                    self.clear(FRL_START).await?;
+                    record(TrainingEvent::FrlStartWithRetrain);
+                }
                 if attempt.retrains >= config.max_retrains {
                     record(TrainingEvent::RetrainsExhausted {
                         retrains: attempt.retrains,
@@ -591,6 +594,11 @@ impl<Io: TrainingIo> Machine<'_, Io> {
                 attempt.retrains += 1;
                 record(TrainingEvent::RetrainRequested);
                 return Ok(State::Train);
+            }
+            if flags.frl_start {
+                self.clear(FRL_START).await?;
+                record(TrainingEvent::FrlStart { after_polls: polls });
+                return Ok(State::Success);
             }
         }
         Ok(attempt.timed_out(
