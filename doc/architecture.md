@@ -4,8 +4,9 @@
 
 `plumbob` implements the Fixed Rate Link (FRL) training state machine defined in the HDMI
 2.1 specification. It defines the interface its dependencies must satisfy rather than
-depending on any specific SCDC implementation, and it is itself replaceable by any crate
-that implements the `LinkTrainer` trait defined by the integration layer above it.
+depending on any specific SCDC implementation. It is meant to be replaceable in the same
+way: the integration layer above it (not yet built) will define a `LinkTrainer` trait for
+plumbob, or any other crate, to implement.
 
 Training establishes actual link capability, not just theoretical negotiation. A
 `NegotiatedConfig` from concordance identifies what the hardware should support; link
@@ -68,7 +69,7 @@ The following are out of scope:
 ```
 display-types  ─┐
 hdmi-hal       ─┴─►  plumbob  ◄─  culvert (implements ScdcClient, feature-gated)
-                               ◄─  integration layer (defines LinkTrainer, plumbob implements it)
+                               ◄─  integration layer (planned: will define LinkTrainer)
 ```
 
 - `hdmi-hal` — `HdmiPhy`, `LanePatterns`, `LtpPattern`, `FrlOutput`, `EqParams`,
@@ -79,9 +80,9 @@ plumbob does not depend on `culvert`. The relationship runs the other way: culve
 implements `plumbob::ScdcClient` for `Scdc<T>`, gated behind a `plumbob` cargo feature.
 Any crate that implements `ScdcClient` can be used in place of culvert.
 
-plumbob does not depend on the integration layer. The integration layer defines a
-`LinkTrainer` trait; plumbob implements it. Any crate that implements `LinkTrainer` can
-be used in place of plumbob.
+plumbob will not depend on the integration layer either. The integration layer, which is
+not yet built, will define a `LinkTrainer` trait for plumbob to implement, so that any
+crate implementing `LinkTrainer` can be used in place of plumbob.
 
 plumbob does not depend on `concordance` or `piaf`. It receives a target FRL rate from
 the caller and trains at that rate.
@@ -594,15 +595,16 @@ depending on the feature set, breaking crates that use culvert without plumbob. 
 dependency unconditional would force plumbob into every culvert user's dependency graph.
 The boundary conversion is small, explicit, and keeps both crates independently usable.
 
-### Above: `LinkTrainer` (defined by the integration layer, implemented here)
+### Above: `LinkTrainer` (planned)
 
-The integration layer defines the interface it needs from link training. plumbob
-implements it. This means the integration layer has no dependency on plumbob specifically
-— any crate that implements `LinkTrainer` is substitutable.
+The integration layer will define the interface it needs from link training, and plumbob
+will implement it. The integration layer will then have no dependency on plumbob
+specifically — any crate that implements `LinkTrainer` will be substitutable.
 
-The `LinkTrainer` trait is defined in the integration layer crate (not yet built). Its
-surface will be driven by what the DRM/KMS integration actually needs to call: at minimum,
-`train` and the ability to recover the SCDC client and PHY on completion.
+The `LinkTrainer` trait does not exist yet; it will live in the integration layer crate,
+which is not yet built. Its surface will be driven by what the DRM/KMS integration
+actually needs to call: at minimum, `train` and the ability to recover the SCDC client and
+PHY on completion. Until then, callers use `FrlTrainer` directly.
 
 ---
 
@@ -703,7 +705,8 @@ deferred, in the stack design document ("Sync and Async Companions", "`Send` fut
 
 - **Interfaces owned by consumers.** plumbob defines the interface its dependencies
   must satisfy (`ScdcClient`) rather than depending on a concrete implementation.
-  The integration layer above defines the interface plumbob must satisfy (`LinkTrainer`).
+  The integration layer above will define the interface plumbob must satisfy
+  (`LinkTrainer`, planned).
   Each layer is substitutable independently.
 - **Deterministic and testable.** The training procedure runs identically against a
   simulated `ScdcClient` and real hardware. Implement `ScdcClient` with a register

@@ -288,8 +288,9 @@ plumbob = { version = "0.1", features = ["std"] }
 ## Stack position
 
 `plumbob` sits between the SCDC/PHY implementations and the integration layer that
-orchestrates rate selection and fallback. It defines one interface (`ScdcClient`) and
-implements one (`LinkTrainer`) from the layer above.
+will orchestrate rate selection and fallback. It defines one interface (`ScdcClient`) and
+will implement one (`LinkTrainer`) that the integration layer, once built, will define;
+the dotted edge below marks that planned relationship.
 
 ```mermaid
 flowchart LR
@@ -297,12 +298,12 @@ flowchart LR
     hal["hdmi-hal"]
     culvert["culvert"]
     plumbob["plumbob"]
-    integration["integration layer"]
+    integration["integration layer (planned)"]
 
     dt --> plumbob
     hal --> plumbob
     culvert -->|"implements ScdcClient"| plumbob
-    plumbob -->|"implements LinkTrainer"| integration
+    plumbob -.->|"will implement LinkTrainer"| integration
 ```
 
 `plumbob` does not depend on `culvert`. The relationship runs the other way: `culvert`
