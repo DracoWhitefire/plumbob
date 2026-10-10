@@ -64,7 +64,8 @@ pub enum TrainingOutcome {
 ///
 /// Distinct from [`TrainingOutcome::FallbackRequired`]: this means something failed —
 /// an SCDC or PHY operation, or a rate list the procedure cannot run
-/// ([`InvalidRates`](Self::InvalidRates)) — not that the link simply did not train.
+/// ([`InvalidRates`](Self::InvalidRates), [`NoRates`](Self::NoRates)) — not that the link
+/// simply did not train.
 ///
 /// After an SCDC or PHY error, plumbob performs LTS:L, returning both ends to TMDS as
 /// after a fallback, unless [`TrainingConfig::exit_to_tmds_on_error`] is off or the sink
@@ -177,7 +178,8 @@ pub struct TrainingConfig {
     /// How many times one `train` call returns from LTS:P to LTS:3 when the sink requests
     /// retraining (`FLT_update`). The next request after that ends the attempt with
     /// [`FallbackReason::RetrainsExhausted`]; 0 falls back on the first one. Default 3,
-    /// the AMD driver's retry count (which reruns the whole procedure rather than LTS:3).
+    /// the number of retries the AMD driver allows a failed procedure (it reruns the whole
+    /// procedure rather than LTS:3).
     ///
     /// Unlike the poll limits, this bound holds under `FLT_no_timeout` as well: it is what
     /// guarantees that the LTS:P ↔ LTS:3 cycle ends, so exhausting it falls back rather

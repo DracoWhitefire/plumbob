@@ -1,7 +1,7 @@
 //! The link training state machine, independent of how its I/O is performed.
 //!
 //! [`run`] is the whole procedure — LTS:2 → LTS:3 → LTS:P, with LTS:4 and LTS:L — written
-//! once as an `async fn` over [`TrainingIo`]. It performs no I/O itself: every SCDC and PHY
+//! once as a function returning a future, over [`TrainingIo`]. It performs no I/O itself: every SCDC and PHY
 //! operation goes through the `TrainingIo` it is given.
 //!
 //! [`FrlTrainer`](crate::FrlTrainer) drives it synchronously over an
@@ -198,9 +198,10 @@ impl Lanes {
         for (lane, request) in requests.into_iter().enumerate() {
             let in_use = lane < self.count;
             match request {
-                // An undefined value is ignored, as the Xilinx and Intel drivers do: a
-                // lane in use keeps its pattern and level (see `record_undefined`). Lane 3
-                // at a 3-lane rate is not in use.
+                // An undefined value is ignored, as the Xilinx driver does: a lane in use
+                // keeps its pattern and level (see `record_undefined`). The Intel series
+                // rebuilds the patterns on each request, leaving such a lane without one.
+                // Lane 3 at a 3-lane rate is not in use.
                 LtpReq::Reserved(_) => {}
                 _ if !in_use => {}
                 // Without FLT_no_timeout the lane keeps its previous pattern, as the
@@ -473,7 +474,8 @@ impl<Io: TrainingIo> Machine<'_, Io> {
     ) -> Result<State, Failure<Io>> {
         // Read on every attempt, not only when `Source_Test_Update` says it changed: a
         // tester sets `FLT_no_timeout` and leaves it set, and the flag was cleared by an
-        // earlier attempt. The Xilinx and AMD drivers read it unconditionally too.
+        // earlier attempt. The Xilinx and AMD drivers read it unconditionally too (Xilinx
+        // also re-reads it while waiting for FLT_ready; plumbob does not).
         let update = self.read_update_flags().await?.source_test_update;
         self.read_source_test(attempt, update, record).await?;
 

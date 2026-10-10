@@ -31,12 +31,15 @@ plumbob covers:
   on the sink's request and LTS:L (exit to TMDS) on failure, per HDMI 2.1 §6,
 - `ScdcClient`: the typed SCDC interface trait, defined here and implemented by SCDC crates,
 - `FrlTrainer<C, P>`: the central type, owning an `ScdcClient` and a PHY,
-- `lts`: the state machine as one I/O-free `async fn` (`lts::run`) over the `TrainingIo`
-  trait, which `FrlTrainer` drives synchronously and `plumbob-async` asynchronously,
-- `TrainingOutcome`: the result of a training attempt (`Success`, or `FallbackRequired`
-  with a `FallbackReason`),
+- `lts`: the state machine as one I/O-free function returning a future (`lts::run`) over
+  the `TrainingIo` trait, which `FrlTrainer` drives synchronously and `plumbob-async`
+  asynchronously,
+- `TrainingOutcome`: the result of a training attempt (`Success`, `FallbackRequired` with
+  a `FallbackReason`, or `NoTimeoutHold` under compliance test),
 - `TrainingConfig`: per-attempt configuration (maximum FFE level, poll limits),
-- `TrainingError`: hard SCDC or PHY failures, with what LTS:L did afterwards (`TmdsExit`),
+- `TrainingError`: hard SCDC or PHY failures with what LTS:L did afterwards (`TmdsExit`),
+  a fallback whose LTS:L failed (`ExitFailed`), or a rate list the procedure cannot run
+  (`InvalidRates`, `NoRates`),
 - owned protocol types: `LtpReq`, `LtpRequests`, `FfeLevels`, `FrlConfig`,
   `UpdateFlags`, `SourceTestConfig`, `CedCounters`,
 - simulation support: the training procedure is fully exercisable without real hardware
@@ -122,7 +125,9 @@ The number of active lanes follows from the rate: 3 for `Rate3Gbps3Lanes` and
    every attempt, not only when the update flag is set: a tester sets `FLT_no_timeout`
    and leaves it, while the flag is cleared by the first attempt that sees it. The Xilinx
    and AMD drivers read it unconditionally too. In LTS:3 it is re-read when the flag is
-   raised.
+   raised. It is not re-read while step 2 polls `FLT_ready`, where the Xilinx driver
+   re-reads it on every 5 ms tick: a tester who sets it during that wait is seen from the
+   next attempt, or in LTS:3 if `FLT_ready` arrives in time.
 2. Poll `FLT_ready` (`ScdcClient::read_flt_ready`) until the sink asserts it. If it
    does not within `TrainingConfig::flt_ready_polls`, go to LTS:L and return
    `FallbackRequired { reason: FltReadyTimeout }` — or, under `FLT_no_timeout`, hold the
@@ -165,10 +170,11 @@ always what the PHY was last told: LTS:2 leaves every lane with no pattern and T
      - **0x0** — the lane keeps its pattern and level.
      - **0x9–0xD** (undefined, `LtpReq::Reserved`) — the lane keeps its pattern and
        level, and the trace records `UndefinedLtpRequest`; the result carries a
-       `TrainingWarning`. The Xilinx and Intel drivers
-       ignore these values too; an undefined value on one lane does not stop the others
-       from training, and on lane 3 at a 3-lane rate it is not looked at, like any lane-3
-       request there.
+       `TrainingWarning`. The Xilinx driver ignores these values the same way; the Intel
+       series rebuilds every lane's pattern on each request, so there a lane with an
+       undefined value gets no pattern. An undefined value on one lane does not stop the
+       others from training, and on lane 3 at a 3-lane rate it is not looked at, like any
+       lane-3 request there.
 
      Then send the full per-lane pattern set to the PHY (`send_ltp`) and, if any TxFFE
      level changed, the per-lane levels (`adjust_equalization`). The PHY applies exactly
@@ -440,7 +446,9 @@ impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
         -> Result<Trained, TrainingError<C::Error, P::Error>>;
     /// LTS:L on demand: take the link down to TMDS.
     pub fn exit_to_tmds(&mut self) -> Result<(), ExitError<C::Error, P::Error>>;
-    // `new` and `into_parts` construct the trainer and recover the client and PHY.
+    // `new` and `into_parts` construct the trainer and recover the client and PHY;
+    // `scdc`, `scdc_mut`, `phy` and `phy_mut` reach them in between (for example to start
+    // video with `phy_mut().set_frl_output(FrlOutput::Active)` after `Success`).
 }
 
 /// A hard I/O failure, kept separate from the protocol outcome.
@@ -478,8 +486,8 @@ typed warnings next to the value, in a `Vec` with `alloc` and a fixed array with
 through `iter_warnings`; failures carry errors, not warnings. One difference fits a
 procedure that polls: a sink may repeat an anomaly on every round, so repeats are merged
 into one warning per kind and lane, with a count. An attempt then produces at most five
-warnings — lanes 0–2, and lane 3 in and out of use — so the 8-slot array without `alloc`
-never drops one. The trace records every occurrence.
+warnings — lanes 0–2, and lane 3 in and out of use — so the `MAX_WARNINGS` (5) slots
+without `alloc` never drop one. The trace records every occurrence.
 
 ---
 
@@ -545,9 +553,9 @@ limits), and the ordered `events`. It requires the `alloc` feature.
 ```
 SourceTestConfigRead { flt_no_timeout: false }
 FltReady { after_polls: 3 }
-RateConfigured { rate: Rate12Gbps4Lanes, ffe_levels: 3 }
-LtpRequested { requests: [Lfsr0, Lfsr1, Lfsr2, Lfsr3] }
-LtpRequested { requests: [None, FfeChange, None, None] }
+RateConfigured { rate: Rate12Gbps4Lanes, ffe_levels: FfeLevels(3) }
+LtpRequested { requests: LtpRequests { lane0: Lfsr0, lane1: Lfsr1, lane2: Lfsr2, lane3: Lfsr3 } }
+LtpRequested { requests: LtpRequests { lane0: None, lane1: FfeChange, lane2: None, lane3: None } }
 FfeRaised { lane: 1, level: 1 }
 TrainingPassed { after_polls: 41 }
 FrlStart { after_polls: 6 }
@@ -558,11 +566,11 @@ A sink that asks for a lower rate, trained over `[Rate12Gbps4Lanes, Rate10Gbps4L
 ```
 SourceTestConfigRead { flt_no_timeout: false }
 FltReady { after_polls: 2 }
-RateConfigured { rate: Rate12Gbps4Lanes, ffe_levels: 3 }
-LtpRequested { requests: [RateChange, RateChange, RateChange, RateChange] }
+RateConfigured { rate: Rate12Gbps4Lanes, ffe_levels: FfeLevels(3) }
+LtpRequested { requests: LtpRequests { lane0: RateChange, lane1: RateChange, lane2: RateChange, lane3: RateChange } }
 RateLowered { from: Rate12Gbps4Lanes, to: Rate10Gbps4Lanes }
-RateConfigured { rate: Rate10Gbps4Lanes, ffe_levels: 3 }
-LtpRequested { requests: [Lfsr0, Lfsr0, Lfsr0, Lfsr0] }
+RateConfigured { rate: Rate10Gbps4Lanes, ffe_levels: FfeLevels(3) }
+LtpRequested { requests: LtpRequests { lane0: Lfsr0, lane1: Lfsr0, lane2: Lfsr0, lane3: Lfsr0 } }
 TrainingPassed { after_polls: 12 }
 FrlStart { after_polls: 4 }
 ```
@@ -682,11 +690,12 @@ a convenience for targets where it is available and for host-side tooling.
 
 **Async**
 
-The state machine is one `async fn`, `lts::run` (see below), so async link training needs
-no second implementation. `plumbob-async` defines an async `ScdcClient` and an async
-`FrlTrainer` that drives `lts::run` over async I/O, and depends on `plumbob` for the state
-machine and all shared types; `culvert-async` implements its `ScdcClient`. See the stack
-design document's "Sync and Async Companions" section for why the core lives here.
+The state machine is one function returning a future, `lts::run` (see below), so async
+link training needs no second implementation. `plumbob-async` defines an async
+`ScdcClient` and an async `FrlTrainer` that drives `lts::run` over async I/O, and depends
+on `plumbob` for the state machine and all shared types; `culvert-async` implements its
+`ScdcClient`. See the stack design document's "Sync and Async Companions" section for why
+the core lives here.
 
 ### `plumbob::lts`
 
@@ -748,7 +757,7 @@ deferred, in the stack design document ("Sync and Async Companions", "`Send` fut
   array, pre-load it with the values a sink would produce at each phase, run the state
   machine, assert on the outcome. No hardware required for any test.
 - **One implementation, sync and async.** The state machine is written once, as an
-  I/O-free `async fn`; the sync and async trainers only supply the I/O. A fix to the
+  I/O-free function returning a future; the sync and async trainers only supply the I/O. A fix to the
   procedure reaches both.
 - **State machine, not scattered logic.** The link training states are an explicit
   sequence. State transitions are clear, terminal states are explicit, and every exit
@@ -892,12 +901,16 @@ How a caller keeps a call shorter than the worst case:
   (LTS:P stopped the patterns but not the levels), and matches the Xilinx driver, which
   clears the patterns on entering LTS:P and again on the retrain but keeps its TxFFE
   adjustments. Intel rebuilds every lane's pattern from scratch on each request, and AMD
-  reruns the whole procedure. Retraining is bounded by
-  `max_retrains` (default 3) per `train` call, so the LTS:P ↔ LTS:3 cycle always ends.
-  The reference drivers differ here: Xilinx returns to LTS:3 without a limit (its state
-  machine is timer-driven, not blocking), AMD reruns the whole procedure up to 3 times,
-  and Intel falls back to TMDS on the first request. The default borrows AMD's count;
-  `max_retrains: 0` gives Intel's behaviour. The bound applies under `FLT_no_timeout`
+  retrains only after link-up, by running the whole procedure again. Retraining is
+  bounded by `max_retrains` (default 3) per `train` call, so the LTS:P ↔ LTS:3 cycle
+  always ends. The reference drivers differ here: Xilinx returns to LTS:3 without a limit
+  (its state machine is timer-driven, not blocking); AMD's LTS:P clears `FLT_update` and
+  stops waiting, and a retrain request reaches it later through its link-status check,
+  which reruns the whole procedure; Intel falls back to TMDS on the first request. The
+  default borrows the number of retries AMD allows a failed procedure (3, so up to four
+  runs), applied here to retrains. `max_retrains: 0` gives Intel's fallback on a retrain
+  request, except when `FRL_start` is set as well: Intel then clears both and passes,
+  while plumbob clears `FRL_start` and falls back. The bound applies under `FLT_no_timeout`
   too: unlike the poll limits it is not suspended there, and exhausting it falls back
   rather than holding the link (see "`FLT_no_timeout` — holding the link").
 - A 0xF on some lanes but not all keeps those lanes' state, like 0x0; only 0xF on every

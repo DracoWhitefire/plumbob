@@ -145,10 +145,9 @@ flowchart TD
     P2 & P3 & PP -. "FLT_no_timeout: cap reached" .-> H
 ```
 
-**LTS:2** waits for the sink to assert `FLT_ready`, resets every lane's TxFFE level,
-configures the PHY for the rate (any transmitter bring-up is the PHY's, inside
-`set_frl_rate`), then switches to gap characters with no pattern and writes `Config_0`
-and `Config_1`.
+**LTS:2** waits for the sink to assert `FLT_ready`, configures the PHY for the rate (any
+transmitter bring-up is the PHY's, inside `set_frl_rate`), then resets every lane's TxFFE
+level, switches to gap characters with no pattern and writes `Config_0` and `Config_1`.
 
 **LTS:3** follows the sink's per-lane requests: each lane carries the pattern it asks
 for, 0xE raises that lane's TxFFE level (up to the advertised maximum, then held), and
@@ -247,12 +246,12 @@ LTS:P means training passed but the sink never released the link. Every
 
 ## Async and custom drivers
 
-The state machine is written once, as `plumbob::lts::run`: an `async fn` over the
-`TrainingIo` trait (the SCDC and PHY operations training performs), which does no I/O of
-its own. `FrlTrainer` drives it synchronously over an `ScdcClient` and an `HdmiPhy`, with
-no async runtime: its I/O completes immediately, so the function never waits.
-[`plumbob-async`](https://crates.io/crates/plumbob-async) drives the same function over
-async I/O, so sync and async training cannot drift apart. Implementing `TrainingIo`
+The state machine is written once, as `plumbob::lts::run`: a function returning a future,
+over the `TrainingIo` trait (the SCDC and PHY operations training performs), which does no
+I/O of its own. `FrlTrainer` drives it synchronously over an `ScdcClient` and an
+`HdmiPhy`, with no async runtime: its I/O completes immediately, so the function never
+waits. [`plumbob-async`](https://crates.io/crates/plumbob-async) drives the same function
+over async I/O, so sync and async training cannot drift apart. Implementing `TrainingIo`
 yourself drives it from any other environment.
 
 ## Features
@@ -321,7 +320,7 @@ Any crate that implements `ScdcClient` is substitutable.
 - **PHY vendor sequences** — plumbob calls `HdmiPhy` methods (`set_frl_rate`, `send_ltp`,
   `set_frl_output`, `adjust_equalization`); the register sequences behind them live in
   platform PHY backends.
-- **Timing** — plumbob is synchronous and poll-based. The inter-poll delay is the
+- **Timing** — plumbob is poll-based and has no clock. The inter-poll delay is the
   `ScdcClient` implementation's; the poll limits in `TrainingConfig` are the only timeout
   mechanism.
 - **TMDS link setup** — plumbob handles FRL training only.

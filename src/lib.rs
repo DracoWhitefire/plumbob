@@ -4,8 +4,8 @@
 //! HDMI 2.1 specification. It defines the [`ScdcClient`] interface its dependencies
 //! must satisfy and exposes [`FrlTrainer`] as the central entry point.
 //!
-//! The state machine itself is [`lts::run`], an `async fn` that performs no I/O of its
-//! own. [`FrlTrainer`] drives it synchronously, without an async runtime; `plumbob-async`
+//! The state machine itself is [`lts::run`], a function returning a future that performs
+//! no I/O of its own. [`FrlTrainer`] drives it synchronously, without an async runtime; `plumbob-async`
 //! drives the same function asynchronously.
 //!
 //! # Features
