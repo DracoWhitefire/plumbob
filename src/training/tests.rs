@@ -2067,6 +2067,32 @@ mod traced {
     }
 
     #[test]
+    fn a_timeout_after_flt_no_timeout_clears_records_the_polls_made() {
+        // The flag holds LTS:3 past its normal limit of 2; when the tester clears it at
+        // the seventh poll, the state ends at once.
+        let config = TrainingConfig {
+            ltp_polls: 2,
+            ..TrainingConfig::default()
+        };
+        let sink = SimSink::new()
+            .source_test(NO_TIMEOUT)
+            .flt_ready_after(0)
+            .round_with_source_test(6, all(LtpReq::Lfsr0), SourceTestConfig::default());
+        let (outcome, trace) = trace(sink, &[RATE], &config);
+        assert_eq!(
+            outcome,
+            TrainingOutcome::FallbackRequired {
+                reason: FallbackReason::TrainingTimeout
+            }
+        );
+        assert!(
+            trace
+                .events
+                .contains(&TrainingEvent::TrainingTimeout { polls: 7 })
+        );
+    }
+
+    #[test]
     fn timeouts_record_the_limit_and_end_in_tmds() {
         let config = TrainingConfig {
             flt_ready_polls: 4,

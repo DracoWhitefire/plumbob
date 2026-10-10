@@ -121,7 +121,8 @@ impl Trained {
             match earlier {
                 Some((last, count)) => {
                     *last = value;
-                    *count += 1;
+                    // A sink can repeat a request for as long as a client lets it.
+                    *count = count.saturating_add(1);
                 }
                 None => self.push(TrainingWarning::UndefinedLtpRequest {
                     lane,
@@ -145,6 +146,25 @@ mod tests {
             value,
             in_use,
         }
+    }
+
+    #[test]
+    fn the_repeat_count_saturates() {
+        let mut trained = Trained::new(TrainingOutcome::FallbackRequired {
+            reason: FallbackReason::TrainingTimeout,
+        });
+        trained.observe(&undefined(0, 0x9, true));
+        #[cfg(feature = "alloc")]
+        let warning = &mut trained.warnings[0];
+        #[cfg(not(feature = "alloc"))]
+        let warning = trained.warnings[0].as_mut().unwrap();
+        let TrainingWarning::UndefinedLtpRequest { count, .. } = warning;
+        *count = u32::MAX;
+        trained.observe(&undefined(0, 0x9, true));
+        assert!(matches!(
+            trained.iter_warnings().next(),
+            Some(TrainingWarning::UndefinedLtpRequest { count: u32::MAX, .. })
+        ));
     }
 
     #[test]

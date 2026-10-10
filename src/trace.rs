@@ -9,9 +9,11 @@ use alloc::vec::Vec;
 
 /// A single event in a training attempt, in order from LTS:2 to the terminal state.
 ///
-/// Poll counts include the poll that saw the event (`after_polls`), or equal the limit
-/// that ran out (`polls`), so they can be read against the limits in the trace's
-/// `TrainingConfig`.
+/// Poll counts include the poll that saw the event (`after_polls`), or count the polls
+/// made when a limit ran out (`polls`), so they can be read against the limits in the
+/// trace's `TrainingConfig`. A `polls` is the limit, except in LTS:3 when `FLT_no_timeout`
+/// changes after the new limit has already passed: the state then ends at once, and
+/// `polls` says how many were made.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrainingEvent {
@@ -79,7 +81,8 @@ pub enum TrainingEvent {
     RatesExhausted,
     /// LTS:3: training did not pass within the poll limit.
     TrainingTimeout {
-        /// Polls made: the limit.
+        /// Polls made in this pass through LTS:3: the limit, or more if the tester cleared
+        /// `FLT_no_timeout` after the normal limit had passed.
         polls: u32,
     },
     /// LTS:P: the sink set `FRL_start` and `FLT_update` together. The retrain wins:
@@ -107,7 +110,8 @@ pub enum TrainingEvent {
     /// attempt ends with `NoTimeoutHold`, leaving the link as it is. The state is the one
     /// the events before it lead into.
     NoTimeoutCapReached {
-        /// Polls made in the state: the cap.
+        /// Polls made in the state: the cap, or more if the sink set `FLT_no_timeout` in
+        /// LTS:3 after a cap lower than the polls already made.
         polls: u32,
     },
     /// LTS:L: the sink and PHY were returned to TMDS.

@@ -536,9 +536,11 @@ impl<Io: TrainingIo> Machine<'_, Io> {
         loop {
             let limit = attempt.limit(config, config.ltp_polls);
             if polls >= limit {
+                // `polls`, not `limit`: the limit is recomputed on every poll, and drops
+                // below the polls already made when the tester clears `FLT_no_timeout`.
                 return Ok(attempt.timed_out(
-                    limit,
-                    TrainingEvent::TrainingTimeout { polls: limit },
+                    polls,
+                    TrainingEvent::TrainingTimeout { polls },
                     FallbackReason::TrainingTimeout,
                     record,
                 ));
