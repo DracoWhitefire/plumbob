@@ -10,7 +10,7 @@ use crate::training::TrainingOutcome;
 ///
 /// Repeats of a warning are merged (see [`TrainingWarning`]), so an attempt produces at
 /// most five, and none are dropped.
-pub const MAX_WARNINGS: usize = 8;
+pub const MAX_WARNINGS: usize = 5;
 
 /// A non-fatal anomaly seen during a training attempt.
 ///

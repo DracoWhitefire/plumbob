@@ -612,6 +612,14 @@ The full training state machine is available. `FrlTrainer<C, P>` is stack-alloca
 `TrainingConfig`, `TrainingOutcome`, `TrainingError`, and all owned protocol types
 (`LtpReq`, `LtpRequests`, `FfeLevels`, `UpdateFlags`, `CedCounters`, …) are stack-allocated. No heap
 use anywhere in the training loop. This tier covers bare-metal and firmware targets.
+
+The training future is 472 bytes in this tier, and 448 with `alloc` (where `Trained`
+holds its warnings in a `Vec` rather than inline), measured over the sync driver's I/O
+with Rust 1.94; an `async` I/O implementation adds the size of its own futures. Where it
+lives depends on the driver: `FrlTrainer` (sync) keeps it on the caller's stack for the
+duration of `train`, while under an async executor such as Embassy it is part of the
+task's future and so lives wherever the task is stored, typically in static memory. A
+test keeps the size within a budget, so growth is a deliberate decision.
 `train_with_events` delivers every `TrainingEvent` to a callback as it occurs, so the
 full reasoning is available without an allocator; `train` returns the warnings. CI builds this tier and the `alloc` tier for `thumbv7em-none-eabi`, a target without
 `std`.

@@ -2026,6 +2026,29 @@ mod traced {
 
 // --- The sync driver
 
+/// The size of the training future over the sync driver's I/O, which the sync driver
+/// keeps on the caller's stack. A budget, not a target: raise it deliberately when a
+/// change needs more, and record why.
+#[test]
+fn the_training_future_stays_within_its_size_budget() {
+    // Without `alloc`, `Trained` carries its warnings inline (`MAX_WARNINGS` slots).
+    #[cfg(feature = "alloc")]
+    const BUDGET: usize = 448;
+    #[cfg(not(feature = "alloc"))]
+    const BUDGET: usize = 472;
+    let (mut scdc, mut phy) = (SimSink::new(), SimPhy::new());
+    let mut io = SyncIo {
+        scdc: &mut scdc,
+        phy: &mut phy,
+    };
+    let config = TrainingConfig::default();
+    let mut record = |_| {};
+    let future = crate::lts::run(&mut io, &[RATE], &config, &mut record);
+    let size = core::mem::size_of_val(&future);
+    std::println!("training future: {size} bytes");
+    assert!(size <= BUDGET, "{size} bytes, budget {BUDGET}");
+}
+
 #[test]
 #[should_panic(expected = "plumbob's sync training waited on I/O")]
 fn the_sync_driver_rejects_a_future_that_waits() {

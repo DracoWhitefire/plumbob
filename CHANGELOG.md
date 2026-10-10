@@ -112,9 +112,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   reasoning is available on targets without an allocator; only `TrainingTrace` and the
   traced methods need `alloc`. `TrainingEvent` now derives `Copy`.
 - `LtpReq::value()` — a request's 4-bit value.
-- **`TrainingWarning`**, **`Trained`** and **`MAX_WARNINGS`** — non-fatal anomalies
+- **`TrainingWarning`**, **`Trained`** and **`MAX_WARNINGS`** (5) — non-fatal anomalies
   returned with the outcome, starting with `UndefinedLtpRequest { lane, value, count,
-  in_use }`. Repeats are merged, so none are dropped without `alloc`.
+  in_use }`. Repeats are merged, so an attempt produces at most five and none are
+  dropped without `alloc`.
 - **`TrainingConfig::exit_to_tmds_on_error`** (default `true`) — turn the LTS:L after an
   error off to leave the sink and PHY as the error left them (`TmdsExit::Skipped`).
 - **`FrlTrainer::exit_to_tmds`** — LTS:L on demand, to take an FRL link down when the
@@ -137,6 +138,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Internal
 
+- **The training future has a size budget** — a test keeps the `lts::run` future
+  within 472 bytes without `alloc` (448 with it), and CI and the publish workflow now also
+  run the tests with no features, so both budgets are checked.
 - **CI builds for a `no_std` target** — the `Build (no_std)` and `Build (alloc only)`
   steps now build for `thumbv7em-none-eabi`. They previously built for the host, where
   `std` is always available, so they could not catch a dependency that enables `std` (as

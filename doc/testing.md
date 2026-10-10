@@ -102,6 +102,11 @@ The state machine tests run through `FrlTrainer`, so they exercise `lts::run` dr
 synchronously. One more test checks the driver's guard: a future that is still pending
 after one poll — impossible over the sync adapter — panics rather than being dropped.
 
+A size test keeps the training future within a budget (472 bytes without `alloc`, 448
+with it), so a change that grows it fails until the budget is raised on purpose. CI runs
+the tests with the `std` feature and again with no features, so both budgets are
+checked.
+
 ## Coverage
 
 CI measures line coverage with `cargo-llvm-cov` over the `std` feature set. The baseline
