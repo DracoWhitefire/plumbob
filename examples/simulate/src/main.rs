@@ -7,84 +7,115 @@
 
 use core::convert::Infallible;
 use display_types::cea861::hdmi_forum::HdmiForumFrl;
-use hdmi_hal::phy::{EqParams, HdmiPhy, LtpPattern};
+use hdmi_hal::phy::{EqParams, FrlOutput, HdmiPhy, LaneEqParams, LanePatterns};
 use plumbob::{
-    CedCounters, FrlConfig, FrlTrainer, LtpReq, ScdcClient, TrainingConfig, TrainingStatus,
+    CedCounters, FrlConfig, FrlTrainer, LtpReq, LtpRequests, ScdcClient, SourceTestConfig,
+    TrainingConfig, UpdateFlags,
 };
 
-// --- SimScdc ---------------------------------------------------------------------
+// --- SimSink ---------------------------------------------------------------------
 //
-// Scripted ScdcClient backed by a call counter. Returns a pre-set sequence of
-// TrainingStatus values that steers the state machine through all four phases:
+// A sink that asks for a lower rate and then trains at it:
 //
-//   Phase 2 — flt_ready asserts after 3 failed polls.
-//   Phase 3 — frl_start asserts after 5 failed polls.
-//   Phase 4 — ltp_req transitions Lfsr0 → Lfsr2 → None over 4 iterations.
+//   LTS:2  — FLT_ready asserts on the third poll.
+//   LTS:3  — at the first rate the sink requests a lower rate (0xF on every lane);
+//            at the next rate it requests one LFSR pattern per lane, then a TxFFE
+//            raise on lane 1, then passes every lane.
+//   LTS:P  — FRL_start asserts on the third poll.
+//
+// Each set of requests is posted with FLT_update as soon as the previous one is
+// cleared, once Config_1 holds an FRL rate.
 
-struct SimScdc {
-    call: u32,
-}
-
-impl SimScdc {
-    fn new() -> Self {
-        Self { call: 0 }
+const fn lanes(lane0: LtpReq, lane1: LtpReq, lane2: LtpReq, lane3: LtpReq) -> LtpRequests {
+    LtpRequests {
+        lane0,
+        lane1,
+        lane2,
+        lane3,
     }
 }
 
-impl ScdcClient for SimScdc {
+const REQUESTS: [LtpRequests; 4] = [
+    lanes(
+        LtpReq::RateChange,
+        LtpReq::RateChange,
+        LtpReq::RateChange,
+        LtpReq::RateChange,
+    ),
+    lanes(LtpReq::Lfsr0, LtpReq::Lfsr1, LtpReq::Lfsr2, LtpReq::Lfsr3),
+    lanes(LtpReq::None, LtpReq::FfeChange, LtpReq::None, LtpReq::None),
+    lanes(LtpReq::None, LtpReq::None, LtpReq::None, LtpReq::None),
+];
+
+#[derive(Default)]
+struct SimSink {
+    flt_ready_polls: u32,
+    configured: bool,
+    next_request: usize,
+    flt_update: bool,
+    frl_start_polls: u32,
+    frl_start: bool,
+}
+
+impl ScdcClient for SimSink {
     type Error = Infallible;
 
-    fn write_frl_config(&mut self, config: FrlConfig) -> Result<(), Infallible> {
-        println!(
-            "SCDC: write_frl_config(rate={:?}, ffe_levels={:?}, dsc_frl_max={})",
-            config.rate, config.ffe_levels, config.dsc_frl_max
-        );
+    fn read_flt_ready(&mut self) -> Result<bool, Infallible> {
+        self.flt_ready_polls += 1;
+        Ok(self.flt_ready_polls >= 3)
+    }
+
+    fn read_update_flags(&mut self) -> Result<UpdateFlags, Infallible> {
+        if self.configured && !self.flt_update {
+            if self.next_request < REQUESTS.len() {
+                self.flt_update = true;
+            } else if !self.frl_start {
+                self.frl_start_polls += 1;
+                self.frl_start = self.frl_start_polls >= 3;
+            }
+        }
+        Ok(UpdateFlags {
+            source_test_update: false,
+            frl_start: self.frl_start,
+            flt_update: self.flt_update,
+        })
+    }
+
+    fn clear_update_flags(&mut self, flags: UpdateFlags) -> Result<(), Infallible> {
+        if flags.flt_update && self.flt_update {
+            self.flt_update = false;
+            self.next_request += 1;
+        }
+        if flags.frl_start {
+            println!("SCDC: clear FRL_start");
+            self.frl_start = false;
+        }
         Ok(())
     }
 
-    fn read_training_status(&mut self) -> Result<TrainingStatus, Infallible> {
-        self.call += 1;
-        let status = match self.call {
-            // Phase 2: 3 failed polls then flt_ready.
-            1..=3 => TrainingStatus {
-                flt_ready: false,
-                frl_start: false,
-                ltp_req: LtpReq::None,
-            },
-            4 => TrainingStatus {
-                flt_ready: true,
-                frl_start: false,
-                ltp_req: LtpReq::None,
-            },
-            // Phase 3: 5 failed polls then frl_start.
-            5..=9 => TrainingStatus {
-                flt_ready: true,
-                frl_start: false,
-                ltp_req: LtpReq::None,
-            },
-            10 => TrainingStatus {
-                flt_ready: true,
-                frl_start: true,
-                ltp_req: LtpReq::None,
-            },
-            // Phase 4: Lfsr0 for 2 iterations, Lfsr2 for 1, then None.
-            11..=12 => TrainingStatus {
-                flt_ready: true,
-                frl_start: true,
-                ltp_req: LtpReq::Lfsr0,
-            },
-            13 => TrainingStatus {
-                flt_ready: true,
-                frl_start: true,
-                ltp_req: LtpReq::Lfsr2,
-            },
-            _ => TrainingStatus {
-                flt_ready: true,
-                frl_start: true,
-                ltp_req: LtpReq::None,
-            },
-        };
-        Ok(status)
+    fn read_ltp_requests(&mut self) -> Result<LtpRequests, Infallible> {
+        let requests = REQUESTS[self.next_request];
+        println!("SCDC: requests {requests:?}");
+        Ok(requests)
+    }
+
+    fn read_source_test_config(&mut self) -> Result<SourceTestConfig, Infallible> {
+        Ok(SourceTestConfig::default())
+    }
+
+    fn write_config_0_defaults(&mut self) -> Result<(), Infallible> {
+        println!("SCDC: write Config_0 defaults");
+        Ok(())
+    }
+
+    fn write_frl_config(&mut self, config: FrlConfig) -> Result<(), Infallible> {
+        println!(
+            "SCDC: write Config_1 (rate={:?}, ffe_levels={})",
+            config.rate,
+            config.ffe_levels.value()
+        );
+        self.configured = config.rate != HdmiForumFrl::NotSupported;
+        Ok(())
     }
 
     fn read_ced(&mut self) -> Result<CedCounters, Infallible> {
@@ -109,12 +140,25 @@ impl HdmiPhy for SimPhy {
         Ok(())
     }
 
-    fn send_ltp(&mut self, pattern: LtpPattern) -> Result<(), Infallible> {
-        println!("PHY:  send_ltp({})", pattern.value());
+    fn send_ltp(&mut self, patterns: LanePatterns) -> Result<(), Infallible> {
+        println!("PHY:  send_ltp({patterns:?})");
         Ok(())
     }
 
-    fn adjust_equalization(&mut self, _params: EqParams) -> Result<(), Infallible> {
+    fn set_frl_output(&mut self, output: FrlOutput) -> Result<(), Infallible> {
+        println!("PHY:  set_frl_output({output:?})");
+        Ok(())
+    }
+
+    fn adjust_equalization(&mut self, params: EqParams) -> Result<(), Infallible> {
+        let level = |lane: LaneEqParams| lane.tx_ffe_level.value();
+        println!(
+            "PHY:  adjust_equalization(TxFFE {} {} {} {:?})",
+            level(params.lane0),
+            level(params.lane1),
+            level(params.lane2),
+            params.lane3.map(level)
+        );
         Ok(())
     }
 
@@ -127,19 +171,24 @@ impl HdmiPhy for SimPhy {
 // --- main ------------------------------------------------------------------------
 
 fn main() {
-    let rate = HdmiForumFrl::Rate6Gbps4Lanes;
+    let rates = [
+        HdmiForumFrl::Rate12Gbps4Lanes,
+        HdmiForumFrl::Rate10Gbps4Lanes,
+    ];
     let config = TrainingConfig::default();
 
-    println!("FRL training simulation — rate {rate:?}");
+    println!("FRL training simulation — rates {rates:?}");
     println!();
 
-    let mut trainer = FrlTrainer::new(SimScdc::new(), SimPhy);
-    let (outcome, trace) = trainer
-        .train_at_rate_traced(rate, &config)
-        .expect("SimScdc and SimPhy are infallible");
+    let mut trainer = FrlTrainer::new(SimSink::default(), SimPhy);
+    let (result, trace) = trainer.train_traced(&rates, &config);
+    let trained = result.expect("SimSink and SimPhy are infallible");
 
     println!();
-    println!("Outcome: {outcome:?}");
+    println!("Outcome: {:?}", trained.outcome);
+    for warning in trained.iter_warnings() {
+        println!("Warning: {warning:?}");
+    }
     println!();
     println!("Trace ({} events):", trace.events.len());
     for event in &trace.events {

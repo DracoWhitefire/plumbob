@@ -1,68 +1,287 @@
+//! A simulated sink and PHY for exercising the state machine without hardware.
+//!
+//! [`SimSink`] answers the state machine's SCDC calls from a short script and records
+//! every call it receives. [`SimPhy`] records every PHY call. Both can be told to fail a
+//! given operation, on every call or on one call only.
+
 extern crate std;
+
+use std::cell::RefCell;
 use std::collections::VecDeque;
+use std::rc::Rc;
+use std::vec::Vec;
 
 use display_types::cea861::hdmi_forum::HdmiForumFrl;
-use hdmi_hal::phy::{EqParams, HdmiPhy, LtpPattern};
+use hdmi_hal::phy::{EqParams, FrlOutput, HdmiPhy, LanePatterns};
 
 use crate::scdc::ScdcClient;
-use crate::types::{CedCounters, FrlConfig, LtpReq, TrainingStatus};
+use crate::types::{CedCounters, FrlConfig, LtpReq, LtpRequests, SourceTestConfig, UpdateFlags};
 
-use super::TrainingConfig;
-
-// -------------------------------------------------------------------------
-// SimScdc — scripted SCDC client for state machine tests
-// -------------------------------------------------------------------------
-
-pub struct SimScdc {
-    /// Scripted responses for `read_training_status`, consumed in order.
-    pub statuses: VecDeque<Result<TrainingStatus, ()>>,
-    pub fail_write_frl_config: bool,
-    pub fail_read_ced: bool,
-    /// The last config written via `write_frl_config`.
-    pub written_config: Option<FrlConfig>,
-    pub ced_calls: u32,
+/// The same request on all four lanes.
+pub fn all(req: LtpReq) -> LtpRequests {
+    LtpRequests {
+        lane0: req,
+        lane1: req,
+        lane2: req,
+        lane3: req,
+    }
 }
 
-impl SimScdc {
+/// One set of LTS:3 requests: after `after_polls` polls of `Update_0` that see nothing,
+/// the sink sets `FLT_update` and posts `requests` (and, with `source_test`, changes its
+/// source test configuration at the same time). The round ends when the source clears
+/// `FLT_update`.
+#[derive(Debug, Clone, Copy)]
+pub struct Round {
+    pub after_polls: u32,
+    pub requests: LtpRequests,
+    pub source_test: Option<SourceTestConfig>,
+}
+
+/// One call to the sink or the PHY, for a log of both in order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Call {
+    Sink(SinkCall),
+    Phy(PhyCall),
+}
+
+/// A log shared by a [`SimSink`] and a [`SimPhy`] (see their `log_to`).
+pub type Log = Rc<RefCell<Vec<Call>>>;
+
+/// An SCDC operation, for failure injection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SinkOp {
+    ReadFltReady,
+    ReadUpdateFlags,
+    ClearUpdateFlags,
+    ReadLtpRequests,
+    ReadSourceTestConfig,
+    WriteConfig0Defaults,
+    WriteFrlConfig,
+    ReadCed,
+}
+
+/// A call the sink received, with what it returned or was given.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SinkCall {
+    ReadFltReady(bool),
+    ReadUpdateFlags(UpdateFlags),
+    ClearUpdateFlags(UpdateFlags),
+    ReadLtpRequests(LtpRequests),
+    ReadSourceTestConfig(SourceTestConfig),
+    WriteConfig0Defaults,
+    WriteFrlConfig(FrlConfig),
+    ReadCed,
+}
+
+/// A scripted sink.
+///
+/// - `FLT_ready` reads false for the first `flt_ready_after` polls, then true; never,
+///   if not set.
+/// - Each [`Round`] raises `FLT_update` in turn, counting polls from the last write of
+///   `Config_1` with an FRL rate (a sink starts training once it is configured). A rate
+///   drop is a round of `RateChange`; a retrain during LTS:P is a round after the
+///   all-`None` one.
+/// - Once the rounds are used up, `FRL_start` is set after `frl_start_after` more polls
+///   of `Update_0`; never, if not set.
+/// - With a source test configuration, `Source_Test_Update` is set until cleared.
+#[derive(Debug, Default)]
+pub struct SimSink {
+    flt_ready_after: Option<u32>,
+    rounds: VecDeque<Round>,
+    frl_start_after: Option<u32>,
+    frl_start_with_round: Option<usize>,
+    source_test: SourceTestConfig,
+    fail: Option<Failure<SinkOp>>,
+    log: Option<Log>,
+
+    flt_ready_polls: u32,
+    configured: bool,
+    update_polls: u32,
+    rounds_posted: usize,
+    flags: UpdateFlags,
+
+    /// Every call received, in order. Failed calls are not recorded.
+    pub calls: Vec<SinkCall>,
+}
+
+impl SimSink {
     pub fn new() -> Self {
-        Self {
-            statuses: VecDeque::new(),
-            fail_write_frl_config: false,
-            fail_read_ced: false,
-            written_config: None,
-            ced_calls: 0,
+        Self::default()
+    }
+
+    pub fn flt_ready_after(mut self, polls: u32) -> Self {
+        self.flt_ready_after = Some(polls);
+        self
+    }
+
+    pub fn round(mut self, after_polls: u32, requests: LtpRequests) -> Self {
+        self.rounds.push_back(Round {
+            after_polls,
+            requests,
+            source_test: None,
+        });
+        self
+    }
+
+    pub fn round_with_source_test(
+        mut self,
+        after_polls: u32,
+        requests: LtpRequests,
+        source_test: SourceTestConfig,
+    ) -> Self {
+        self.rounds.push_back(Round {
+            after_polls,
+            requests,
+            source_test: Some(source_test),
+        });
+        self
+    }
+
+    /// Raises `FRL_start` together with `FLT_update` when the round queued at `index`
+    /// (counting from 0) is posted. The sink's final `FRL_start` is not used up by it.
+    pub fn frl_start_with_round(mut self, index: usize) -> Self {
+        self.frl_start_with_round = Some(index);
+        self
+    }
+
+    pub fn frl_start_after(mut self, polls: u32) -> Self {
+        self.frl_start_after = Some(polls);
+        self
+    }
+
+    pub fn source_test(mut self, config: SourceTestConfig) -> Self {
+        self.source_test = config;
+        self.flags.source_test_update = true;
+        self
+    }
+
+    /// Fails every call of `op`.
+    pub fn fail(mut self, op: SinkOp) -> Self {
+        self.fail = Some(Failure::every(op));
+        self
+    }
+
+    /// Fails only the `nth` call of `op`, counting from 1.
+    pub fn fail_call(mut self, op: SinkOp, nth: u32) -> Self {
+        self.fail = Some(Failure::nth(op, nth));
+        self
+    }
+
+    /// Also records every call in `log`, interleaved with the PHY's calls.
+    pub fn log_to(mut self, log: &Log) -> Self {
+        self.log = Some(log.clone());
+        self
+    }
+
+    fn log_call(&mut self, call: SinkCall) {
+        if let Some(log) = &self.log {
+            log.borrow_mut().push(Call::Sink(call));
+        }
+        self.calls.push(call);
+    }
+
+    fn check(&mut self, op: SinkOp) -> Result<(), ()> {
+        match &mut self.fail {
+            Some(failure) => failure.check(op),
+            None => Ok(()),
         }
     }
-
-    pub fn push(&mut self, status: TrainingStatus) {
-        self.statuses.push_back(Ok(status));
-    }
-
-    pub fn push_err(&mut self) {
-        self.statuses.push_back(Err(()));
-    }
 }
 
-impl ScdcClient for SimScdc {
+impl ScdcClient for SimSink {
     type Error = ();
 
-    fn write_frl_config(&mut self, config: FrlConfig) -> Result<(), ()> {
-        if self.fail_write_frl_config {
-            return Err(());
+    fn read_flt_ready(&mut self) -> Result<bool, ()> {
+        self.check(SinkOp::ReadFltReady)?;
+        let ready = self
+            .flt_ready_after
+            .is_some_and(|n| self.flt_ready_polls >= n);
+        self.flt_ready_polls += 1;
+        self.log_call(SinkCall::ReadFltReady(ready));
+        Ok(ready)
+    }
+
+    fn read_update_flags(&mut self) -> Result<UpdateFlags, ()> {
+        self.check(SinkOp::ReadUpdateFlags)?;
+        if self.configured {
+            match self.rounds.front().copied() {
+                Some(round) if !self.flags.flt_update && self.update_polls >= round.after_polls => {
+                    self.flags.flt_update = true;
+                    if self.frl_start_with_round == Some(self.rounds_posted) {
+                        self.flags.frl_start = true;
+                    }
+                    self.rounds_posted += 1;
+                    if let Some(config) = round.source_test {
+                        self.source_test = config;
+                        self.flags.source_test_update = true;
+                    }
+                }
+                Some(_) => {}
+                None => {
+                    self.flags.frl_start |=
+                        self.frl_start_after.is_some_and(|n| self.update_polls >= n)
+                }
+            }
+            self.update_polls += 1;
         }
-        self.written_config = Some(config);
+        self.log_call(SinkCall::ReadUpdateFlags(self.flags));
+        Ok(self.flags)
+    }
+
+    fn clear_update_flags(&mut self, flags: UpdateFlags) -> Result<(), ()> {
+        self.check(SinkOp::ClearUpdateFlags)?;
+        if flags.flt_update && self.flags.flt_update {
+            self.flags.flt_update = false;
+            self.rounds.pop_front();
+            self.update_polls = 0;
+        }
+        if flags.frl_start {
+            self.flags.frl_start = false;
+            // A sink sets FRL_start once; it does not come back after being cleared. One
+            // raised with a round (`frl_start_with_round`) does not use that up.
+            if self.rounds.is_empty() {
+                self.frl_start_after = None;
+            }
+        }
+        self.flags.source_test_update &= !flags.source_test_update;
+        self.log_call(SinkCall::ClearUpdateFlags(flags));
         Ok(())
     }
 
-    fn read_training_status(&mut self) -> Result<TrainingStatus, ()> {
-        self.statuses.pop_front().unwrap_or(Err(()))
+    fn read_ltp_requests(&mut self) -> Result<LtpRequests, ()> {
+        self.check(SinkOp::ReadLtpRequests)?;
+        let requests = self
+            .rounds
+            .front()
+            .map_or(all(LtpReq::None), |round| round.requests);
+        self.log_call(SinkCall::ReadLtpRequests(requests));
+        Ok(requests)
+    }
+
+    fn read_source_test_config(&mut self) -> Result<SourceTestConfig, ()> {
+        self.check(SinkOp::ReadSourceTestConfig)?;
+        self.log_call(SinkCall::ReadSourceTestConfig(self.source_test));
+        Ok(self.source_test)
+    }
+
+    fn write_config_0_defaults(&mut self) -> Result<(), ()> {
+        self.check(SinkOp::WriteConfig0Defaults)?;
+        self.log_call(SinkCall::WriteConfig0Defaults);
+        Ok(())
+    }
+
+    fn write_frl_config(&mut self, config: FrlConfig) -> Result<(), ()> {
+        self.check(SinkOp::WriteFrlConfig)?;
+        self.configured = config.rate != HdmiForumFrl::NotSupported;
+        self.update_polls = 0;
+        self.log_call(SinkCall::WriteFrlConfig(config));
+        Ok(())
     }
 
     fn read_ced(&mut self) -> Result<CedCounters, ()> {
-        if self.fail_read_ced {
-            return Err(());
-        }
-        self.ced_calls += 1;
+        self.check(SinkOp::ReadCed)?;
+        self.log_call(SinkCall::ReadCed);
         Ok(CedCounters {
             lane0: None,
             lane1: None,
@@ -72,99 +291,453 @@ impl ScdcClient for SimScdc {
     }
 }
 
-// -------------------------------------------------------------------------
-// MockPhy — records calls and supports injectable errors
-// -------------------------------------------------------------------------
-
-pub struct MockPhy {
-    pub fail_set_frl_rate: bool,
-    pub fail_send_ltp: bool,
-    pub frl_rate: Option<HdmiForumFrl>,
-    pub last_ltp: Option<LtpPattern>,
+/// A failure to inject: every call of `op`, or only its `nth` call.
+#[derive(Debug, Clone, Copy)]
+struct Failure<Op> {
+    op: Op,
+    nth: Option<u32>,
+    calls: u32,
 }
 
-impl MockPhy {
-    pub fn new() -> Self {
+impl<Op: PartialEq> Failure<Op> {
+    fn every(op: Op) -> Self {
         Self {
-            fail_set_frl_rate: false,
-            fail_send_ltp: false,
-            frl_rate: None,
-            last_ltp: None,
+            op,
+            nth: None,
+            calls: 0,
+        }
+    }
+
+    fn nth(op: Op, nth: u32) -> Self {
+        Self {
+            op,
+            nth: Some(nth),
+            calls: 0,
+        }
+    }
+
+    fn check(&mut self, op: Op) -> Result<(), ()> {
+        if op != self.op {
+            return Ok(());
+        }
+        self.calls += 1;
+        match self.nth {
+            Some(nth) if nth != self.calls => Ok(()),
+            _ => Err(()),
         }
     }
 }
 
-impl HdmiPhy for MockPhy {
+/// A PHY operation, for failure injection.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PhyOp {
+    SetFrlRate,
+    SendLtp,
+    SetFrlOutput,
+    AdjustEqualization,
+    SetScrambling,
+}
+
+/// A call the PHY received.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PhyCall {
+    SetFrlRate(HdmiForumFrl),
+    SendLtp(LanePatterns),
+    SetFrlOutput(FrlOutput),
+    AdjustEqualization(EqParams),
+    SetScrambling(bool),
+}
+
+/// A PHY that records every call.
+#[derive(Debug, Default)]
+pub struct SimPhy {
+    fail: Option<Failure<PhyOp>>,
+    log: Option<Log>,
+    /// Every call received, in order. Failed calls are not recorded.
+    pub calls: Vec<PhyCall>,
+}
+
+impl SimPhy {
+    pub fn new() -> Self {
+        Self::default()
+    }
+
+    /// Fails every call of `op`.
+    pub fn fail(mut self, op: PhyOp) -> Self {
+        self.fail = Some(Failure::every(op));
+        self
+    }
+
+    /// Fails only the `nth` call of `op`, counting from 1.
+    pub fn fail_call(mut self, op: PhyOp, nth: u32) -> Self {
+        self.fail = Some(Failure::nth(op, nth));
+        self
+    }
+
+    /// Also records every call in `log`, interleaved with the sink's calls.
+    pub fn log_to(mut self, log: &Log) -> Self {
+        self.log = Some(log.clone());
+        self
+    }
+
+    fn record(&mut self, op: PhyOp, call: PhyCall) -> Result<(), ()> {
+        if let Some(failure) = &mut self.fail {
+            failure.check(op)?;
+        }
+        if let Some(log) = &self.log {
+            log.borrow_mut().push(Call::Phy(call));
+        }
+        self.calls.push(call);
+        Ok(())
+    }
+}
+
+impl HdmiPhy for SimPhy {
     type Error = ();
 
-    fn send_ltp(&mut self, pattern: LtpPattern) -> Result<(), ()> {
-        if self.fail_send_ltp {
-            return Err(());
-        }
-        self.last_ltp = Some(pattern);
-        Ok(())
-    }
-
     fn set_frl_rate(&mut self, rate: HdmiForumFrl) -> Result<(), ()> {
-        if self.fail_set_frl_rate {
-            return Err(());
+        self.record(PhyOp::SetFrlRate, PhyCall::SetFrlRate(rate))
+    }
+
+    fn send_ltp(&mut self, patterns: LanePatterns) -> Result<(), ()> {
+        self.record(PhyOp::SendLtp, PhyCall::SendLtp(patterns))
+    }
+
+    fn set_frl_output(&mut self, output: FrlOutput) -> Result<(), ()> {
+        self.record(PhyOp::SetFrlOutput, PhyCall::SetFrlOutput(output))
+    }
+
+    fn adjust_equalization(&mut self, params: EqParams) -> Result<(), ()> {
+        self.record(
+            PhyOp::AdjustEqualization,
+            PhyCall::AdjustEqualization(params),
+        )
+    }
+
+    fn set_scrambling(&mut self, enabled: bool) -> Result<(), ()> {
+        self.record(PhyOp::SetScrambling, PhyCall::SetScrambling(enabled))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::types::FfeLevels;
+
+    const FLT_UPDATE: UpdateFlags = UpdateFlags {
+        source_test_update: false,
+        frl_start: false,
+        flt_update: true,
+    };
+
+    /// Writes `Config_1` with an FRL rate, which starts the sink's rounds.
+    fn configured(mut sink: SimSink) -> SimSink {
+        sink.write_frl_config(FrlConfig {
+            rate: HdmiForumFrl::Rate6Gbps4Lanes,
+            ffe_levels: FfeLevels::default(),
+        })
+        .unwrap();
+        sink
+    }
+
+    // --- SimSink: FLT_ready
+
+    #[test]
+    fn flt_ready_is_false_until_after_the_given_polls() {
+        let mut sink = SimSink::new().flt_ready_after(2);
+        assert_eq!(sink.read_flt_ready(), Ok(false));
+        assert_eq!(sink.read_flt_ready(), Ok(false));
+        assert_eq!(sink.read_flt_ready(), Ok(true));
+        assert_eq!(sink.read_flt_ready(), Ok(true));
+    }
+
+    #[test]
+    fn flt_ready_never_asserts_unless_scripted() {
+        let mut sink = SimSink::new();
+        for _ in 0..10 {
+            assert_eq!(sink.read_flt_ready(), Ok(false));
         }
-        self.frl_rate = Some(rate);
-        Ok(())
     }
 
-    fn adjust_equalization(&mut self, _params: EqParams) -> Result<(), ()> {
-        Ok(())
+    // --- SimSink: rounds and FLT_update
+
+    #[test]
+    fn round_raises_flt_update_after_its_polls() {
+        let mut sink = configured(SimSink::new().round(1, all(LtpReq::Lfsr0)));
+        assert!(!sink.read_update_flags().unwrap().flt_update);
+        assert!(sink.read_update_flags().unwrap().flt_update);
+        assert_eq!(sink.read_ltp_requests(), Ok(all(LtpReq::Lfsr0)));
     }
 
-    fn set_scrambling(&mut self, _enabled: bool) -> Result<(), ()> {
-        Ok(())
+    #[test]
+    fn clearing_flt_update_moves_to_the_next_round() {
+        let mut sink = configured(
+            SimSink::new()
+                .round(0, all(LtpReq::Lfsr0))
+                .round(0, all(LtpReq::None)),
+        );
+        assert!(sink.read_update_flags().unwrap().flt_update);
+        sink.clear_update_flags(FLT_UPDATE).unwrap();
+        assert!(sink.read_update_flags().unwrap().flt_update);
+        assert_eq!(sink.read_ltp_requests(), Ok(all(LtpReq::None)));
     }
-}
 
-// -------------------------------------------------------------------------
-// Status helpers and fixtures
-// -------------------------------------------------------------------------
-
-pub fn not_ready() -> TrainingStatus {
-    TrainingStatus {
-        flt_ready: false,
-        frl_start: false,
-        ltp_req: LtpReq::None,
+    #[test]
+    fn clearing_flt_update_when_not_set_keeps_the_round() {
+        let mut sink = configured(SimSink::new().round(1, all(LtpReq::Lfsr1)));
+        sink.clear_update_flags(FLT_UPDATE).unwrap();
+        assert!(!sink.read_update_flags().unwrap().flt_update);
+        assert!(sink.read_update_flags().unwrap().flt_update);
+        assert_eq!(sink.read_ltp_requests(), Ok(all(LtpReq::Lfsr1)));
     }
-}
 
-pub fn flt_ready() -> TrainingStatus {
-    TrainingStatus {
-        flt_ready: true,
-        frl_start: false,
-        ltp_req: LtpReq::None,
+    #[test]
+    fn requests_read_as_none_once_rounds_are_used_up() {
+        let mut sink = SimSink::new();
+        assert_eq!(sink.read_ltp_requests(), Ok(all(LtpReq::None)));
     }
-}
 
-pub fn frl_started() -> TrainingStatus {
-    TrainingStatus {
-        flt_ready: true,
-        frl_start: true,
-        ltp_req: LtpReq::None,
+    // --- SimSink: FRL_start
+
+    #[test]
+    fn frl_start_follows_the_last_round() {
+        let mut sink = configured(
+            SimSink::new()
+                .round(0, all(LtpReq::None))
+                .frl_start_after(1),
+        );
+        assert!(sink.read_update_flags().unwrap().flt_update);
+        sink.clear_update_flags(FLT_UPDATE).unwrap();
+        assert!(!sink.read_update_flags().unwrap().frl_start);
+        assert!(sink.read_update_flags().unwrap().frl_start);
+        sink.clear_update_flags(UpdateFlags {
+            frl_start: true,
+            ..UpdateFlags::default()
+        })
+        .unwrap();
+        assert!(!sink.read_update_flags().unwrap().frl_start);
     }
-}
 
-pub fn ltp(pattern: LtpReq) -> TrainingStatus {
-    TrainingStatus {
-        flt_ready: true,
-        frl_start: true,
-        ltp_req: pattern,
+    #[test]
+    fn rounds_wait_for_config_1_with_an_frl_rate() {
+        let mut sink = SimSink::new()
+            .round(0, all(LtpReq::Lfsr0))
+            .frl_start_after(0);
+        assert!(!sink.read_update_flags().unwrap().flt_update);
+        sink.write_frl_config(FrlConfig {
+            rate: HdmiForumFrl::NotSupported,
+            ffe_levels: FfeLevels::default(),
+        })
+        .unwrap();
+        assert!(!sink.read_update_flags().unwrap().flt_update);
+        let mut sink = configured(sink);
+        assert!(sink.read_update_flags().unwrap().flt_update);
     }
-}
 
-pub const RATE: HdmiForumFrl = HdmiForumFrl::Rate6Gbps4Lanes;
+    #[test]
+    fn round_with_source_test_changes_the_configuration() {
+        let config = SourceTestConfig {
+            flt_no_timeout: true,
+        };
+        let mut sink =
+            configured(SimSink::new().round_with_source_test(0, all(LtpReq::NyquistClock), config));
+        let flags = sink.read_update_flags().unwrap();
+        assert!(flags.flt_update && flags.source_test_update);
+        assert_eq!(sink.read_source_test_config(), Ok(config));
+    }
 
-pub fn cfg(flt: u32, frl: u32, ltp_t: u32) -> TrainingConfig {
-    TrainingConfig {
-        flt_ready_timeout: flt,
-        frl_start_timeout: frl,
-        ltp_timeout: ltp_t,
-        ..TrainingConfig::default()
+    #[test]
+    fn frl_start_never_asserts_unless_scripted() {
+        let mut sink = configured(SimSink::new());
+        for _ in 0..10 {
+            assert!(!sink.read_update_flags().unwrap().frl_start);
+        }
+    }
+
+    // --- SimSink: source test configuration
+
+    #[test]
+    fn source_test_sets_update_until_cleared() {
+        let config = SourceTestConfig {
+            flt_no_timeout: true,
+        };
+        let mut sink = SimSink::new().source_test(config);
+        assert!(sink.read_update_flags().unwrap().source_test_update);
+        assert_eq!(sink.read_source_test_config(), Ok(config));
+        sink.clear_update_flags(UpdateFlags {
+            source_test_update: true,
+            ..UpdateFlags::default()
+        })
+        .unwrap();
+        assert!(!sink.read_update_flags().unwrap().source_test_update);
+    }
+
+    #[test]
+    fn source_test_config_defaults_to_timeouts_kept() {
+        let mut sink = SimSink::new();
+        assert_eq!(
+            sink.read_source_test_config(),
+            Ok(SourceTestConfig::default())
+        );
+    }
+
+    // --- SimSink: recording and failures
+
+    #[test]
+    fn sink_records_calls_in_order() {
+        let config = FrlConfig {
+            rate: HdmiForumFrl::Rate6Gbps4Lanes,
+            ffe_levels: FfeLevels::default(),
+        };
+        let mut sink = SimSink::new();
+        sink.write_config_0_defaults().unwrap();
+        sink.write_frl_config(config).unwrap();
+        sink.read_ced().unwrap();
+        assert_eq!(
+            sink.calls,
+            [
+                SinkCall::WriteConfig0Defaults,
+                SinkCall::WriteFrlConfig(config),
+                SinkCall::ReadCed,
+            ]
+        );
+    }
+
+    #[test]
+    fn sink_ced_reads_as_all_invalid() {
+        let ced = SimSink::new().read_ced().unwrap();
+        assert_eq!(ced.lane0, None);
+        assert_eq!(ced.lane1, None);
+        assert_eq!(ced.lane2, None);
+        assert_eq!(ced.lane3, None);
+    }
+
+    #[test]
+    fn sink_fails_the_chosen_operation_only() {
+        let config = FrlConfig {
+            rate: HdmiForumFrl::Rate6Gbps4Lanes,
+            ffe_levels: FfeLevels::default(),
+        };
+        let ops = [
+            SinkOp::ReadFltReady,
+            SinkOp::ReadUpdateFlags,
+            SinkOp::ClearUpdateFlags,
+            SinkOp::ReadLtpRequests,
+            SinkOp::ReadSourceTestConfig,
+            SinkOp::WriteConfig0Defaults,
+            SinkOp::WriteFrlConfig,
+            SinkOp::ReadCed,
+        ];
+        for op in ops {
+            let mut sink = SimSink::new().fail(op);
+            let results = [
+                sink.read_flt_ready().map(drop),
+                sink.read_update_flags().map(drop),
+                sink.clear_update_flags(UpdateFlags::default()),
+                sink.read_ltp_requests().map(drop),
+                sink.read_source_test_config().map(drop),
+                sink.write_config_0_defaults(),
+                sink.write_frl_config(config),
+                sink.read_ced().map(drop),
+            ];
+            for (candidate, result) in ops.iter().zip(results) {
+                assert_eq!(
+                    result.is_err(),
+                    *candidate == op,
+                    "{candidate:?} with {op:?}"
+                );
+            }
+            assert_eq!(sink.calls.len(), ops.len() - 1);
+        }
+    }
+
+    // --- SimPhy
+
+    #[test]
+    fn phy_records_calls_in_order() {
+        let mut phy = SimPhy::new();
+        phy.set_frl_rate(HdmiForumFrl::Rate6Gbps4Lanes).unwrap();
+        phy.send_ltp(LanePatterns::default()).unwrap();
+        phy.set_frl_output(FrlOutput::GapOnly).unwrap();
+        phy.adjust_equalization(EqParams::new()).unwrap();
+        phy.set_scrambling(true).unwrap();
+        assert_eq!(
+            phy.calls,
+            [
+                PhyCall::SetFrlRate(HdmiForumFrl::Rate6Gbps4Lanes),
+                PhyCall::SendLtp(LanePatterns::default()),
+                PhyCall::SetFrlOutput(FrlOutput::GapOnly),
+                PhyCall::AdjustEqualization(EqParams::new()),
+                PhyCall::SetScrambling(true),
+            ]
+        );
+    }
+
+    #[test]
+    fn phy_fails_the_chosen_operation_only() {
+        let ops = [
+            PhyOp::SetFrlRate,
+            PhyOp::SendLtp,
+            PhyOp::SetFrlOutput,
+            PhyOp::AdjustEqualization,
+            PhyOp::SetScrambling,
+        ];
+        for op in ops {
+            let mut phy = SimPhy::new().fail(op);
+            let results = [
+                phy.set_frl_rate(HdmiForumFrl::Rate6Gbps4Lanes),
+                phy.send_ltp(LanePatterns::default()),
+                phy.set_frl_output(FrlOutput::Active),
+                phy.adjust_equalization(EqParams::new()),
+                phy.set_scrambling(false),
+            ];
+            for (candidate, result) in ops.iter().zip(results) {
+                assert_eq!(
+                    result.is_err(),
+                    *candidate == op,
+                    "{candidate:?} with {op:?}"
+                );
+            }
+            assert_eq!(phy.calls.len(), ops.len() - 1);
+        }
+    }
+
+    #[test]
+    fn frl_start_with_round_raises_both_flags_and_keeps_the_final_start() {
+        let config = FrlConfig {
+            rate: HdmiForumFrl::Rate6Gbps4Lanes,
+            ffe_levels: FfeLevels::default(),
+        };
+        let mut sink = SimSink::new()
+            .round(0, all(LtpReq::None))
+            .round(0, all(LtpReq::None))
+            .frl_start_with_round(1)
+            .frl_start_after(0);
+        sink.write_frl_config(config).unwrap();
+        let both = |flags: UpdateFlags| flags.flt_update && flags.frl_start;
+        assert!(!both(sink.read_update_flags().unwrap()));
+        sink.clear_update_flags(crate::lts::FLT_UPDATE).unwrap();
+        assert!(both(sink.read_update_flags().unwrap()));
+        sink.clear_update_flags(crate::lts::FRL_START).unwrap();
+        sink.clear_update_flags(crate::lts::FLT_UPDATE).unwrap();
+        // The rounds are used up: the sink's own FRL_start still comes.
+        assert!(sink.read_update_flags().unwrap().frl_start);
+    }
+
+    #[test]
+    fn fail_call_fails_only_that_call() {
+        let mut sink = SimSink::new().fail_call(SinkOp::ReadFltReady, 2);
+        let results = [
+            sink.read_flt_ready(),
+            sink.read_flt_ready(),
+            sink.read_flt_ready(),
+        ];
+        assert_eq!(results.map(|result| result.is_err()), [false, true, false]);
+        assert!(sink.read_update_flags().is_ok());
+
+        let mut phy = SimPhy::new().fail_call(PhyOp::SendLtp, 1);
+        assert!(phy.send_ltp(LanePatterns::default()).is_err());
+        assert!(phy.send_ltp(LanePatterns::default()).is_ok());
+        assert!(phy.set_frl_output(FrlOutput::GapOnly).is_ok());
     }
 }

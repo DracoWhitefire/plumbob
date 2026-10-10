@@ -4,9 +4,14 @@
 //! HDMI 2.1 specification. It defines the [`ScdcClient`] interface its dependencies
 //! must satisfy and exposes [`FrlTrainer`] as the central entry point.
 //!
+//! The state machine itself is [`lts::run`], an `async fn` that performs no I/O of its
+//! own. [`FrlTrainer`] drives it synchronously, without an async runtime; `plumbob-async`
+//! drives the same function asynchronously.
+//!
 //! # Features
 //!
-//! - **`alloc`** — enables `TrainingTrace` and `FrlTrainer::train_at_rate_traced`.
+//! - **`alloc`** — enables `TrainingTrace`, `FrlTrainer::train_traced` and
+//!   `FrlTrainer::train_at_rate_traced`.
 //! - **`std`** — implies `alloc`; no additional API surface.
 
 #![no_std]
@@ -16,14 +21,30 @@
 #[cfg(feature = "alloc")]
 extern crate alloc;
 
+pub mod lts;
 mod scdc;
 mod trace;
 mod training;
 mod types;
+mod warning;
 
 pub use scdc::ScdcClient;
-pub use training::{FrlTrainer, TrainingConfig, TrainingError, TrainingOutcome};
-pub use types::{CedCount, CedCounters, FfeLevels, FrlConfig, LtpReq, TrainingStatus};
+pub use training::{
+    ExitError, FallbackReason, FrlTrainer, TmdsExit, TrainingConfig, TrainingError, TrainingOutcome,
+};
+pub use types::{
+    CedCount, CedCounters, FfeLevels, FrlConfig, LtpReq, LtpRequests, SourceTestConfig, UpdateFlags,
+};
 
+pub use trace::TrainingEvent;
+
+/// The FRL rate and the PHY interface `FrlTrainer` drives, re-exported from `display-types`
+/// and `hdmi-hal` so that callers and PHY implementations use the same versions plumbob
+/// does without depending on those crates themselves.
+pub use display_types::cea861::hdmi_forum::HdmiForumFrl;
+pub use hdmi_hal::phy::{
+    EqParams, FrlOutput, HdmiPhy, LaneEqParams, LanePatterns, LtpPattern, TxFfeLevel,
+};
 #[cfg(feature = "alloc")]
-pub use trace::{TrainingEvent, TrainingTrace};
+pub use trace::TrainingTrace;
+pub use warning::{MAX_WARNINGS, Trained, TrainingWarning};

@@ -1,94 +1,210 @@
-use display_types::cea861::hdmi_forum::HdmiForumFrl;
-use hdmi_hal::phy::HdmiPhy;
+use core::future::Future;
+use core::pin::pin;
+use core::task::{Context, Poll, Waker};
 
+use display_types::cea861::hdmi_forum::HdmiForumFrl;
+use hdmi_hal::phy::{EqParams, FrlOutput, HdmiPhy, LanePatterns};
+
+use crate::lts::{self, TrainingIo};
+use crate::scdc::ScdcClient;
+use crate::trace::TrainingEvent;
+use crate::types::{FfeLevels, FrlConfig, LtpRequests, SourceTestConfig, UpdateFlags};
+use crate::warning::Trained;
+
+#[cfg(feature = "alloc")]
+use crate::trace::TrainingTrace;
 #[cfg(feature = "alloc")]
 use alloc::vec::Vec;
 
-use crate::scdc::ScdcClient;
-use crate::trace::TrainingEvent;
-use crate::types::{FfeLevels, FrlConfig, LtpReq, TrainingStatus};
+/// Why a training attempt ended without a link.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum FallbackReason {
+    /// LTS:2: `FLT_ready` did not assert within the poll limit.
+    FltReadyTimeout,
+    /// LTS:3: the lanes did not pass within the poll limit.
+    TrainingTimeout,
+    /// LTS:P: `FRL_start` did not assert within the poll limit.
+    FrlStartTimeout,
+    /// LTS:4: the sink requested a lower rate than the last one in the list.
+    RatesExhausted,
+    /// LTS:P: the sink requested retraining (`FLT_update`) after
+    /// [`TrainingConfig::max_retrains`] retrains had been used. Also under
+    /// `FLT_no_timeout`, where the poll limits would hold the link instead.
+    RetrainsExhausted,
+}
 
-/// Outcome of a training attempt at a single FRL rate.
+/// The result of a training attempt.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrainingOutcome {
-    /// All lanes satisfied. The link is ready at this rate.
+    /// Training passed and the sink set `FRL_start`. The link is ready at this rate.
     Success {
         /// The FRL rate at which training succeeded.
         achieved_rate: HdmiForumFrl,
     },
-    /// Training did not converge within the configured timeout.
-    ///
-    /// The caller should retry at a lower rate or fall back to TMDS.
-    FallbackRequired,
+    /// Training did not succeed at any of the rates.
+    FallbackRequired {
+        /// Why the attempt ended.
+        reason: FallbackReason,
+    },
+    /// The sink set `FLT_no_timeout` — it is under compliance test — and plumbob's
+    /// [`no_timeout_poll_cap`](TrainingConfig::no_timeout_poll_cap) ran out. The test
+    /// equipment is in control of the link, so plumbob leaves it as it is, with no LTS:L:
+    /// in LTS:3 or LTS:P the PHY and `Config_1` stay at `rate`; in LTS:2 nothing has been
+    /// configured yet. The caller decides what comes next — keep the link up for the test,
+    /// train again, or [`exit_to_tmds`](FrlTrainer::exit_to_tmds).
+    NoTimeoutHold {
+        /// The rate being trained when the cap ran out.
+        rate: HdmiForumFrl,
+    },
 }
 
 /// Hard error that terminated a training attempt.
 ///
-/// Distinct from [`TrainingOutcome::FallbackRequired`]: this means something
-/// failed at the I/O level, not that the link simply did not train at this rate.
+/// Distinct from [`TrainingOutcome::FallbackRequired`]: this means something failed —
+/// an SCDC or PHY operation, or a rate list the procedure cannot run
+/// ([`InvalidRates`](Self::InvalidRates)) — not that the link simply did not train.
+///
+/// After an SCDC or PHY error, plumbob performs LTS:L, returning both ends to TMDS as
+/// after a fallback, unless [`TrainingConfig::exit_to_tmds_on_error`] is off. `exit` says
+/// what happened. When LTS:L itself fails after a fallback, the error is
+/// [`ExitFailed`](Self::ExitFailed).
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrainingError<ScdcErr, PhyErr> {
     /// The `ScdcClient` returned an error.
-    Scdc(ScdcErr),
+    Scdc {
+        /// The error.
+        error: ScdcErr,
+        /// LTS:L after the error.
+        exit: TmdsExit<ScdcErr, PhyErr>,
+    },
     /// The PHY returned an error.
-    Phy(PhyErr),
+    Phy {
+        /// The error.
+        error: PhyErr,
+        /// LTS:L after the error.
+        exit: TmdsExit<ScdcErr, PhyErr>,
+    },
+    /// The attempt fell back for `reason`, and LTS:L then failed.
+    ExitFailed {
+        /// Why the attempt fell back.
+        reason: FallbackReason,
+        /// LTS:L's errors.
+        error: ExitError<ScdcErr, PhyErr>,
+    },
+    /// The rate list cannot be trained over, so nothing was done: no SCDC or PHY
+    /// operation was performed. Every rate must be an FRL rate (not `NotSupported`), and
+    /// each must be strictly lower than the one before it, because LTS:4 steps down.
+    InvalidRates {
+        /// The position of the first offending rate in the list.
+        index: usize,
+        /// That rate.
+        rate: HdmiForumFrl,
+    },
+    /// The rate list is empty, so there is nothing to train at and nothing was done: no
+    /// SCDC or PHY operation was performed, and the link is as it was. A caller with no
+    /// FRL rate to try (a sink without FRL, for example) does not train; to take down an
+    /// earlier FRL link it calls [`FrlTrainer::exit_to_tmds`].
+    NoRates,
+}
+
+/// What LTS:L did after an SCDC or PHY error.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TmdsExit<ScdcErr, PhyErr> {
+    /// LTS:L ran and every step succeeded: the sink and PHY are in TMDS.
+    Exited,
+    /// LTS:L was not run, because [`TrainingConfig::exit_to_tmds_on_error`] is off. Both
+    /// ends are as the error left them.
+    Skipped,
+    /// LTS:L ran and at least one step failed.
+    Failed(ExitError<ScdcErr, PhyErr>),
+}
+
+/// LTS:L failed: the first error of each end whose steps failed.
+///
+/// LTS:L attempts every step even when one fails, so an end with `None` completed its
+/// steps and is in TMDS. At least one end has an error. Returned by
+/// [`FrlTrainer::exit_to_tmds`] and [`lts::exit_to_tmds`], and carried by
+/// [`TmdsExit::Failed`] and [`TrainingError::ExitFailed`].
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ExitError<ScdcErr, PhyErr> {
+    /// The first error of LTS:L's SCDC steps (`Config_1`, `FLT_update`), if any.
+    pub scdc: Option<ScdcErr>,
+    /// The first error of LTS:L's PHY steps (patterns, rate), if any.
+    pub phy: Option<PhyErr>,
 }
 
 /// Per-attempt training configuration.
 ///
-/// Construct via [`TrainingConfig::default`] and override individual fields as
-/// needed for your polling cadence and hardware constraints.
+/// Construct via [`TrainingConfig::default`] and override fields as needed. Poll limits
+/// are exact counts: N means exactly N polls before the state gives up. The defaults
+/// assume one poll every 2 ms.
+///
+/// One `train` call makes at most `flt_ready_polls + (n_rates + max_retrains) × ltp_polls
+/// + (max_retrains + 1) × frl_start_polls` polls, each limit replaced by
+/// `no_timeout_poll_cap` while the sink sets `FLT_no_timeout`: 850 to 1350 polls with the
+/// defaults for one to six rates, 4500 to 7000 under `FLT_no_timeout`.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TrainingConfig {
-    /// FFE levels advertised to the sink in Config_0.
+    /// Highest TxFFE level the source supports, written to `Config_1` (limited per rate).
+    /// Default 3, as the AMD and Intel drivers advertise: the sink can then request up to
+    /// three TxFFE raises per lane. Set it to 0 for a PHY that cannot apply TxFFE, so the
+    /// source does not advertise levels it cannot deliver; requests to raise a level are
+    /// then not acted on.
     pub ffe_levels: FfeLevels,
-    /// Whether to set DSC_FRL_Max in Config_0.
+    /// Poll limit for `FLT_ready` in LTS:2. Default 50 (100 ms at 2 ms per poll).
+    pub flt_ready_polls: u32,
+    /// Poll limit for LTS:3. Default 100 (200 ms at 2 ms per poll).
+    pub ltp_polls: u32,
+    /// Poll limit for `FRL_start` in LTS:P. Default 100 (200 ms at 2 ms per poll, the
+    /// `FRL_start` wait of the AMD and Intel drivers).
+    pub frl_start_polls: u32,
+    /// The LTS:2, LTS:3 and LTS:P poll limit while the sink sets `FLT_no_timeout`. When it
+    /// runs out the attempt ends with [`TrainingOutcome::NoTimeoutHold`], leaving the link
+    /// as it is. Default 500 (1 s at 2 ms per poll, the AMD driver's cap).
+    pub no_timeout_poll_cap: u32,
+    /// How many times one `train` call returns from LTS:P to LTS:3 when the sink requests
+    /// retraining (`FLT_update`). The next request after that ends the attempt with
+    /// [`FallbackReason::RetrainsExhausted`]; 0 falls back on the first one. Default 3,
+    /// the AMD driver's retry count (which reruns the whole procedure rather than LTS:3).
     ///
-    /// Set to `true` when the negotiated configuration requires DSC transport.
-    /// plumbob passes this through into `FrlConfig` without interpreting it.
-    /// Defaults to `false`.
-    pub dsc_frl_max: bool,
-    /// Maximum number of polls to attempt while waiting for `flt_ready` (phase 2).
-    ///
-    /// The loop reads the training status register up to this many times. If
-    /// `flt_ready` has not been asserted after exactly `flt_ready_timeout` polls,
-    /// the attempt returns [`TrainingOutcome::FallbackRequired`]. A value of `0`
-    /// means no polls are attempted and the phase times out immediately.
-    pub flt_ready_timeout: u32,
-    /// Maximum number of polls to attempt while waiting for `frl_start` (phase 3).
-    ///
-    /// Identical semantics to [`flt_ready_timeout`](Self::flt_ready_timeout): at
-    /// most `frl_start_timeout` polls are made before the attempt returns
-    /// [`TrainingOutcome::FallbackRequired`].
-    pub frl_start_timeout: u32,
-    /// Maximum number of poll iterations in the LTP training loop (phase 4).
-    ///
-    /// Identical semantics to [`flt_ready_timeout`](Self::flt_ready_timeout): at
-    /// most `ltp_timeout` iterations run before the attempt returns
-    /// [`TrainingOutcome::FallbackRequired`].
-    pub ltp_timeout: u32,
+    /// Unlike the poll limits, this bound holds under `FLT_no_timeout` as well: it is what
+    /// guarantees that the LTS:P ↔ LTS:3 cycle ends, so exhausting it falls back rather
+    /// than ending in [`TrainingOutcome::NoTimeoutHold`]. A compliance test that needs
+    /// more retrains raises it.
+    pub max_retrains: u32,
+    /// Whether an SCDC or PHY error is followed by LTS:L, returning both ends to TMDS as a
+    /// fallback does. Default `true`. Turn it off to leave the sink and PHY as the error
+    /// left them, for example to inspect the sink's registers; [`TrainingError`] then
+    /// reports [`TmdsExit::Skipped`].
+    pub exit_to_tmds_on_error: bool,
 }
 
 impl Default for TrainingConfig {
     fn default() -> Self {
         Self {
-            ffe_levels: FfeLevels::Ffe0,
-            dsc_frl_max: false,
-            flt_ready_timeout: 1000,
-            frl_start_timeout: 1000,
-            ltp_timeout: 1000,
+            ffe_levels: FfeLevels::new(3).expect("3 is a valid FFE level"),
+            flt_ready_polls: 50,
+            ltp_polls: 100,
+            frl_start_polls: 100,
+            no_timeout_poll_cap: 500,
+            max_retrains: 3,
+            exit_to_tmds_on_error: true,
         }
     }
 }
 
+type Error<C, P> = TrainingError<<C as ScdcClient>::Error, <P as HdmiPhy>::Error>;
+
 /// The central training type. Owns an `ScdcClient` and an `HdmiPhy`.
 ///
-/// `FrlTrainer` is reusable across multiple `train_at_rate` calls. A caller
-/// performing rate fallback calls `train_at_rate` repeatedly on the same trainer,
-/// stepping down through FRL tiers, without reconstructing it between attempts.
-/// Use `into_parts` to recover the SCDC client and PHY when training is finished.
+/// Reusable across training attempts; use [`into_parts`](Self::into_parts) to recover
+/// the SCDC client and PHY when training is finished.
 pub struct FrlTrainer<C, P> {
     scdc: C,
     phy: P,
@@ -105,185 +221,185 @@ impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
         (self.scdc, self.phy)
     }
 
-    /// Runs the full four-phase FRL training sequence at the given rate.
+    /// The SCDC client.
+    pub fn scdc(&self) -> &C {
+        &self.scdc
+    }
+
+    /// The SCDC client, mutably.
+    pub fn scdc_mut(&mut self) -> &mut C {
+        &mut self.scdc
+    }
+
+    /// The PHY.
+    pub fn phy(&self) -> &P {
+        &self.phy
+    }
+
+    /// The PHY, mutably: after `Success`, for example, to start video with
+    /// `set_frl_output(FrlOutput::Active)`.
+    pub fn phy_mut(&mut self) -> &mut P {
+        &mut self.phy
+    }
+
+    /// LTS:L on demand: stops the training patterns, returns the PHY to TMDS, turns FRL
+    /// off in `Config_1` and clears `FLT_update` if it is set.
     ///
-    /// Returns [`TrainingOutcome::Success`] when all lanes satisfy their LTP
-    /// requests, or [`TrainingOutcome::FallbackRequired`] if any phase times out.
-    /// A [`TrainingError`] is returned only on hard I/O failures.
+    /// For taking an FRL link down outside [`train`](Self::train) — when the display is
+    /// disabled or unplugged, or before a mode change — and after an error with
+    /// [`TrainingConfig::exit_to_tmds_on_error`] off. Safe to call in any state, and
+    /// again. Every step is attempted even when one fails.
+    pub fn exit_to_tmds(&mut self) -> Result<(), ExitError<C::Error, P::Error>> {
+        let mut io = SyncIo {
+            scdc: &mut self.scdc,
+            phy: &mut self.phy,
+        };
+        block_on(lts::exit_to_tmds(&mut io, &mut |_| {}))
+    }
+
+    /// Trains at a single rate: `train(&[rate], config)`.
     pub fn train_at_rate(
         &mut self,
         rate: HdmiForumFrl,
         config: &TrainingConfig,
-    ) -> Result<TrainingOutcome, TrainingError<C::Error, P::Error>> {
-        self.train_inner(rate, config, &mut |_| {})
+    ) -> Result<Trained, Error<C, P>> {
+        self.train(&[rate], config)
     }
 
-    /// Like [`FrlTrainer::train_at_rate`], but also returns a `TrainingTrace`
-    /// recording the full event sequence.
+    /// Trains over `rates` in order, stepping down when the sink requests it.
+    ///
+    /// Returns [`TrainingOutcome::Success`] once the sink sets `FRL_start`, or
+    /// [`TrainingOutcome::FallbackRequired`] with the reason the attempt ended. A
+    /// [`TrainingError`] is returned on SCDC or PHY failures, and, before anything is done,
+    /// for an empty list ([`TrainingError::NoRates`]) or one with `NotSupported` or a rate
+    /// not strictly lower than the one before it ([`TrainingError::InvalidRates`]).
+    pub fn train(
+        &mut self,
+        rates: &[HdmiForumFrl],
+        config: &TrainingConfig,
+    ) -> Result<Trained, Error<C, P>> {
+        self.train_with_events(rates, config, &mut |_| {})
+    }
+
+    /// Like [`train_at_rate`](Self::train_at_rate), and also returns a [`TrainingTrace`]
+    /// of the attempt, whatever its result.
     #[cfg(feature = "alloc")]
     pub fn train_at_rate_traced(
         &mut self,
         rate: HdmiForumFrl,
         config: &TrainingConfig,
-    ) -> Result<(TrainingOutcome, crate::trace::TrainingTrace), TrainingError<C::Error, P::Error>>
-    {
+    ) -> (Result<Trained, Error<C, P>>, TrainingTrace) {
+        self.train_traced(&[rate], config)
+    }
+
+    /// Like [`train`](Self::train), and also returns a [`TrainingTrace`] of the attempt.
+    ///
+    /// The trace is returned whatever the result, so an attempt that ended in a
+    /// [`TrainingError`] can be explained as well: its events up to the error, then LTS:L's
+    /// `ExitedToTmds` or `ExitToTmdsFailed`.
+    #[cfg(feature = "alloc")]
+    pub fn train_traced(
+        &mut self,
+        rates: &[HdmiForumFrl],
+        config: &TrainingConfig,
+    ) -> (Result<Trained, Error<C, P>>, TrainingTrace) {
         let mut events = Vec::new();
-        let outcome = self.train_inner(rate, config, &mut |e| events.push(e))?;
-        Ok((
-            outcome,
-            crate::trace::TrainingTrace {
-                rate,
-                config: *config,
-                events,
-            },
-        ))
+        let result = self.train_with_events(rates, config, &mut |event| events.push(event));
+        (result, TrainingTrace::new(rates.to_vec(), *config, events))
     }
 
-    /// Polls `read_training_status` until `condition` is satisfied or `timeout`
-    /// iterations have elapsed. Emits the appropriate event via `record` in both
-    /// cases. Returns `None` when the condition was met (caller should proceed) or
-    /// `Some(TrainingOutcome::FallbackRequired)` on timeout.
-    ///
-    /// `i` counts polls attempted so far. At the point the condition is met it
-    /// reflects how many prior reads failed; at timeout it equals `timeout` exactly.
-    fn poll_until<F>(
+    /// Like [`train`](Self::train), calling `record` with each [`TrainingEvent`] as it
+    /// occurs: the events `train_traced` (with `alloc`) collects, without an
+    /// allocator. The caller decides what to keep — log each event, count them, or store
+    /// the last few.
+    pub fn train_with_events<F: FnMut(TrainingEvent)>(
         &mut self,
-        timeout: u32,
-        condition: impl Fn(&TrainingStatus) -> bool,
-        on_success: impl FnOnce(u32) -> TrainingEvent,
-        on_timeout: impl FnOnce(u32) -> TrainingEvent,
-        record: &mut F,
-    ) -> Result<Option<TrainingOutcome>, TrainingError<C::Error, P::Error>>
-    where
-        F: FnMut(TrainingEvent),
-    {
-        let mut i = 0u32;
-        loop {
-            let status = self
-                .scdc
-                .read_training_status()
-                .map_err(TrainingError::Scdc)?;
-            if condition(&status) {
-                record(on_success(i));
-                return Ok(None);
-            }
-            i += 1;
-            if i >= timeout {
-                record(on_timeout(i));
-                return Ok(Some(TrainingOutcome::FallbackRequired));
-            }
-        }
-    }
-
-    /// Core four-phase training sequence.
-    ///
-    /// `record` is called with each [`TrainingEvent`] as it occurs. Pass
-    /// `&mut |_| {}` for the non-traced path; the compiler eliminates the
-    /// call entirely in optimised builds.
-    fn train_inner<F>(
-        &mut self,
-        rate: HdmiForumFrl,
+        rates: &[HdmiForumFrl],
         config: &TrainingConfig,
         record: &mut F,
-    ) -> Result<TrainingOutcome, TrainingError<C::Error, P::Error>>
-    where
-        F: FnMut(TrainingEvent),
-    {
-        // Phase 1 — Configuration
-        self.scdc
-            .write_frl_config(FrlConfig {
-                rate,
-                ffe_levels: config.ffe_levels,
-                dsc_frl_max: config.dsc_frl_max,
-            })
-            .map_err(TrainingError::Scdc)?;
-        self.phy.set_frl_rate(rate).map_err(TrainingError::Phy)?;
-        record(TrainingEvent::RateConfigured {
-            rate,
-            ffe_levels: config.ffe_levels,
-        });
+    ) -> Result<Trained, Error<C, P>> {
+        let mut io = SyncIo {
+            scdc: &mut self.scdc,
+            phy: &mut self.phy,
+        };
+        block_on(lts::run(&mut io, rates, config, record))
+    }
+}
 
-        // Phase 2 — Readiness: poll until the sink asserts flt_ready.
-        if let Some(outcome) = self.poll_until(
-            config.flt_ready_timeout,
-            |s| s.flt_ready,
-            |i| TrainingEvent::FltReadyReceived {
-                after_iterations: i,
-            },
-            |i| TrainingEvent::FltReadyTimeout {
-                iterations_elapsed: i,
-            },
-            record,
-        )? {
-            return Ok(outcome);
-        }
+/// [`TrainingIo`] over a sync `ScdcClient` and `HdmiPhy`. Each operation is the sync call
+/// itself, so its future is ready the first time it is polled.
+struct SyncIo<'a, C, P> {
+    scdc: &'a mut C,
+    phy: &'a mut P,
+}
 
-        // Phase 3 — Initiation: poll until the sink asserts frl_start.
-        if let Some(outcome) = self.poll_until(
-            config.frl_start_timeout,
-            |s| s.frl_start,
-            |i| TrainingEvent::FrlStartReceived {
-                after_iterations: i,
-            },
-            |i| TrainingEvent::FrlStartTimeout {
-                iterations_elapsed: i,
-            },
-            record,
-        )? {
-            return Ok(outcome);
-        }
+impl<C: ScdcClient, P: HdmiPhy> TrainingIo for SyncIo<'_, C, P> {
+    type ScdcError = C::Error;
+    type PhyError = P::Error;
 
-        // Phase 4 — LTP loop.
-        self.ltp_loop(rate, config, record)
+    async fn read_flt_ready(&mut self) -> Result<bool, C::Error> {
+        self.scdc.read_flt_ready()
     }
 
-    /// Phase 4: drive LTP patterns until the sink signals all lanes satisfied.
-    ///
-    /// `read_ced` is called on each iteration; it will feed per-lane equalization
-    /// adjustments once `LaneEqParams` fields are defined in hdmi-hal.
-    /// `LtpPatternRequested` is emitted only on transitions, not every poll.
-    fn ltp_loop<F>(
-        &mut self,
-        rate: HdmiForumFrl,
-        config: &TrainingConfig,
-        record: &mut F,
-    ) -> Result<TrainingOutcome, TrainingError<C::Error, P::Error>>
-    where
-        F: FnMut(TrainingEvent),
-    {
-        let mut i = 0u32;
-        let mut last_ltp: Option<LtpReq> = None;
-        loop {
-            let status = self
-                .scdc
-                .read_training_status()
-                .map_err(TrainingError::Scdc)?;
-            if status.ltp_req == LtpReq::None {
-                record(TrainingEvent::AllLanesSatisfied {
-                    after_iterations: i,
-                });
-                return Ok(TrainingOutcome::Success {
-                    achieved_rate: rate,
-                });
-            }
-            if Some(status.ltp_req) != last_ltp {
-                record(TrainingEvent::LtpPatternRequested {
-                    pattern: status.ltp_req,
-                });
-                last_ltp = Some(status.ltp_req);
-            }
-            let _ced = self.scdc.read_ced().map_err(TrainingError::Scdc)?;
-            self.phy
-                .send_ltp(status.ltp_req.into())
-                .map_err(TrainingError::Phy)?;
-            i += 1;
-            if i >= config.ltp_timeout {
-                record(TrainingEvent::LtpLoopTimeout {
-                    iterations_elapsed: i,
-                });
-                return Ok(TrainingOutcome::FallbackRequired);
-            }
-        }
+    async fn read_update_flags(&mut self) -> Result<UpdateFlags, C::Error> {
+        self.scdc.read_update_flags()
+    }
+
+    async fn clear_update_flags(&mut self, flags: UpdateFlags) -> Result<(), C::Error> {
+        self.scdc.clear_update_flags(flags)
+    }
+
+    async fn read_ltp_requests(&mut self) -> Result<LtpRequests, C::Error> {
+        self.scdc.read_ltp_requests()
+    }
+
+    async fn read_source_test_config(&mut self) -> Result<SourceTestConfig, C::Error> {
+        self.scdc.read_source_test_config()
+    }
+
+    async fn write_config_0_defaults(&mut self) -> Result<(), C::Error> {
+        self.scdc.write_config_0_defaults()
+    }
+
+    async fn write_frl_config(&mut self, config: FrlConfig) -> Result<(), C::Error> {
+        self.scdc.write_frl_config(config)
+    }
+
+    async fn set_frl_rate(&mut self, rate: HdmiForumFrl) -> Result<(), P::Error> {
+        self.phy.set_frl_rate(rate)
+    }
+
+    async fn send_ltp(&mut self, patterns: LanePatterns) -> Result<(), P::Error> {
+        self.phy.send_ltp(patterns)
+    }
+
+    async fn set_frl_output(&mut self, output: FrlOutput) -> Result<(), P::Error> {
+        self.phy.set_frl_output(output)
+    }
+
+    async fn adjust_equalization(&mut self, params: EqParams) -> Result<(), P::Error> {
+        self.phy.adjust_equalization(params)
+    }
+}
+
+/// Runs a future that never waits to completion, without an executor.
+///
+/// Over [`SyncIo`] every operation completes when first polled, so [`lts::run`] is ready
+/// after one poll.
+fn block_on<T>(future: impl Future<Output = T>) -> T {
+    let mut future = pin!(future);
+    ready(
+        future
+            .as_mut()
+            .poll(&mut Context::from_waker(Waker::noop())),
+    )
+}
+
+/// The output of a future polled once; a `Pending` here would be a bug in plumbob.
+fn ready<T>(poll: Poll<T>) -> T {
+    match poll {
+        Poll::Ready(output) => output,
+        Poll::Pending => unreachable!("plumbob's sync training waited on I/O"),
     }
 }
 
