@@ -16,7 +16,7 @@
 - `culvert` integration: `culvert` implements `plumbob::ScdcClient` for `Scdc<T>` via its
   `plumbob` cargo feature
 
-### `plumbob-async`
+### `plumbob-async` (separate crate)
 
 Async companion crate mirroring `ScdcClient` and `FrlTrainer` with `async fn` methods,
 following the same split as `hdmi-hal` / `hdmi-hal-async`. Shares all data types with
