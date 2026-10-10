@@ -60,7 +60,8 @@ kept apart, and the five distinct warnings an attempt can produce fit without `a
 - Warnings: undefined requests returned as `TrainingWarning`s, merged per lane with a
   count, on a success and on a fallback, and none for a clean attempt
 - The rate list: `NotSupported` and rates that are not strictly descending rejected as
-  `InvalidRates` with no SCDC or PHY call, and every FRL rate, in order, walked through
+  `InvalidRates`, and an empty list as `NoRates`, with no SCDC or PHY call; every FRL
+  rate, in order, walked through
 - LTS:4: stepping down through the list, resetting the lanes, moving to a 3-lane rate, a
   fresh poll limit per rate, and running out of rates
 - LTS:L: the exact exit sequence, clearing a pending `FLT_update`, every timeout

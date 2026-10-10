@@ -26,8 +26,7 @@ pub enum FallbackReason {
     TrainingTimeout,
     /// LTS:P: `FRL_start` did not assert within the poll limit.
     FrlStartTimeout,
-    /// LTS:4: the sink requested a lower rate than the last one in the list (or the
-    /// list was empty).
+    /// LTS:4: the sink requested a lower rate than the last one in the list.
     RatesExhausted,
     /// LTS:P: the sink requested retraining (`FLT_update`) after
     /// [`TrainingConfig::max_retrains`] retrains had been used. Also under
@@ -104,6 +103,11 @@ pub enum TrainingError<ScdcErr, PhyErr> {
         /// That rate.
         rate: HdmiForumFrl,
     },
+    /// The rate list is empty, so there is nothing to train at and nothing was done: no
+    /// SCDC or PHY operation was performed, and the link is as it was. A caller with no
+    /// FRL rate to try (a sink without FRL, for example) does not train; to take down an
+    /// earlier FRL link it calls [`FrlTrainer::exit_to_tmds`].
+    NoRates,
 }
 
 /// What LTS:L did after an SCDC or PHY error.
@@ -239,11 +243,10 @@ impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
     /// Trains over `rates` in order, stepping down when the sink requests it.
     ///
     /// Returns [`TrainingOutcome::Success`] once the sink sets `FRL_start`, or
-    /// [`TrainingOutcome::FallbackRequired`] with the reason the attempt ended. An empty
-    /// list returns `FallbackRequired { reason: RatesExhausted }` without touching the
-    /// sink. A [`TrainingError`] is returned on SCDC or PHY failures, and, before anything
-    /// is done, for a list with `NotSupported` or a rate not strictly lower than the one
-    /// before it ([`TrainingError::InvalidRates`]).
+    /// [`TrainingOutcome::FallbackRequired`] with the reason the attempt ended. A
+    /// [`TrainingError`] is returned on SCDC or PHY failures, and, before anything is done,
+    /// for an empty list ([`TrainingError::NoRates`]) or one with `NotSupported` or a rate
+    /// not strictly lower than the one before it ([`TrainingError::InvalidRates`]).
     pub fn train(
         &mut self,
         rates: &[HdmiForumFrl],

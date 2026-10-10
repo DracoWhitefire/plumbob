@@ -65,7 +65,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `ExitFailed { reason, error }` instead of `FallbackRequired`. A rate list the
   procedure cannot run — `NotSupported`, or a rate not strictly lower than the one before
   it, since LTS:4 steps down — is rejected before any I/O with the new
-  `InvalidRates { index, rate }`. `TrainingError` is now `#[non_exhaustive]`.
+  `InvalidRates { index, rate }`, and an empty list with the new `NoRates` (it used to
+  return `FallbackRequired { reason: RatesExhausted }` without touching the sink, so
+  `RatesExhausted` now always means the sink asked past the end of the list, and every
+  `FallbackRequired` leaves both ends in TMDS). `TrainingError` is now
+  `#[non_exhaustive]`.
 - **The traced methods return the trace whatever the result**: `train_traced` and
   `train_at_rate_traced` return `(Result<Trained, TrainingError>, TrainingTrace)` instead
   of `Result<(TrainingOutcome, TrainingTrace), TrainingError>`, so an attempt that ended

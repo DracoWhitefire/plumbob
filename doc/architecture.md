@@ -92,13 +92,15 @@ the caller and trains at that rate.
 
 `train` runs the source side of FRL link training over a caller-supplied list of rates, in
 order, and returns when it reaches a terminal state; `train_at_rate` is the same with a
-single rate. An empty list returns `FallbackRequired { reason: RatesExhausted }` without
-touching the sink. The list must be one the procedure can run: LTS:4 is a step down, so
-every rate must be strictly lower than the one before it, and `NotSupported` is not an
-FRL rate. Any other list is rejected with `TrainingError::InvalidRates { index, rate }`
+single rate. The list must be one the procedure can run: LTS:4 is a step down, so every
+rate must be strictly lower than the one before it, and `NotSupported` is not an FRL
+rate. Any other list is rejected with `TrainingError::InvalidRates { index, rate }`
 before any SCDC or PHY operation — the specification decides this, not the caller, and
-running a list LTS:4 cannot follow would invent behaviour. Which valid rates to try
-remains the caller's choice. The sequence follows the link training states (LTS) of the
+running a list LTS:4 cannot follow would invent behaviour. An empty list has nothing to
+train at and is rejected the same way, as `TrainingError::NoRates`; a caller with no FRL
+rate to try (a sink without FRL) does not train, and calls `exit_to_tmds` if an earlier
+FRL link must come down. So every `FallbackRequired` follows training, and leaves both
+ends in TMDS. Which valid rates to try remains the caller's choice. The sequence follows the link training states (LTS) of the
 HDMI 2.1 specification as implemented by open-source HDMI 2.1 transmitters: the
 AMD/Xilinx `v_hdmitx1` driver (`xv_hdmitx1_frl.c`) and the Intel `xe` FRL series
 (`intel_hdmi_train_lanes`). LTS:1 (reading the sink's EDID and SCDC capability) is the
@@ -362,8 +364,7 @@ pub enum FallbackReason {
     TrainingTimeout,
     /// LTS:P: FRL_start did not assert within the poll limit.
     FrlStartTimeout,
-    /// LTS:4: the sink requested a lower rate than the last one in the list
-    /// (or the list was empty).
+    /// LTS:4: the sink requested a lower rate than the last one in the list.
     RatesExhausted,
     /// LTS:P: the sink requested retraining after max_retrains retrains.
     RetrainsExhausted,
@@ -421,6 +422,8 @@ pub enum TrainingError<ScdcErr, PhyErr> {
     ExitFailed { reason: FallbackReason, error: ExitError<ScdcErr, PhyErr> },
     /// The rate list cannot be trained over; nothing was done.
     InvalidRates { index: usize, rate: HdmiForumFrl },
+    /// The rate list is empty; nothing was done.
+    NoRates,
 }
 
 /// What LTS:L did after an SCDC or PHY error.

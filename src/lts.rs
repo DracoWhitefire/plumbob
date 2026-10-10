@@ -62,9 +62,9 @@ pub trait TrainingIo {
 ///
 /// This is the procedure behind [`FrlTrainer::train`](crate::FrlTrainer::train): the same
 /// outcomes, errors and events, with `record` called for each [`TrainingEvent`] as it
-/// occurs. An empty `rates` returns `FallbackRequired { reason: RatesExhausted }` without
-/// any I/O; a list the procedure cannot run — `NotSupported`, or a rate not strictly lower
-/// than the one before it — returns [`TrainingError::InvalidRates`], also without any I/O.
+/// occurs. A list the procedure cannot run returns an error without any I/O: an empty one
+/// [`TrainingError::NoRates`], one with `NotSupported` or a rate not strictly lower than
+/// the one before it [`TrainingError::InvalidRates`].
 ///
 /// The outcome comes with the [`TrainingWarning`](crate::TrainingWarning)s the attempt
 /// produced, built from the same events `record` receives.
@@ -392,9 +392,7 @@ impl<Io: TrainingIo> Machine<'_, Io> {
             return Err(TrainingError::InvalidRates { index, rate });
         }
         let Some((&rate, lower)) = rates.split_first() else {
-            return Ok(TrainingOutcome::FallbackRequired {
-                reason: FallbackReason::RatesExhausted,
-            });
+            return Err(TrainingError::NoRates);
         };
         match self.states(rate, lower, config, record).await {
             Ok(End::Success(achieved_rate)) => Ok(TrainingOutcome::Success { achieved_rate }),

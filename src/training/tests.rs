@@ -263,9 +263,11 @@ fn every_rate_in_descending_order_is_accepted() {
 }
 
 #[test]
-fn empty_rate_list_does_not_touch_the_sink() {
-    let (outcome, sink, phy) = run(SimSink::new(), &[], &TrainingConfig::default());
-    assert_eq!(outcome, fallback(FallbackReason::RatesExhausted));
+fn an_empty_rate_list_is_rejected_without_io() {
+    let mut trainer = FrlTrainer::new(SimSink::new(), SimPhy::new());
+    let result = trainer.train(&[], &TrainingConfig::default());
+    assert_eq!(result, Err(TrainingError::NoRates));
+    let (sink, phy) = trainer.into_parts();
     assert!(sink.calls.is_empty());
     assert!(phy.calls.is_empty());
 }
@@ -1897,9 +1899,11 @@ mod traced {
 
     #[test]
     fn an_empty_rate_list_has_no_events() {
-        let (outcome, trace) = trace(SimSink::new(), &[], &TrainingConfig::default());
-        assert_eq!(outcome, fallback(FallbackReason::RatesExhausted));
+        let (result, trace) = FrlTrainer::new(SimSink::new(), SimPhy::new())
+            .train_traced(&[], &TrainingConfig::default());
+        assert_eq!(result, Err(TrainingError::NoRates));
         assert!(trace.events.is_empty());
+        assert!(trace.rates.is_empty());
     }
 
     #[test]
