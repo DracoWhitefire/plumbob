@@ -122,10 +122,12 @@ The number of active lanes follows from the rate: 3 for `Rate3Gbps3Lanes` and
    `FallbackRequired { reason: FltReadyTimeout }` — or, under `FLT_no_timeout`, hold the
    link (see below).
 3. Clear `FLT_update`. Reset every lane's TxFFE level to 0 on the PHY.
-4. Configure the PHY for the rate (`set_frl_rate`) and drive the Nyquist clock pattern on
-   all lanes while the sink's receiver locks.
-5. Stop the patterns (no pattern on any lane) and send gap characters only
-   (`set_frl_output(GapOnly)`). LTS:3 starts from this state.
+4. Configure the PHY for the rate (`set_frl_rate`). Any bring-up the transmitter needs —
+   the Xilinx transmitter, for example, holds a Nyquist clock pattern until its link is
+   up — is the PHY's, inside `set_frl_rate`: only the PHY knows when its link is ready.
+   The AMD and Intel drivers send no pattern here.
+5. Send no pattern on any lane and gap characters only (`set_frl_output(GapOnly)`). LTS:3
+   starts from this state.
 6. Write `Config_0` (no read requests, `FLT_no_retrain` clear) and `Config_1` (the first
    rate in the list, and the highest TxFFE level: `TrainingConfig::ffe_levels`, limited to
    the maximum for that rate).
@@ -730,6 +732,10 @@ and recorded by `hdmi-hal-i2c-dev`'s `StubPhy`):
   control) after `Success`. It sits on `HdmiPhy` because both plumbob and the integration
   layer drive it, and because `HdmiPhy` already carries link-level operations
   (`set_scrambling`, `send_ltp`).
+- **`set_frl_rate` includes bring-up.** It returns once the PHY transmits at the rate,
+  after whatever its hardware needs to get there, such as a clock pattern held until its
+  PLL locks. plumbob sends no pattern during LTS:2 itself: it cannot observe when a
+  transmitter's link is up, and a zero-length pattern would do nothing.
 - **Block reads on `ScdcTransport`.** `read_block` lets an SCDC implementation read
   `Status_Flags_1/2` (and the CED block) in one transaction when its transport can.
 

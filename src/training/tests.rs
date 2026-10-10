@@ -3,13 +3,24 @@ use std::vec::Vec;
 
 use super::sim::{PhyCall, PhyOp, SimPhy, SimSink, SinkCall, SinkOp, all};
 use super::*;
-use crate::lts::{FLT_UPDATE, FRL_START, Lanes, SOURCE_TEST_UPDATE, uniform};
+use crate::lts::{FLT_UPDATE, FRL_START, Lanes, SOURCE_TEST_UPDATE};
 use crate::types::LtpReq;
 use crate::types::SourceTestConfig;
 use crate::warning::{Trained, TrainingWarning};
 use hdmi_hal::phy::LtpPattern;
 
 const RATE: HdmiForumFrl = HdmiForumFrl::Rate6Gbps4Lanes;
+
+/// The same pattern (or none) on every lane in use.
+fn uniform(count: usize, pattern: Option<LtpPattern>) -> LanePatterns {
+    let lane = |i| if i < count { pattern } else { None };
+    LanePatterns {
+        lane0: lane(0),
+        lane1: lane(1),
+        lane2: lane(2),
+        lane3: lane(3),
+    }
+}
 
 const NO_FLAGS: UpdateFlags = UpdateFlags {
     source_test_update: false,
@@ -59,7 +70,7 @@ fn patterns(
     }
 }
 
-/// The patterns the PHY was sent during LTS:3, after LTS:2's Nyquist clock and stop.
+/// The patterns the PHY was sent after LTS:2's stop.
 fn ltp_sent(phy: &SimPhy) -> Vec<LanePatterns> {
     phy.calls
         .iter()
@@ -67,7 +78,7 @@ fn ltp_sent(phy: &SimPhy) -> Vec<LanePatterns> {
             PhyCall::SendLtp(p) => Some(*p),
             _ => None,
         })
-        .skip(2)
+        .skip(1)
         .collect()
 }
 
@@ -180,7 +191,6 @@ fn trains_through_lts_2_3_and_p() {
             // LTS:2
             PhyCall::AdjustEqualization(Lanes::new(RATE).eq_params()),
             PhyCall::SetFrlRate(RATE),
-            PhyCall::SendLtp(uniform(4, Some(LtpPattern::NyquistClock))),
             PhyCall::SendLtp(LanePatterns::default()),
             PhyCall::SetFrlOutput(FrlOutput::GapOnly),
             // LTS:3

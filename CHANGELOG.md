@@ -50,7 +50,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   every step even when one fails, so an error on one end does not keep the other in FRL.
 - **`HdmiPhy` calls follow hdmi-hal's per-lane model**: `send_ltp` receives the full
   per-lane pattern set, `adjust_equalization` the per-lane TxFFE levels, and
-  `set_frl_output(GapOnly)` is sent during training and LTS:P.
+  `set_frl_output(GapOnly)` is sent during training and LTS:P. plumbob sends no pattern
+  in LTS:2: any bring-up the transmitter needs, such as a clock pattern held until its PLL
+  locks, belongs to the PHY's `set_frl_rate`.
 - **`TrainingEvent` records the new states** (`FltReady`, `RateConfigured`,
   `LtpRequested`, `FfeRaised`, `TrainingPassed`, `RateLowered`, `RatesExhausted`,
   `RetrainRequested`, `RetrainsExhausted`, `FrlStart`, `ExitedToTmds`, the three timeouts and

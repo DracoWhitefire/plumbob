@@ -152,17 +152,6 @@ fn lane_count(rate: HdmiForumFrl) -> usize {
     }
 }
 
-/// The same pattern (or none) on every lane in use.
-pub(crate) fn uniform(count: usize, pattern: Option<LtpPattern>) -> LanePatterns {
-    let lane = |i| if i < count { pattern } else { None };
-    LanePatterns {
-        lane0: lane(0),
-        lane1: lane(1),
-        lane2: lane(2),
-        lane3: lane(3),
-    }
-}
-
 /// The equalization settings for one lane at the given TxFFE level.
 fn lane_eq(level: u8) -> LaneEqParams {
     let mut params = LaneEqParams::default();
@@ -484,15 +473,13 @@ impl<Io: TrainingIo> Machine<'_, Io> {
         self.clear(FLT_UPDATE).await?;
         self.adjust_equalization(attempt.lanes.eq_params()).await?;
 
-        let count = attempt.lanes.count;
+        // Any transmitter bring-up (such as holding a clock pattern until the PLL locks)
+        // is the PHY's, inside `set_frl_rate`: only the PHY knows when its link is up.
         self.io
             .set_frl_rate(attempt.rate)
             .await
             .map_err(Fault::Phy)?;
-        self.send_ltp(uniform(count, Some(LtpPattern::NyquistClock)))
-            .await?;
-
-        self.send_ltp(uniform(count, None)).await?;
+        self.send_ltp(attempt.lanes.patterns()).await?;
         self.set_frl_output(FrlOutput::GapOnly).await?;
 
         self.io

@@ -145,8 +145,9 @@ flowchart TD
 ```
 
 **LTS:2** waits for the sink to assert `FLT_ready`, resets every lane's TxFFE level,
-configures the PHY for the rate, briefly drives the Nyquist clock pattern, then switches
-to gap characters and writes `Config_0` and `Config_1`.
+configures the PHY for the rate (any transmitter bring-up is the PHY's, inside
+`set_frl_rate`), then switches to gap characters with no pattern and writes `Config_0`
+and `Config_1`.
 
 **LTS:3** follows the sink's per-lane requests: each lane carries the pattern it asks
 for, 0xE raises that lane's TxFFE level (up to the advertised maximum, then held), and

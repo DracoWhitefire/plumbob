@@ -13,17 +13,18 @@ The link training pattern the sink requests for one lane: a 4-bit field in
 
 ```rust
 pub enum LtpReq {
-    None            = 0x0,  // lane trained
-    AllOnes         = 0x1,
-    AllZeros        = 0x2,
-    NyquistClock    = 0x3,
-    DdeCompliance   = 0x4,
-    Lfsr0           = 0x5,
-    Lfsr1           = 0x6,
-    Lfsr2           = 0x7,
-    Lfsr3           = 0x8,
-    FfeChange       = 0xE,
-    RateChange      = 0xF,
+    None,           // 0x0: lane trained
+    AllOnes,        // 0x1
+    AllZeros,       // 0x2
+    NyquistClock,   // 0x3
+    DdeCompliance,  // 0x4
+    Lfsr0,          // 0x5
+    Lfsr1,          // 0x6
+    Lfsr2,          // 0x7
+    Lfsr3,          // 0x8
+    FfeChange,      // 0xE
+    RateChange,     // 0xF
+    Reserved(u8),   // 0x9–0xD
 }
 
 pub struct LtpRequests { pub lane0: LtpReq, pub lane1: LtpReq, pub lane2: LtpReq, pub lane3: LtpReq }
