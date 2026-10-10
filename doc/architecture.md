@@ -104,8 +104,12 @@ The number of active lanes follows from the rate: 3 for `Rate3Gbps3Lanes` and
 
 ### LTS:2 — Prepare
 
-1. If `UpdateFlags::source_test_update` is set, read `SourceTestConfig` and clear the flag.
-   `flt_no_timeout` suspends the poll limits of LTS:2 and LTS:3 (compliance testing).
+1. Read `SourceTestConfig`, and clear `UpdateFlags::source_test_update` if it is set.
+   `flt_no_timeout` suspends the poll limits of LTS:2 and LTS:3 (compliance testing). The
+   configuration is read on every attempt, not only when the update flag is set: a tester
+   sets `FLT_no_timeout` and leaves it, while the flag is cleared by the first attempt
+   that sees it. The Xilinx and AMD drivers read it unconditionally too. In LTS:3 it is
+   re-read when the flag is raised.
 2. Poll `StatusFlags::flt_ready` until the sink asserts it. If it does not within
    `TrainingConfig::flt_ready_polls`, go to LTS:L and return
    `FallbackRequired { reason: FltReadyTimeout }`.
@@ -460,6 +464,7 @@ limits), and the ordered `events`. It requires the `alloc` feature.
 ### Interpreting the trace
 
 ```
+SourceTestConfigRead { flt_no_timeout: false }
 FltReady { after_polls: 3 }
 RateConfigured { rate: Rate12Gbps4Lanes, ffe_levels: 3 }
 LtpRequested { requests: [Lfsr0, Lfsr1, Lfsr2, Lfsr3] }
@@ -472,6 +477,7 @@ FrlStart { after_polls: 6 }
 A sink that asks for a lower rate, trained over `[Rate12Gbps4Lanes, Rate10Gbps4Lanes]`:
 
 ```
+SourceTestConfigRead { flt_no_timeout: false }
 FltReady { after_polls: 2 }
 RateConfigured { rate: Rate12Gbps4Lanes, ffe_levels: 3 }
 LtpRequested { requests: [RateChange, RateChange, RateChange, RateChange] }

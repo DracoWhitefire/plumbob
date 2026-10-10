@@ -150,6 +150,7 @@ fn trains_through_lts_2_3_and_p() {
         [
             // LTS:2
             SinkCall::ReadUpdateFlags(NO_FLAGS),
+            SinkCall::ReadSourceTestConfig(SourceTestConfig::default()),
             SinkCall::ReadFltReady(false),
             SinkCall::ReadFltReady(true),
             SinkCall::ClearUpdateFlags(flt_update),
@@ -966,6 +967,33 @@ fn flt_no_timeout_suspends_the_flt_ready_limit() {
 }
 
 #[test]
+fn flt_no_timeout_holds_for_every_attempt_while_it_is_set() {
+    // A tester sets FLT_no_timeout once and leaves it: Source_Test_Update is cleared by
+    // the first attempt, but the second must still see the setting.
+    let config = TrainingConfig {
+        flt_ready_polls: 2,
+        no_timeout_poll_cap: 5,
+        ..TrainingConfig::default()
+    };
+    let mut trainer = FrlTrainer::new(SimSink::new().source_test(NO_TIMEOUT), SimPhy::new());
+    for _ in 0..2 {
+        let trained = trainer.train(&[RATE], &config).unwrap();
+        assert_eq!(trained.outcome, fallback(FallbackReason::FltReadyTimeout));
+    }
+    let (sink, _) = trainer.into_parts();
+    let polls = count(&sink, |c| matches!(c, SinkCall::ReadFltReady(_)));
+    assert_eq!(
+        polls,
+        2 * 5,
+        "both attempts poll up to the cap, not the normal limit"
+    );
+    let clears = count(&sink, |c| {
+        *c == SinkCall::ClearUpdateFlags(SOURCE_TEST_UPDATE)
+    });
+    assert_eq!(clears, 1, "the flag is cleared only while it is set");
+}
+
+#[test]
 fn flt_no_timeout_is_capped() {
     let config = TrainingConfig {
         no_timeout_poll_cap: 3,
@@ -995,9 +1023,10 @@ fn flt_no_timeout_set_during_lts_3_suspends_its_limit() {
             achieved_rate: RATE
         }
     );
+    // Once at the start of LTS:2, once when the flag is raised in LTS:3.
     assert_eq!(
         count(&sink, |c| matches!(c, SinkCall::ReadSourceTestConfig(_))),
-        1
+        2
     );
 }
 
@@ -1317,8 +1346,13 @@ fn train_with_events_reports_each_event_as_it_occurs() {
         }
     );
     assert_eq!(
-        events.first(),
-        Some(&TrainingEvent::FltReady { after_polls: 1 })
+        events[..2],
+        [
+            TrainingEvent::SourceTestConfigRead {
+                flt_no_timeout: false
+            },
+            TrainingEvent::FltReady { after_polls: 1 },
+        ]
     );
     assert!(matches!(
         events.last(),
@@ -1402,6 +1436,9 @@ mod traced {
         assert_eq!(
             trace.events,
             [
+                TrainingEvent::SourceTestConfigRead {
+                    flt_no_timeout: false,
+                },
                 TrainingEvent::FltReady { after_polls: 3 },
                 TrainingEvent::RateConfigured {
                     rate: R12,
@@ -1435,6 +1472,9 @@ mod traced {
         assert_eq!(
             trace.events,
             [
+                TrainingEvent::SourceTestConfigRead {
+                    flt_no_timeout: false,
+                },
                 TrainingEvent::FltReady { after_polls: 2 },
                 TrainingEvent::RateConfigured {
                     rate: R12,
@@ -1713,6 +1753,9 @@ mod traced {
         assert_eq!(
             trace.events,
             [
+                TrainingEvent::SourceTestConfigRead {
+                    flt_no_timeout: false,
+                },
                 TrainingEvent::FltReady { after_polls: 3 },
                 TrainingEvent::RateConfigured {
                     rate: RATE,

@@ -197,6 +197,7 @@ let trained = trainer.train_with_events(&rates, &config, &mut |event| {
 A successful attempt, where the sink asks for one TxFFE raise on lane 1:
 
 ```
+SourceTestConfigRead { flt_no_timeout: false }
 FltReady { after_polls: 3 }
 RateConfigured { rate: Rate12Gbps4Lanes, ffe_levels: FfeLevels(3) }
 LtpRequested { requests: LtpRequests { lane0: Lfsr0, lane1: Lfsr1, lane2: Lfsr2, lane3: Lfsr3 } }
@@ -209,6 +210,7 @@ FrlStart { after_polls: 6 }
 A sink that asks for a lower rate, trained over `[Rate12Gbps4Lanes, Rate10Gbps4Lanes]`:
 
 ```
+SourceTestConfigRead { flt_no_timeout: false }
 FltReady { after_polls: 2 }
 RateConfigured { rate: Rate12Gbps4Lanes, ffe_levels: FfeLevels(3) }
 LtpRequested { requests: LtpRequests { lane0: RateChange, lane1: RateChange, lane2: RateChange, lane3: RateChange } }

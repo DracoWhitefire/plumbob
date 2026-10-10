@@ -79,7 +79,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   requests apply per lane, 0xE raises the lane's TxFFE level up to the advertised maximum
   and holds it there, and a Nyquist clock request is honoured only under `FLT_no_timeout`.
 - **`FLT_no_timeout` support** — when the sink sets it in `Source_Test_Configuration`, the
-  LTS:2 and LTS:3 poll limits are suspended, up to `no_timeout_poll_cap`.
+  LTS:2 and LTS:3 poll limits are suspended, up to `no_timeout_poll_cap`. The register is
+  read at the start of every attempt, so a setting left in place applies to retries and
+  retrains as well, not only to the attempt that saw `Source_Test_Update`.
 - **Retraining from LTS:P** — a `FLT_update` before `FRL_start` returns to LTS:3, up to
   `TrainingConfig::max_retrains` times per call (default 3); the next request ends the
   attempt with `RetrainsExhausted`, so training always terminates.

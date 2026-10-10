@@ -410,9 +410,11 @@ impl<Io: TrainingIo> Machine<'_, Io> {
         config: &TrainingConfig,
         record: &mut F,
     ) -> Result<State, Failure<Io>> {
-        if self.read_update_flags().await?.source_test_update {
-            self.read_source_test(attempt, record).await?;
-        }
+        // Read on every attempt, not only when `Source_Test_Update` says it changed: a
+        // tester sets `FLT_no_timeout` and leaves it set, and the flag was cleared by an
+        // earlier attempt. The Xilinx and AMD drivers read it unconditionally too.
+        let update = self.read_update_flags().await?.source_test_update;
+        self.read_source_test(attempt, update, record).await?;
 
         let limit = attempt.limit(config, config.flt_ready_polls);
         match self.poll_flt_ready(limit).await? {
@@ -467,7 +469,7 @@ impl<Io: TrainingIo> Machine<'_, Io> {
                 continue;
             }
             if flags.source_test_update {
-                self.read_source_test(attempt, record).await?;
+                self.read_source_test(attempt, true, record).await?;
             }
 
             let requests = self.io.read_ltp_requests().await.map_err(Fault::Scdc)?;
@@ -621,11 +623,12 @@ impl<Io: TrainingIo> Machine<'_, Io> {
         Ok(None)
     }
 
-    /// Reads `Source_Test_Configuration` into the attempt and clears
-    /// `Source_Test_Update`.
+    /// Reads `Source_Test_Configuration` into the attempt, and clears `Source_Test_Update`
+    /// if `update` says it is set.
     async fn read_source_test<F: FnMut(TrainingEvent)>(
         &mut self,
         attempt: &mut Attempt,
+        update: bool,
         record: &mut F,
     ) -> Result<(), Failure<Io>> {
         let source_test = self
@@ -637,7 +640,10 @@ impl<Io: TrainingIo> Machine<'_, Io> {
         record(TrainingEvent::SourceTestConfigRead {
             flt_no_timeout: source_test.flt_no_timeout,
         });
-        self.clear(SOURCE_TEST_UPDATE).await
+        if update {
+            self.clear(SOURCE_TEST_UPDATE).await?;
+        }
+        Ok(())
     }
 
     async fn read_update_flags(&mut self) -> Result<UpdateFlags, Failure<Io>> {
