@@ -588,8 +588,21 @@ machine reasons about.
 
 culvert independently defines its own register-layer types (`culvert::LtpReq`,
 `culvert::FfeLevels`, etc.) for its own purposes — they are the output of SCDC register
-decoding, not the input to a training state machine. The two sets of types happen to be
-structurally identical today but exist at different layers and can evolve independently.
+decoding, not the input to a training state machine.
+
+The two sets are not identical today. Two names differ by accident: the 0x4 request is
+`DdeCompliance` in plumbob and `RxDdeCompliance` in culvert, and `FrlConfig`'s rate is
+`rate` in plumbob and `frl_rate` in culvert. And plumbob's types leave out fields
+training does not use: its `UpdateFlags` has 3 of the 7 `Update_0` flags, its
+`SourceTestConfig` only `flt_no_timeout` of the 6 `Source_Test_Configuration` fields.
+
+The plan is to mirror them (see `roadmap.md`): the same names, and every field of the
+registers in plumbob's types as well, with the state machine still acting only on the
+fields it uses. Leaving fields out saves an `ScdcClient` nothing, since it reads the
+whole register anyway, and it hides from plumbob, and so from its trace, the compliance
+tester's other settings (`TxFFE_No_FFE`, `TxFFE_Pre_Shoot_Only`, `TxFFE_De_Emphasis_Only`,
+`FRL_Max`, `DSC_FRL_Max`). The types stay separate, so neither crate depends on the
+other, and the conversions become field-for-field copies.
 
 When culvert implements `ScdcClient` (via its `plumbob` cargo feature), each trait method
 calls one culvert method and converts culvert's type to plumbob's (`culvert::LtpRequests` →
