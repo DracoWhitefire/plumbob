@@ -41,7 +41,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `flt_ready_timeout`, `frl_start_timeout` and `ltp_timeout` (each 1000), plus
   `max_retrains` (3). The defaults reproduce the spec's 100 ms and 200 ms timeouts and the
   AMD and Intel drivers' 200 ms `FRL_start` wait at one poll every 2 ms; the values of
-  the `FLT_no_timeout` cap and the retrain count follow the AMD driver.
+  the `FLT_no_timeout` cap and the retrain count follow the AMD driver. `ffe_levels`
+  defaults to 3, as the AMD and Intel drivers advertise; set it to 0 for a PHY that
+  cannot apply TxFFE.
 - **`TrainingOutcome::FallbackRequired` carries a `reason`** (`FallbackReason`:
   `FltReadyTimeout`, `TrainingTimeout`, `FrlStartTimeout`, `RatesExhausted` or
   `RetrainsExhausted`), and every fallback leaves the sink and PHY in TMDS. LTS:L attempts

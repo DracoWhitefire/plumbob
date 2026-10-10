@@ -43,7 +43,8 @@ returns a `TrainingWarning` with the outcome.
 
 The highest TxFFE level index the source supports, written to `Config_1` bits 7:4: 0–3 for
 rates up to 12 Gbps, 0–7 above. During LTS:3 each lane's current level starts at 0, rises
-by one for each 0xE request and is held at this value once reached. The default is 0.
+by one for each 0xE request and is held at this value once reached. `FfeLevels::default()`
+is 0; `TrainingConfig`'s default advertises 3.
 
 ### `FrlConfig`
 
@@ -80,7 +81,7 @@ Per-attempt configuration, constructed via `Default` and overridden as needed:
 
 | Field | Default | Meaning |
 |---|---|---|
-| `ffe_levels` | `0` | Highest TxFFE level advertised in `Config_1` (limited per rate) |
+| `ffe_levels` | `3` | Highest TxFFE level advertised in `Config_1` (limited per rate); 0 for a PHY without TxFFE |
 | `flt_ready_polls` | `50` | Poll limit for `FLT_ready` in LTS:2 (100 ms at 2 ms/poll) |
 | `ltp_polls` | `100` | Poll limit for LTS:3 (200 ms at 2 ms/poll) |
 | `frl_start_polls` | `100` | Poll limit for `FRL_start` in LTS:P (200 ms at 2 ms/poll) |

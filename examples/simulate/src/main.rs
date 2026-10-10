@@ -9,8 +9,8 @@ use core::convert::Infallible;
 use display_types::cea861::hdmi_forum::HdmiForumFrl;
 use hdmi_hal::phy::{EqParams, FrlOutput, HdmiPhy, LaneEqParams, LanePatterns};
 use plumbob::{
-    CedCounters, FfeLevels, FrlConfig, FrlTrainer, LtpReq, LtpRequests, ScdcClient,
-    SourceTestConfig, TrainingConfig, UpdateFlags,
+    CedCounters, FrlConfig, FrlTrainer, LtpReq, LtpRequests, ScdcClient, SourceTestConfig,
+    TrainingConfig, UpdateFlags,
 };
 
 // --- SimSink ---------------------------------------------------------------------
@@ -175,8 +175,7 @@ fn main() {
         HdmiForumFrl::Rate12Gbps4Lanes,
         HdmiForumFrl::Rate10Gbps4Lanes,
     ];
-    let mut config = TrainingConfig::default();
-    config.ffe_levels = FfeLevels::new(3).expect("3 is a valid FFE level");
+    let config = TrainingConfig::default();
 
     println!("FRL training simulation — rates {rates:?}");
     println!();

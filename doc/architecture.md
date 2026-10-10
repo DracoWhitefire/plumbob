@@ -172,8 +172,8 @@ If training has not passed within the poll limit, go to LTS:L and return
      trainer it keeps.
    - **`flt_update`** — the sink requests retraining: go back to LTS:3, at most
      `TrainingConfig::max_retrains` times per `train` call. LTS:3 resumes from the state
-     LTS:P left: no pattern on any lane, the TxFFE levels as they were. The next request after that
-     goes to LTS:L and returns `FallbackRequired { reason: RetrainsExhausted }`.
+     LTS:P left: no pattern on any lane, the TxFFE levels as they were. The next request
+     after that goes to LTS:L and returns `FallbackRequired { reason: RetrainsExhausted }`.
 3. If neither arrives within the limit, go to LTS:L and return
    `FallbackRequired { reason: FrlStartTimeout }` — or, under `FLT_no_timeout`, hold the
    link (see below).
@@ -367,7 +367,7 @@ pub enum FallbackReason {
 #[non_exhaustive]
 #[derive(Clone, Copy)]
 pub struct TrainingConfig {
-    /// Highest TxFFE level the source supports, written to Config_1.
+    /// Highest TxFFE level the source supports, written to Config_1. Default 3.
     pub ffe_levels: FfeLevels,
     /// Poll limit for FLT_ready in LTS:2. Default 50 (100 ms at 2 ms per poll).
     pub flt_ready_polls: u32,
@@ -732,6 +732,10 @@ and recorded by `hdmi-hal-i2c-dev`'s `StubPhy`):
   limit, that the source does not leave FRL on its own timer under test. The Intel series
   does not handle `FLT_no_timeout`.
 - A lane's TxFFE level is raised up to the advertised maximum and held there.
+- `TrainingConfig::ffe_levels` defaults to 3, the number the AMD and Intel drivers
+  advertise (limited to the rate's maximum, which is 3 up to 12 Gbps). With 0, the sink
+  could request no TxFFE raises at all and plumbob would ignore every 0xE; a PHY that
+  cannot apply TxFFE sets it to 0 explicitly.
 - A Nyquist clock request (0x3) without `FLT_no_timeout` leaves the lane's previous pattern
   in place; plumbob tracks and sends the full per-lane set.
 - FRL output control (`set_frl_output`) is part of `HdmiPhy`.

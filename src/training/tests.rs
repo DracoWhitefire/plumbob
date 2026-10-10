@@ -97,7 +97,7 @@ fn count(sink: &SimSink, call: fn(&SinkCall) -> bool) -> usize {
 #[test]
 fn training_config_defaults() {
     let config = TrainingConfig::default();
-    assert_eq!(config.ffe_levels, FfeLevels::default());
+    assert_eq!(config.ffe_levels, FfeLevels::new(3).unwrap());
     assert_eq!(config.flt_ready_polls, 50);
     assert_eq!(config.ltp_polls, 100);
     assert_eq!(config.frl_start_polls, 100);
@@ -157,7 +157,7 @@ fn trains_through_lts_2_3_and_p() {
             SinkCall::WriteConfig0Defaults,
             SinkCall::WriteFrlConfig(FrlConfig {
                 rate: RATE,
-                ffe_levels: FfeLevels::default(),
+                ffe_levels: FfeLevels::new(3).unwrap(),
             }),
             // LTS:3
             SinkCall::ReadUpdateFlags(flt_update),
@@ -1525,13 +1525,6 @@ mod traced {
         (result.unwrap().outcome, trace)
     }
 
-    fn ffe_3() -> TrainingConfig {
-        TrainingConfig {
-            ffe_levels: FfeLevels::new(3).unwrap(),
-            ..TrainingConfig::default()
-        }
-    }
-
     /// The first example trace in the architecture doc.
     #[test]
     fn documented_trace_of_a_successful_attempt() {
@@ -1547,7 +1540,7 @@ mod traced {
             )
             .round(38, all(LtpReq::None))
             .frl_start_after(5);
-        let (outcome, trace) = trace(sink, &[R12], &ffe_3());
+        let (outcome, trace) = trace(sink, &[R12], &TrainingConfig::default());
         assert_eq!(outcome, TrainingOutcome::Success { achieved_rate: R12 });
         assert_eq!(
             trace.events,
@@ -1582,7 +1575,7 @@ mod traced {
             .round(5, all(LtpReq::Lfsr0))
             .round(5, all(LtpReq::None))
             .frl_start_after(3);
-        let (outcome, trace) = trace(sink, &[R12, R10], &ffe_3());
+        let (outcome, trace) = trace(sink, &[R12, R10], &TrainingConfig::default());
         assert_eq!(outcome, TrainingOutcome::Success { achieved_rate: R10 });
         let three = FfeLevels::new(3).unwrap();
         assert_eq!(
@@ -1806,7 +1799,7 @@ mod traced {
 
     #[test]
     fn the_trace_carries_the_rates_and_config() {
-        let config = ffe_3();
+        let config = TrainingConfig::default();
         let (_, trace) = trace(SimSink::new(), &[R12, R10], &config);
         assert_eq!(trace.rates, [R12, R10]);
         assert_eq!(trace.config, config);
@@ -1824,7 +1817,7 @@ mod traced {
                 .frl_start_after(1)
         };
         let rates = [RATE, HdmiForumFrl::Rate3Gbps3Lanes];
-        let config = ffe_3();
+        let config = TrainingConfig::default();
         let (_, trace) = trace(sink(), &rates, &config);
         let mut events = Vec::new();
         let _ = FrlTrainer::new(sink(), SimPhy::new()).train_with_events(
@@ -1894,7 +1887,7 @@ mod traced {
                 TrainingEvent::FltReady { after_polls: 3 },
                 TrainingEvent::RateConfigured {
                     rate: RATE,
-                    ffe_levels: FfeLevels::default()
+                    ffe_levels: FfeLevels::new(3).unwrap()
                 },
                 TrainingEvent::ExitedToTmds,
             ]
@@ -1904,9 +1897,10 @@ mod traced {
     #[test]
     fn training_trace_new_sets_fields() {
         let events = Vec::from([TrainingEvent::ExitedToTmds]);
-        let trace = TrainingTrace::new(Vec::from([RATE]), ffe_3(), events.clone());
+        let trace =
+            TrainingTrace::new(Vec::from([RATE]), TrainingConfig::default(), events.clone());
         assert_eq!(trace.rates, [RATE]);
-        assert_eq!(trace.config, ffe_3());
+        assert_eq!(trace.config, TrainingConfig::default());
         assert_eq!(trace.events, events);
     }
 }

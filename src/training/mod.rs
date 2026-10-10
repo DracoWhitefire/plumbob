@@ -133,6 +133,10 @@ pub struct ExitError<ScdcErr, PhyErr> {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TrainingConfig {
     /// Highest TxFFE level the source supports, written to `Config_1` (limited per rate).
+    /// Default 3, as the AMD and Intel drivers advertise: the sink can then request up to
+    /// three TxFFE raises per lane. Set it to 0 for a PHY that cannot apply TxFFE, so the
+    /// source does not advertise levels it cannot deliver; requests to raise a level are
+    /// then not acted on.
     pub ffe_levels: FfeLevels,
     /// Poll limit for `FLT_ready` in LTS:2. Default 50 (100 ms at 2 ms per poll).
     pub flt_ready_polls: u32,
@@ -165,7 +169,7 @@ pub struct TrainingConfig {
 impl Default for TrainingConfig {
     fn default() -> Self {
         Self {
-            ffe_levels: FfeLevels::default(),
+            ffe_levels: FfeLevels::new(3).expect("3 is a valid FFE level"),
             flt_ready_polls: 50,
             ltp_polls: 100,
             frl_start_polls: 100,
