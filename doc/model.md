@@ -134,7 +134,9 @@ These are distinct result types representing different failure modes:
   hard I/O failure from the SCDC client or PHY. Something failed at the transport level,
   unrelated to whether the link could have trained at this rate. `exit` is a `TmdsExit`:
   LTS:L ran afterwards and both ends are in TMDS (`Exited`); it ran and a step failed
-  (`Failed(ExitError)`); or it was turned off with `exit_to_tmds_on_error` (`Skipped`).
+  (`Failed(ExitError)`); it was turned off with `exit_to_tmds_on_error` (`Skipped`); or
+  the sink had set `FLT_no_timeout`, so the link is held for the test equipment
+  (`HeldUnderTest`).
   An `ExitError` has each end's first LTS:L error, `scdc` and `phy`, with `None` for an
   end that completed its steps and is in TMDS.
 - **`TrainingError::ExitFailed { reason, error }`** — the attempt fell back for `reason`,

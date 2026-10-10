@@ -66,7 +66,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   followed by LTS:L, returning both ends to TMDS as a fallback does, and the variants
   are struct variants carrying the outcome: `Scdc { error, exit }` and
   `Phy { error, exit }`, with `exit` a `TmdsExit` (`Exited`, `Failed(ExitError)` with
-  each end's LTS:L error, or `Skipped`). A fallback whose LTS:L fails returns the new
+  each end's LTS:L error, `Skipped`, or `HeldUnderTest` while the sink sets
+  `FLT_no_timeout`, since the test equipment is then in control). A fallback whose LTS:L fails returns the new
   `ExitFailed { reason, error }` instead of `FallbackRequired`. A rate list the
   procedure cannot run — `NotSupported`, or a rate not strictly lower than the one before
   it, since LTS:4 steps down — is rejected before any I/O with the new
@@ -149,7 +150,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Internal
 
 - **The training future has a size budget** — a test keeps the `lts::run` future
-  within 408 bytes without `alloc` (384 with it), and CI and the publish workflow now also
+  within 416 bytes without `alloc` (392 with it), and CI and the publish workflow now also
   run the tests with no features, so both budgets are checked.
 - **CI builds for a `no_std` target** — the `Build (no_std)` and `Build (alloc only)`
   steps now build for `thumbv7em-none-eabi`. They previously built for the host, where

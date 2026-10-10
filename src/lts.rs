@@ -9,6 +9,8 @@
 //! completes immediately, so `run` never waits. `plumbob-async` drives the same `run` over
 //! async I/O. Most users want `FrlTrainer`; this module is for writing such a driver.
 
+use core::cell::Cell;
+
 use display_types::cea861::hdmi_forum::HdmiForumFrl;
 use hdmi_hal::phy::{EqParams, FrlOutput, LaneEqParams, LanePatterns, LtpPattern, TxFfeLevel};
 
@@ -382,7 +384,13 @@ impl<Io: TrainingIo> Machine<'_, Io> {
         let mut trained = Trained::new(TrainingOutcome::FallbackRequired {
             reason: FallbackReason::RatesExhausted,
         });
+        // The sink's `FLT_no_timeout` as last read, as the states hold it: an error under
+        // test does not take the link out of FRL.
+        let under_test = Cell::new(false);
         let mut record = |event: TrainingEvent| {
+            if let TrainingEvent::SourceTestConfigRead { flt_no_timeout } = event {
+                under_test.set(flt_no_timeout);
+            }
             trained.observe(&event);
             record(event);
         };
@@ -395,13 +403,16 @@ impl<Io: TrainingIo> Machine<'_, Io> {
                 Err(error) => return Err(TrainingError::ExitFailed { reason, error }),
             },
             Err(fault) => {
-                let exit = if config.exit_to_tmds_on_error {
+                let exit = if !config.exit_to_tmds_on_error {
+                    TmdsExit::Skipped
+                } else if under_test.get() {
+                    // Under FLT_no_timeout the test equipment is in control, as with a hold.
+                    TmdsExit::HeldUnderTest
+                } else {
                     match self.exit_to_tmds(&mut record).await {
                         Ok(()) => TmdsExit::Exited,
                         Err(error) => TmdsExit::Failed(error),
                     }
-                } else {
-                    TmdsExit::Skipped
                 };
                 return Err(match fault {
                     Fault::Scdc(error) => TrainingError::Scdc { error, exit },

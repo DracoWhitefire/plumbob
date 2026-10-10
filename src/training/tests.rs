@@ -1476,6 +1476,66 @@ fn exit_to_tmds_on_error_off_leaves_both_ends_as_they_were() {
     assert_eq!(phy_rates(&phy), [RATE]);
 }
 
+#[test]
+fn an_error_under_flt_no_timeout_holds_the_link() {
+    // The test equipment is in control: one NACK in LTS:3 must not end the test by
+    // taking the link out of FRL.
+    let sink = SimSink::new()
+        .source_test(NO_TIMEOUT)
+        .flt_ready_after(0)
+        .round(0, all(LtpReq::Lfsr0))
+        .round(0, all(LtpReq::None))
+        .frl_start_after(0)
+        .fail_call(SinkOp::ReadLtpRequests, 1);
+    let mut trainer = FrlTrainer::new(sink, SimPhy::new());
+    let result = trainer.train(&[RATE], &TrainingConfig::default());
+    let exit = TmdsExit::HeldUnderTest;
+    assert_eq!(result, Err(TrainingError::Scdc { error: (), exit }));
+    let (sink, phy) = trainer.into_parts();
+    // No LTS:L: the rate stays configured on both ends.
+    assert_eq!(frl_configs(&sink), [RATE]);
+    assert_eq!(phy_rates(&phy), [RATE]);
+}
+
+#[test]
+fn opting_out_of_lts_l_reports_skipped_under_flt_no_timeout_too() {
+    let config = TrainingConfig {
+        exit_to_tmds_on_error: false,
+        ..TrainingConfig::default()
+    };
+    let sink = SimSink::new()
+        .source_test(NO_TIMEOUT)
+        .flt_ready_after(0)
+        .round(0, all(LtpReq::Lfsr0))
+        .fail_call(SinkOp::ReadLtpRequests, 1);
+    let mut trainer = FrlTrainer::new(sink, SimPhy::new());
+    let result = trainer.train(&[RATE], &config);
+    let exit = TmdsExit::Skipped;
+    assert_eq!(result, Err(TrainingError::Scdc { error: (), exit }));
+}
+
+#[test]
+fn an_error_after_flt_no_timeout_clears_exits_to_tmds() {
+    // The flag follows the last read: set at the start, cleared in LTS:3, then an error.
+    let config = TrainingConfig {
+        ltp_polls: 5,
+        ..TrainingConfig::default()
+    };
+    let sink = SimSink::new()
+        .source_test(NO_TIMEOUT)
+        .flt_ready_after(0)
+        .round_with_source_test(0, all(LtpReq::Lfsr0), SourceTestConfig::default())
+        .round(0, all(LtpReq::None))
+        .frl_start_after(0)
+        .fail_call(SinkOp::ReadLtpRequests, 2);
+    let mut trainer = FrlTrainer::new(sink, SimPhy::new());
+    let result = trainer.train(&[RATE], &config);
+    let exit = TmdsExit::Exited;
+    assert_eq!(result, Err(TrainingError::Scdc { error: (), exit }));
+    let (sink, phy) = trainer.into_parts();
+    assert_in_tmds(&sink, &phy);
+}
+
 // --- Accessors
 
 #[test]
@@ -2326,10 +2386,12 @@ mod traced {
 #[test]
 fn the_training_future_stays_within_its_size_budget() {
     // Without `alloc`, `Trained` carries its warnings inline (`MAX_WARNINGS` slots).
+    // Raised by 8 for the `FLT_no_timeout` tracking that holds the link after an error
+    // under test.
     #[cfg(feature = "alloc")]
-    const BUDGET: usize = 384;
+    const BUDGET: usize = 392;
     #[cfg(not(feature = "alloc"))]
-    const BUDGET: usize = 408;
+    const BUDGET: usize = 416;
     let (mut scdc, mut phy) = (SimSink::new(), SimPhy::new());
     let mut io = SyncIo {
         scdc: &mut scdc,

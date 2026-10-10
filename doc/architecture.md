@@ -264,10 +264,18 @@ failed (an end without one is in TMDS). If LTS:L fails after a fallback, `train`
 off, for callers that want the sink and PHY as the error left them — a validation tool
 reading the sink's registers, for example. The error then reports `TmdsExit::Skipped`.
 
+While the sink sets `FLT_no_timeout`, an error does not lead to LTS:L either: the test
+equipment is in control, and the source does not leave FRL on its own, as when the poll
+cap runs out (`NoTimeoutHold`, below). One NACK must not end a compliance run; the
+Xilinx driver retries a failed read on its next tick and never leaves. The error reports
+`TmdsExit::HeldUnderTest`, and the caller decides whether to call `exit_to_tmds`. The
+flag is the one last read, as for the poll limits: an error after the tester cleared it
+exits as usual.
+
 LTS:L is also available on its own, as `FrlTrainer::exit_to_tmds` (and
 `lts::exit_to_tmds` for other drivers): a link that trained has to come down again when
 the display is disabled or unplugged, or before a mode change, and a caller that turned
-`exit_to_tmds_on_error` off decides when to leave FRL. It can be called in any state and
+`exit_to_tmds_on_error` off, or whose link was held under test, decides when to leave FRL. It can be called in any state and
 returns `Result<(), ExitError>`.
 
 ---
@@ -454,6 +462,8 @@ pub enum TmdsExit<ScdcErr, PhyErr> {
     Exited,
     /// `TrainingConfig::exit_to_tmds_on_error` is off.
     Skipped,
+    /// The sink had set `FLT_no_timeout`: the link is held for the test equipment.
+    HeldUnderTest,
     Failed(ExitError<ScdcErr, PhyErr>),
 }
 
@@ -645,9 +655,9 @@ The full training state machine is available. `FrlTrainer<C, P>` is stack-alloca
 (`LtpReq`, `LtpRequests`, `FfeLevels`, `UpdateFlags`, `CedCounters`, …) are stack-allocated. No heap
 use anywhere in the training loop. This tier covers bare-metal and firmware targets.
 
-The training future is 408 bytes in this tier, and 384 with `alloc` (where `Trained`
+The training future is 416 bytes in this tier, and 392 with `alloc` (where `Trained`
 holds its warnings in a `Vec` rather than inline), measured over the sync driver's I/O
-with Rust 1.94; an `async` I/O implementation adds the size of its own futures. Where it
+with zero-sized error types and Rust 1.94 (larger error types add their size); an `async` I/O implementation adds the size of its own futures. Where it
 lives depends on the driver: `FrlTrainer` (sync) keeps it on the caller's stack for the
 duration of `train`, while under an async executor such as Embassy it is part of the
 task's future and so lives wherever the task is stored, typically in static memory. A

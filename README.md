@@ -110,6 +110,8 @@ kept distinct so a caller diagnosing a failure knows whether it came from the pr
 the bus. After an I/O error plumbob still returns both ends to TMDS, and the error's
 `exit` field (`TmdsExit`) says whether that worked; set
 `TrainingConfig::exit_to_tmds_on_error` to `false` to leave them as the error left them.
+While the sink sets `FLT_no_timeout` (compliance testing) an error leaves the link as it
+is too, for the test equipment (`TmdsExit::HeldUnderTest`).
 
 The rates must be FRL rates, each strictly lower than the one before it: LTS:4 steps
 down. Any other list is rejected with `TrainingError::InvalidRates` before anything is

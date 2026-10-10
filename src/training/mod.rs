@@ -67,8 +67,9 @@ pub enum TrainingOutcome {
 /// ([`InvalidRates`](Self::InvalidRates)) — not that the link simply did not train.
 ///
 /// After an SCDC or PHY error, plumbob performs LTS:L, returning both ends to TMDS as
-/// after a fallback, unless [`TrainingConfig::exit_to_tmds_on_error`] is off. `exit` says
-/// what happened. When LTS:L itself fails after a fallback, the error is
+/// after a fallback, unless [`TrainingConfig::exit_to_tmds_on_error`] is off or the sink
+/// had set `FLT_no_timeout` (the link is then held for the test equipment, as with
+/// [`TrainingOutcome::NoTimeoutHold`]). `exit` says what happened. When LTS:L itself fails after a fallback, the error is
 /// [`ExitFailed`](Self::ExitFailed).
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -119,6 +120,11 @@ pub enum TmdsExit<ScdcErr, PhyErr> {
     /// LTS:L was not run, because [`TrainingConfig::exit_to_tmds_on_error`] is off. Both
     /// ends are as the error left them.
     Skipped,
+    /// LTS:L was not run, because the sink had set `FLT_no_timeout`: under compliance
+    /// test the test equipment is in control, and the source does not leave FRL on its
+    /// own (as with [`TrainingOutcome::NoTimeoutHold`]). Both ends are as the error left
+    /// them; the caller decides whether to call `exit_to_tmds`.
+    HeldUnderTest,
     /// LTS:L ran and at least one step failed.
     Failed(ExitError<ScdcErr, PhyErr>),
 }
@@ -181,7 +187,8 @@ pub struct TrainingConfig {
     /// Whether an SCDC or PHY error is followed by LTS:L, returning both ends to TMDS as a
     /// fallback does. Default `true`. Turn it off to leave the sink and PHY as the error
     /// left them, for example to inspect the sink's registers; [`TrainingError`] then
-    /// reports [`TmdsExit::Skipped`].
+    /// reports [`TmdsExit::Skipped`]. While the sink sets `FLT_no_timeout` an error never
+    /// leads to LTS:L ([`TmdsExit::HeldUnderTest`]).
     pub exit_to_tmds_on_error: bool,
 }
 
@@ -246,8 +253,8 @@ impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
     /// off in `Config_1` and clears `FLT_update` if it is set.
     ///
     /// For taking an FRL link down outside [`train`](Self::train) — when the display is
-    /// disabled or unplugged, or before a mode change — and after an error with
-    /// [`TrainingConfig::exit_to_tmds_on_error`] off. Safe to call in any state, and
+    /// disabled or unplugged, or before a mode change — and after an error that did not
+    /// lead to LTS:L ([`TmdsExit::Skipped`], [`TmdsExit::HeldUnderTest`]). Safe to call in any state, and
     /// again. Every step is attempted even when one fails.
     pub fn exit_to_tmds(&mut self) -> Result<(), ExitError<C::Error, P::Error>> {
         let mut io = SyncIo {

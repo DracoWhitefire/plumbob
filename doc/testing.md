@@ -89,7 +89,8 @@ kept apart, and the five distinct warnings an attempt can produce fit without `a
   raise followed under it
 - After an error: a failed LTS:L reported per end (`TmdsExit::Failed`), the
   `ExitedToTmds` and `ExitToTmdsFailed` events, and `exit_to_tmds_on_error: false`
-  leaving both ends untouched (`TmdsExit::Skipped`)
+  leaving both ends untouched (`TmdsExit::Skipped`); under `FLT_no_timeout` an error
+  holding the link (`HeldUnderTest`), and exiting once the tester has cleared the flag
 - A fallback whose LTS:L fails returning `TrainingError::ExitFailed` with each end's error
 - `train_with_events` reporting each event as it occurs, without `alloc`
 - `exit_to_tmds` on demand: the LTS:L sequence, taking down a link an error left in FRL,
@@ -119,8 +120,8 @@ synchronously. One more test checks the driver's guard by running `block_on` ove
 future that waits once — impossible over the sync adapter — with the trainer's own output
 type: it panics rather than dropping the attempt.
 
-A size test keeps the training future within a budget (408 bytes without `alloc`, 384
-with it), so a change that grows it fails until the budget is raised on purpose. CI runs
+A size test keeps the training future within a budget (416 bytes without `alloc`, 392
+with it, over the simulator's zero-sized error types), so a change that grows it fails until the budget is raised on purpose. CI runs
 the tests with the `std` feature and again with no features, so both budgets are
 checked.
 
