@@ -54,7 +54,9 @@ kept apart, and the five distinct warnings an attempt can produce fit without `a
   poll
 - LTS:3's per-lane rules: a pattern per lane, 0x0 keeping a lane's pattern, 0x3 driven
   only under `FLT_no_timeout`, 0xE raising and holding a lane's TxFFE level, a partial
-  0xF, lane 3 ignored at the 3-lane rates, and undefined values (`Reserved`) leaving a
+  0xF, lane 3 ignored at the 3-lane rates (a pattern, 0xE or an undefined value on it
+  changes nothing), both 3-lane rates driving three lanes, and undefined values
+  (`Reserved`) leaving a
   lane as it was without counting as a pass or a rate change
 - `FLT_no_timeout` suspending the limits (from LTS:2 or LTS:3) up to its cap, holding for
   every attempt while it stays set, and the cap ending LTS:2, LTS:3 or LTS:P with
@@ -62,7 +64,8 @@ kept apart, and the five distinct warnings an attempt can produce fit without `a
 - `FRL_start` and `FLT_update` set together in LTS:P: the retrain wins, within
   `max_retrains`
 - Retraining from LTS:P: resuming LTS:3 with no pattern on any lane and the TxFFE levels
-  kept, bounded by `max_retrains` (including 0), counted across a rate drop, and still
+  kept — no reset sent, and plumbob's own model holding them, so a further 0xE after the
+  retrain raises a lane from its level, not from 0 — bounded by `max_retrains` (including 0), counted across a rate drop, and still
   falling back when exhausted under `FLT_no_timeout`
 - Warnings: undefined requests returned as `TrainingWarning`s, merged per lane with a
   count, on a success and on a fallback, and none for a clean attempt
@@ -84,7 +87,8 @@ kept apart, and the five distinct warnings an attempt can produce fit without `a
   with I/O of its own needs a scenario that takes it; mutation testing (swallowing each
   error in turn) shows the three reach every one
 - The step order across sink and PHY in LTS:2 (rate, then TxFFE reset), LTS:3 (the
-  requested pattern and level reach the PHY before `FLT_update` is cleared) and LTS:4
+  requested pattern and level reach the PHY before `FLT_update` is cleared), LTS:P (the
+  patterns stopped and gap characters sent before `FLT_update` is cleared) and LTS:4
   (patterns stopped, then LTS:2's end at the new rate: `FLT_update` cleared, rate, TxFFE
   reset, patterns and gap characters restored, `Config_0`, `Config_1`), from a log of both
   in order

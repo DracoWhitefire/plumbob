@@ -425,6 +425,52 @@ fn ffe_change_raises_the_lane_level_and_holds_it_at_the_maximum() {
 }
 
 #[test]
+fn three_lane_rates_ignore_a_lane_3_ffe_change() {
+    // A TxFFE request on lane 3 at a 3-lane rate changes no level: the lane is not in use.
+    let rate = HdmiForumFrl::Rate6Gbps3Lanes;
+    let sink = SimSink::new()
+        .flt_ready_after(0)
+        .round(
+            0,
+            requests(
+                LtpReq::Lfsr1,
+                LtpReq::Lfsr1,
+                LtpReq::Lfsr1,
+                LtpReq::FfeChange,
+            ),
+        )
+        .round(0, all(LtpReq::None))
+        .frl_start_after(0);
+    let (outcome, _, phy) = run(sink, &[rate], &TrainingConfig::default());
+    assert_eq!(
+        outcome,
+        TrainingOutcome::Success {
+            achieved_rate: rate
+        }
+    );
+    // No equalization after LTS:2's reset.
+    assert_eq!(levels_sent(&phy), Vec::<[u8; 4]>::new());
+}
+
+#[test]
+fn a_3_gbps_3_lane_rate_drives_three_lanes() {
+    let rate = HdmiForumFrl::Rate3Gbps3Lanes;
+    let sink = SimSink::new()
+        .flt_ready_after(0)
+        .round(0, all(LtpReq::Lfsr2))
+        .round(0, all(LtpReq::None))
+        .frl_start_after(0);
+    let (outcome, _, phy) = run(sink, &[rate], &TrainingConfig::default());
+    assert_eq!(
+        outcome,
+        TrainingOutcome::Success {
+            achieved_rate: rate
+        }
+    );
+    assert_eq!(ltp_sent(&phy)[0], uniform(3, Some(LtpPattern::Lfsr2)));
+}
+
+#[test]
 fn three_lane_rates_ignore_lane_3() {
     let rate = HdmiForumFrl::Rate6Gbps3Lanes;
     let sink = SimSink::new()
@@ -1247,6 +1293,34 @@ fn a_retrain_starts_lts_3_from_no_pattern_and_keeps_the_levels() {
     assert_eq!(levels_sent(&phy), [[0, 1, 0, 0]]);
 }
 
+#[test]
+fn a_retrain_keeps_the_levels_in_the_lane_model() {
+    // Not only is no reset sent: plumbob's own model keeps the level, so a further raise
+    // after the retrain takes lane 1 from 1 to 2, as the PHY holds it.
+    let config = TrainingConfig {
+        ffe_levels: FfeLevels::new(3).unwrap(),
+        ..TrainingConfig::default()
+    };
+    let raise_lane_1 = requests(LtpReq::None, LtpReq::FfeChange, LtpReq::None, LtpReq::None);
+    let sink = SimSink::new()
+        .flt_ready_after(0)
+        .round(0, all(LtpReq::Lfsr0))
+        .round(0, raise_lane_1)
+        .round(0, all(LtpReq::None))
+        // The retrain asks lane 1 for a further raise.
+        .round(1, raise_lane_1)
+        .round(0, all(LtpReq::None))
+        .frl_start_after(0);
+    let (outcome, _, phy) = run(sink, &[RATE], &config);
+    assert_eq!(
+        outcome,
+        TrainingOutcome::Success {
+            achieved_rate: RATE
+        }
+    );
+    assert_eq!(levels_sent(&phy), [[0, 1, 0, 0], [0, 2, 0, 0]]);
+}
+
 /// A sink that passes LTS:3, then sets FRL_start and FLT_update together in LTS:P (with
 /// a request for `Lfsr1`), then passes again and starts.
 fn both_flags_sink() -> SimSink {
@@ -1741,6 +1815,29 @@ fn lts_2_sets_the_rate_then_resets_the_levels() {
             Call::Phy(PhyCall::SetFrlOutput(FrlOutput::GapOnly)),
             Call::Sink(SinkCall::WriteConfig0Defaults),
             config_1(R12),
+        ]
+    );
+}
+
+#[test]
+fn lts_p_stops_the_patterns_before_clearing_flt_update() {
+    // The sink must not post a retrain request while it still sees LTS:3's patterns.
+    let sink = SimSink::new()
+        .flt_ready_after(0)
+        .round(0, all(LtpReq::Lfsr0))
+        .round(0, all(LtpReq::None))
+        .frl_start_after(0);
+    let (_, log) = logged(sink, &[R12]);
+    assert_eq!(
+        calls_after(
+            &log,
+            Call::Sink(SinkCall::ReadLtpRequests(all(LtpReq::None))),
+            3
+        ),
+        [
+            Call::Phy(PhyCall::SendLtp(LanePatterns::default())),
+            Call::Phy(PhyCall::SetFrlOutput(FrlOutput::GapOnly)),
+            Call::Sink(SinkCall::ClearUpdateFlags(FLT_UPDATE)),
         ]
     );
 }
