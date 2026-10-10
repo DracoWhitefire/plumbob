@@ -525,6 +525,34 @@ fn undefined_requests_are_returned_as_warnings() {
 }
 
 #[test]
+fn an_undefined_value_on_the_passing_round_is_reported() {
+    // The round that passes the three lanes in use still has lane 3's value looked at.
+    let rate = HdmiForumFrl::Rate6Gbps3Lanes;
+    let sink = SimSink::new()
+        .flt_ready_after(0)
+        .round(
+            0,
+            requests(
+                LtpReq::None,
+                LtpReq::None,
+                LtpReq::None,
+                LtpReq::Reserved(0xD),
+            ),
+        )
+        .frl_start_after(0);
+    let trained = FrlTrainer::new(sink, SimPhy::new())
+        .train(&[rate], &TrainingConfig::default())
+        .unwrap();
+    let warning = TrainingWarning::UndefinedLtpRequest {
+        lane: 3,
+        value: 0xD,
+        count: 1,
+        in_use: false,
+    };
+    assert!(trained.iter_warnings().eq([warning].iter()));
+}
+
+#[test]
 fn a_fallback_carries_its_warnings() {
     let config = TrainingConfig {
         ltp_polls: 2,

@@ -197,13 +197,9 @@ impl Lanes {
             let in_use = lane < self.count;
             match request {
                 // An undefined value is ignored, as the Xilinx and Intel drivers do: a
-                // lane in use keeps its pattern and level. It is recorded on every lane.
-                LtpReq::Reserved(value) => record(TrainingEvent::UndefinedLtpRequest {
-                    lane: lane as u8,
-                    value,
-                    in_use,
-                }),
-                // Lane 3 at a 3-lane rate is not in use.
+                // lane in use keeps its pattern and level (see `record_undefined`). Lane 3
+                // at a 3-lane rate is not in use.
+                LtpReq::Reserved(_) => {}
                 _ if !in_use => {}
                 // Without FLT_no_timeout the lane keeps its previous pattern, as the
                 // Xilinx driver does (spec Table 6-32, LTP3 row).
@@ -229,6 +225,27 @@ impl Lanes {
             }
         }
         ffe_changed
+    }
+
+    /// Records each undefined request (0x9–0xD), on every lane, in use or not, whatever
+    /// the round leads to.
+    fn record_undefined<F: FnMut(TrainingEvent)>(&self, requests: LtpRequests, record: &mut F) {
+        let requests = [
+            requests.lane0,
+            requests.lane1,
+            requests.lane2,
+            requests.lane3,
+        ];
+        for (lane, request) in requests.into_iter().enumerate() {
+            if let LtpReq::Reserved(value) = request {
+                record(TrainingEvent::UndefinedLtpRequest {
+                    // At most 4 lanes: fits in a u8.
+                    lane: lane as u8,
+                    value,
+                    in_use: lane < self.count,
+                });
+            }
+        }
     }
 
     /// Whether every lane in use made the given request.
@@ -454,11 +471,15 @@ impl<Io: TrainingIo> Machine<'_, Io> {
             }
 
             let requests = self.io.read_ltp_requests().await.map_err(Fault::Scdc)?;
-            if attempt.lanes.all(requests, LtpReq::None) {
+            let passed = attempt.lanes.all(requests, LtpReq::None);
+            if !passed {
+                record(TrainingEvent::LtpRequested { requests });
+            }
+            attempt.lanes.record_undefined(requests, record);
+            if passed {
                 record(TrainingEvent::TrainingPassed { after_polls: polls });
                 return Ok(State::Pass);
             }
-            record(TrainingEvent::LtpRequested { requests });
             if attempt.lanes.all(requests, LtpReq::RateChange) {
                 return Ok(State::LowerRate);
             }
