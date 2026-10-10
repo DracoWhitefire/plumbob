@@ -174,6 +174,10 @@ LTS:2, LTS:3 and LTS:P limits are replaced by `TrainingConfig::no_timeout_poll_c
 without leaving FRL — the test equipment is in control, and the caller decides what
 comes next. Retraining from LTS:P is bounded by `TrainingConfig::max_retrains`
 (default 3); the next request after that ends the attempt with `RetrainsExhausted`.
+Every state is bounded, so `train` always returns: with the defaults, one call polls at
+most 850–1350 times (≈ 1.7–2.7 s at 2 ms per poll, for 1–6 rates), or 4500–7000 times
+(≈ 9–14 s) while the sink sets `FLT_no_timeout`. `doc/architecture.md` gives the formula.
+The polled methods must actually wait the interval, or every limit shrinks in proportion.
 
 See [`doc/architecture.md`](doc/architecture.md) for the procedure step by step.
 

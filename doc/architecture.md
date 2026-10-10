@@ -739,6 +739,65 @@ and recorded by `hdmi-hal-i2c-dev`'s `StubPhy`):
 - **Block reads on `ScdcTransport`.** `read_block` lets an SCDC implementation read
   `Status_Flags_1/2` (and the CED block) in one transaction when its transport can.
 
+## How long one `train` call can take
+
+Every state polls a bounded number of times, so `train` always returns. The bound, in
+polls (reads of `FLT_ready` or `Update_0`), is:
+
+```text
+flt_ready_polls                               LTS:2, once per call
++ (n_rates + max_retrains) × ltp_polls        LTS:3: the first rate, each step down
+                                              (at most n_rates − 1), each retrain
++ (max_retrains + 1) × frl_start_polls        LTS:P: the first pass and each retrain
+```
+
+While the sink sets `FLT_no_timeout`, each of the three limits is `no_timeout_poll_cap`
+instead. Each LTS:3 and LTS:P entry gets a fresh limit, and `n_rates` is at most six (a
+valid list is strictly descending FRL rates), so the bound is finite for every list
+`train` accepts. With the defaults, at one poll every 2 ms:
+
+| | 1 rate | 6 rates |
+|---|---|---|
+| Normal limits (50 / 100 / 100, 3 retrains) | 850 polls, ≈ 1.7 s | 1350 polls, ≈ 2.7 s |
+| `FLT_no_timeout` throughout (cap 500) | 4500 polls, ≈ 9 s | 7000 polls, ≈ 14 s |
+
+These are worst cases: a sink that answers late in every state, steps down through the
+whole list and retrains as often as allowed. The SCDC and PHY operations between polls
+add to the wall-clock time; how long a poll lasts is the `ScdcClient` implementation's,
+since plumbob counts polls, not time.
+
+Two consequences for implementers:
+
+- **The polled methods must actually wait.** If `read_flt_ready` and `read_update_flags`
+  return at bus speed instead of waiting the poll interval, every limit shrinks in
+  proportion: 100 polls of I²C reads last a few milliseconds, not 200 ms, and training
+  times out early.
+- **Async: an operation that never waits never yields.** `plumbob-async` runs the state
+  machine with `.await` on each operation; an `ScdcClient` whose futures are always ready
+  (a blocking bus wrapped in `async fn`, say, with no timer) keeps the executor for the
+  whole call. Awaiting the poll interval is what lets other tasks run.
+
+How a caller keeps a call shorter than the worst case:
+
+- **Lower the limits.** All five are `TrainingConfig` fields. `max_retrains: 0` alone
+  removes the retrain terms: `flt_ready_polls + n_rates × ltp_polls + frl_start_polls`.
+  A lower `no_timeout_poll_cap` ends a compliance test sooner, in `NoTimeoutHold`.
+- **Pass fewer rates.** Each rate after the first can add an LTS:3 pass.
+- **Set the poll interval.** It is the `ScdcClient` implementation's, so the wall-clock
+  time per poll is the implementer's to choose.
+- **Async: cancel.** Drop the `train` future (after a `select!` or `timeout`) and call
+  `exit_to_tmds()`; see plumbob-async's "Cancellation".
+- **Sync: a wall-clock deadline has no direct support.** The limits are counts, and the
+  `train_with_events` callback observes but cannot stop training. A deadline can be built
+  into the `ScdcClient`: once it has passed, the polled methods return an error, plumbob
+  stops and runs LTS:L, and `train` returns `TrainingError::Scdc { error, exit }`. Two
+  caveats: the client must still let LTS:L's own SCDC calls through (`write_frl_config`,
+  `read_update_flags`, `clear_update_flags`), or the exit fails and `exit` is
+  `TmdsExit::Failed`; and the deadline is reported as an SCDC error, so the caller tells
+  it apart by its own error value. Built-in deadline support is in the stack's ideadump.
+
+---
+
 ## Decisions
 
 - The sink's rate-drop request is handled inside `train` (LTS:4) over the caller's rate

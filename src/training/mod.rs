@@ -143,6 +143,11 @@ pub struct ExitError<ScdcErr, PhyErr> {
 /// Construct via [`TrainingConfig::default`] and override fields as needed. Poll limits
 /// are exact counts: N means exactly N polls before the state gives up. The defaults
 /// assume one poll every 2 ms.
+///
+/// One `train` call makes at most `flt_ready_polls + (n_rates + max_retrains) × ltp_polls
+/// + (max_retrains + 1) × frl_start_polls` polls, each limit replaced by
+/// `no_timeout_poll_cap` while the sink sets `FLT_no_timeout`: 850 to 1350 polls with the
+/// defaults for one to six rates, 4500 to 7000 under `FLT_no_timeout`.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct TrainingConfig {
