@@ -35,7 +35,7 @@ plumbob covers:
 - `TrainingOutcome`: the result of a training attempt (`Success`, or `FallbackRequired`
   with a `FallbackReason`),
 - `TrainingConfig`: per-attempt configuration (maximum FFE level, poll limits),
-- `TrainingError`: hard failures (transport or protocol errors),
+- `TrainingError`: hard SCDC or PHY failures, with what LTS:L did afterwards (`TmdsExit`),
 - owned protocol types: `LtpReq`, `LtpRequests`, `FfeLevels`, `FrlConfig`,
   `UpdateFlags`, `SourceTestConfig`, `CedCounters`,
 - simulation support: the training procedure is fully exercisable without real hardware
@@ -182,7 +182,19 @@ the training patterns, returns the PHY to TMDS (`set_frl_rate(NotSupported)`), w
 `Config_1` with `HdmiForumFrl::NotSupported` (FRL off) and clears `FLT_update` if it is
 set. A failed attempt never leaves the sink configured for an FRL rate the source is not
 driving. Every step is attempted even if an earlier one fails, so a PHY error cannot keep
-the sink in FRL, nor an SCDC error the PHY; the first error is returned.
+the sink in FRL, nor an SCDC error the PHY.
+
+LTS:L also follows an SCDC or PHY error, wherever it happens: the spec's exit from a
+failed attempt applies whatever made it fail. The error is returned as
+`TrainingError::Scdc` or `TrainingError::Phy`, with `exit: TmdsExit` saying what LTS:L
+did — `Exited`, or `Failed` with the first error of each end whose steps failed (an end
+without one is in TMDS). If LTS:L fails after a fallback, `train` returns
+`TrainingError::ExitFailed` with the fallback reason and each end's error instead of
+`FallbackRequired`. The trace records `ExitedToTmds` or `ExitToTmdsFailed`.
+
+`TrainingConfig::exit_to_tmds_on_error` (default `true`) turns the exit after an error
+off, for callers that want the sink and PHY as the error left them — a validation tool
+reading the sink's registers, for example. The error then reports `TmdsExit::Skipped`.
 
 ---
 
@@ -302,6 +314,8 @@ pub struct TrainingConfig {
     pub no_timeout_poll_cap: u32,
     /// Returns from LTS:P to LTS:3 allowed per train call. Default 3.
     pub max_retrains: u32,
+    /// Whether an SCDC or PHY error is followed by LTS:L. Default true.
+    pub exit_to_tmds_on_error: bool,
 }
 ```
 
@@ -322,7 +336,23 @@ impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
 }
 
 /// A hard I/O failure, kept separate from the protocol outcome.
-pub enum TrainingError<ScdcErr, PhyErr> { Scdc(ScdcErr), Phy(PhyErr) }
+#[non_exhaustive]
+pub enum TrainingError<ScdcErr, PhyErr> {
+    Scdc { error: ScdcErr, exit: TmdsExit<ScdcErr, PhyErr> },
+    Phy { error: PhyErr, exit: TmdsExit<ScdcErr, PhyErr> },
+    /// The attempt fell back, and LTS:L then failed.
+    ExitFailed { reason: FallbackReason, scdc: Option<ScdcErr>, phy: Option<PhyErr> },
+}
+
+/// What LTS:L did after an SCDC or PHY error.
+#[non_exhaustive]
+pub enum TmdsExit<ScdcErr, PhyErr> {
+    Exited,
+    /// `TrainingConfig::exit_to_tmds_on_error` is off.
+    Skipped,
+    /// Each end's first error; an end with `None` is in TMDS.
+    Failed { scdc: Option<ScdcErr>, phy: Option<PhyErr> },
+}
 ```
 
 ---
@@ -367,6 +397,8 @@ pub enum TrainingEvent {
     FrlStartTimeout { polls: u32 },
     /// LTS:L: the sink was returned to TMDS.
     ExitedToTmds,
+    /// LTS:L: a step failed on the SCDC side, the PHY side, or both.
+    ExitToTmdsFailed { scdc: bool, phy: bool },
 }
 ```
 
@@ -404,7 +436,8 @@ A timeout in LTS:2 means the sink did not prepare at this rate; one in LTS:3 mea
 did not converge (signal integrity or equalization); one in LTS:P means training passed but
 the sink never released the link. `RateLowered` means the sink itself judged a rate
 unattainable, and `RatesExhausted` that it judged every listed rate unattainable. Every
-`FallbackRequired` trace ends with `ExitedToTmds`.
+`FallbackRequired` trace ends with `ExitedToTmds`; a trace ending with `ExitToTmdsFailed`
+belongs to a `TrainingError`.
 
 ---
 
@@ -549,8 +582,9 @@ are single-threaded executors and the sync driver.
   procedure reaches both.
 - **State machine, not scattered logic.** The link training states are an explicit
   sequence. State transitions are clear, terminal states are explicit, and every exit
-  point produces a typed result and leaves the sink in a defined state. No implicit
-  control flow, no silent completion.
+  point produces a typed result and leaves the sink in a defined state: TMDS after a
+  fallback or an error, or, when LTS:L itself fails, an error saying which end did not
+  get there. No implicit control flow, no silent completion.
 - **Policy at the right layer.** plumbob implements the spec, not strategy. Which rates to
   try and in what order, retries beyond one call, and the decision of whether to surface
   a `FallbackRequired` to the user are the caller's concerns. Stepping down on the sink's

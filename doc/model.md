@@ -82,6 +82,7 @@ Per-attempt configuration, constructed via `Default` and overridden as needed:
 | `frl_start_polls` | `100` | Poll limit for `FRL_start` in LTS:P (200 ms at 2 ms/poll) |
 | `no_timeout_poll_cap` | `500` | Hard cap on polls while the sink sets `FLT_no_timeout` (1 s) |
 | `max_retrains` | `3` | Returns from LTS:P to LTS:3 allowed per `train` call |
+| `exit_to_tmds_on_error` | `true` | Whether an SCDC or PHY error is followed by LTS:L |
 
 Poll limits are exact counts: N means exactly N polls before the state gives up. The
 defaults reproduce the spec's 100 ms and 200 ms timeouts (and the AMD and Intel drivers'
@@ -101,13 +102,19 @@ These are distinct result types representing different failure modes:
   (the sink kept requesting retraining past `max_retrains`). `FallbackReason` is
   `#[non_exhaustive]`. A sink's request for a lower rate within the list is not an
   outcome: `train` steps down (LTS:4) and continues.
-- **`TrainingError::Scdc(e)` / `TrainingError::Phy(e)`** — a hard I/O failure from the
-  SCDC client or PHY. Something failed at the transport level, unrelated to whether the
-  link could have trained at this rate.
+- **`TrainingError::Scdc { error, exit }` / `TrainingError::Phy { error, exit }`** — a
+  hard I/O failure from the SCDC client or PHY. Something failed at the transport level,
+  unrelated to whether the link could have trained at this rate. `exit` is a `TmdsExit`:
+  LTS:L ran afterwards and both ends are in TMDS (`Exited`); it ran and a step failed
+  (`Failed { scdc, phy }`, each end's first error, `None` for an end that is in TMDS); or
+  it was turned off with `exit_to_tmds_on_error` (`Skipped`).
+- **`TrainingError::ExitFailed { reason, scdc, phy }`** — the attempt fell back for
+  `reason`, and LTS:L then failed; `scdc` and `phy` as in `TmdsExit::Failed`.
 
 `FallbackRequired` always leaves the sink in TMDS (LTS:L). This distinction matters for
 diagnostics: an outcome chain ending in TMDS is expected on marginal hardware; a
-`TrainingError` means the bus or PHY needs attention.
+`TrainingError` means the bus or PHY needs attention. `TrainingError` and `TmdsExit` are
+`#[non_exhaustive]`.
 
 ---
 

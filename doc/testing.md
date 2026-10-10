@@ -54,7 +54,11 @@ The sim has its own tests, so it is fully covered before the state machine uses 
   ending in TMDS, and every step attempted when one of them fails, with the first error
   returned
 - `TrainingError::Scdc` and `TrainingError::Phy` propagating from every SCDC and PHY
-  operation the state machine uses
+  operation the state machine uses, with LTS:L afterwards leaving both ends in TMDS
+- After an error: a failed LTS:L reported per end (`TmdsExit::Failed`), the
+  `ExitedToTmds` and `ExitToTmdsFailed` events, and `exit_to_tmds_on_error: false`
+  leaving both ends untouched (`TmdsExit::Skipped`)
+- A fallback whose LTS:L fails returning `TrainingError::ExitFailed` with each end's error
 
 ### Trace tests (requires `alloc` feature)
 

@@ -94,7 +94,9 @@ For a complete worked example with simulated SCDC and PHY backends, see
 no listed rate trained, with a `FallbackReason`; it always leaves the sink and PHY in
 TMDS. `TrainingError` means a hard I/O failure from the SCDC client or PHY. The two are
 kept distinct so a caller diagnosing a failure knows whether it came from the protocol or
-the bus.
+the bus. After an I/O error plumbob still returns both ends to TMDS, and the error's
+`exit` field (`TmdsExit`) says whether that worked; set
+`TrainingConfig::exit_to_tmds_on_error` to `false` to leave them as the error left them.
 
 ```mermaid
 flowchart TD
@@ -194,7 +196,8 @@ Poll counts include the poll that saw the event, so they read directly against t
 limits in `trace.config`. A timeout in LTS:2 means the sink did not prepare at this rate;
 one in LTS:3 means lanes did not converge (signal integrity or equalization); one in
 LTS:P means training passed but the sink never released the link. Every
-`FallbackRequired` trace ends with `ExitedToTmds`.
+`FallbackRequired` trace ends with `ExitedToTmds`; if LTS:L fails, the trace ends with
+`ExitToTmdsFailed` and `train` returns `TrainingError::ExitFailed`.
 
 ## Async and custom drivers
 

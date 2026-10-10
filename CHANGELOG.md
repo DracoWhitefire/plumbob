@@ -47,6 +47,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `SourceTestConfigRead`). They replace `FltReadyReceived`, `FrlStartReceived`,
   `LtpPatternRequested`, `AllLanesSatisfied` and `LtpLoopTimeout`, and the timeout events
   count `polls` instead of `iterations_elapsed`.
+- **`TrainingError` reports what happened to the link.** An SCDC or PHY error is now
+  followed by LTS:L, returning both ends to TMDS as a fallback does, and the variants
+  are struct variants carrying the outcome: `Scdc { error, exit }` and
+  `Phy { error, exit }`, with `exit` a `TmdsExit` (`Exited`, `Failed { scdc, phy }` with
+  each end's LTS:L error, or `Skipped`). A fallback whose LTS:L fails returns the new
+  `ExitFailed { reason, scdc, phy }` instead of `FallbackRequired`. `TrainingError` is
+  now `#[non_exhaustive]`.
 - **`TrainingTrace` records the list of rates**: its `rate` field is replaced by
   `rates: Vec<HdmiForumFrl>`, and `TrainingTrace::new` takes the rates instead of a
   single rate.
@@ -73,6 +80,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   callback; only `TrainingTrace` and the traced methods need `alloc`. It now derives
   `Copy`.
 - `LtpReq` is `#[repr(u8)]`, so its values are the request nibbles.
+- **`TrainingConfig::exit_to_tmds_on_error`** (default `true`) — turn the LTS:L after an
+  error off to leave the sink and PHY as the error left them (`TmdsExit::Skipped`).
+- `TmdsExit` and `TrainingEvent::ExitToTmdsFailed { scdc, phy }`, recording which ends'
+  LTS:L steps failed.
 - `LtpRequests`, `UpdateFlags` and `SourceTestConfig` — the per-lane requests, the
   `Update_0` flags and the `Source_Test_Configuration` field the state machine uses.
 

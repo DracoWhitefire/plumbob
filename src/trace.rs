@@ -91,6 +91,14 @@ pub enum TrainingEvent {
     },
     /// LTS:L: the sink and PHY were returned to TMDS.
     ExitedToTmds,
+    /// LTS:L: a step failed. Every step was attempted; an end whose steps all succeeded
+    /// is in TMDS.
+    ExitToTmdsFailed {
+        /// An SCDC step (`Config_1`, `FLT_update`) failed.
+        scdc: bool,
+        /// A PHY step (patterns, rate) failed.
+        phy: bool,
+    },
 }
 
 /// The full record of a training attempt: the rates passed in, the configuration in

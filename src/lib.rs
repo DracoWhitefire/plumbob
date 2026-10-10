@@ -28,7 +28,9 @@ mod training;
 mod types;
 
 pub use scdc::ScdcClient;
-pub use training::{FallbackReason, FrlTrainer, TrainingConfig, TrainingError, TrainingOutcome};
+pub use training::{
+    FallbackReason, FrlTrainer, TmdsExit, TrainingConfig, TrainingError, TrainingOutcome,
+};
 pub use types::{
     CedCount, CedCounters, FfeLevels, FrlConfig, LtpReq, LtpRequests, SourceTestConfig, UpdateFlags,
 };

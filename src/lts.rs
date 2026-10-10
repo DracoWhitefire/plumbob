@@ -13,7 +13,7 @@ use display_types::cea861::hdmi_forum::HdmiForumFrl;
 use hdmi_hal::phy::{EqParams, FrlOutput, LaneEqParams, LanePatterns, LtpPattern, TxFfeLevel};
 
 use crate::trace::TrainingEvent;
-use crate::training::{FallbackReason, TrainingConfig, TrainingError, TrainingOutcome};
+use crate::training::{FallbackReason, TmdsExit, TrainingConfig, TrainingError, TrainingOutcome};
 use crate::types::{FfeLevels, FrlConfig, LtpReq, LtpRequests, SourceTestConfig, UpdateFlags};
 
 /// The SCDC and PHY operations the link training state machine performs.
@@ -61,6 +61,10 @@ pub trait TrainingIo {
 /// outcomes, errors and events, with `record` called for each [`TrainingEvent`] as it
 /// occurs. An empty `rates` returns `FallbackRequired { reason: RatesExhausted }` without
 /// any I/O.
+///
+/// On an SCDC or PHY error, `run` performs LTS:L before returning, unless
+/// [`TrainingConfig::exit_to_tmds_on_error`] is off; the returned [`TrainingError`] says
+/// whether both ends reached TMDS.
 pub async fn run<Io: TrainingIo, F: FnMut(TrainingEvent)>(
     io: &mut Io,
     rates: &[HdmiForumFrl],
@@ -71,6 +75,20 @@ pub async fn run<Io: TrainingIo, F: FnMut(TrainingEvent)>(
 }
 
 type Error<Io> = TrainingError<<Io as TrainingIo>::ScdcError, <Io as TrainingIo>::PhyError>;
+
+/// An SCDC or PHY error, before LTS:L has run.
+enum Fault<ScdcErr, PhyErr> {
+    Scdc(ScdcErr),
+    Phy(PhyErr),
+}
+
+type Failure<Io> = Fault<<Io as TrainingIo>::ScdcError, <Io as TrainingIo>::PhyError>;
+
+/// The first error of each end in a failed LTS:L.
+struct ExitErrors<ScdcErr, PhyErr> {
+    scdc: Option<ScdcErr>,
+    phy: Option<PhyErr>,
+}
 
 pub(crate) const FLT_UPDATE: UpdateFlags = UpdateFlags {
     source_test_update: false,
@@ -264,19 +282,54 @@ struct Machine<'a, Io> {
 }
 
 impl<Io: TrainingIo> Machine<'_, Io> {
-    /// The state machine. `record` is called with each [`TrainingEvent`] as it occurs.
+    /// One attempt: the states, then LTS:L on a fallback or an error. `record` is called
+    /// with each [`TrainingEvent`] as it occurs.
     async fn run<F: FnMut(TrainingEvent)>(
         &mut self,
         rates: &[HdmiForumFrl],
         config: &TrainingConfig,
         record: &mut F,
     ) -> Result<TrainingOutcome, Error<Io>> {
-        let mut rates = rates.iter().copied();
-        let Some(rate) = rates.next() else {
+        let Some((&rate, lower)) = rates.split_first() else {
             return Ok(TrainingOutcome::FallbackRequired {
                 reason: FallbackReason::RatesExhausted,
             });
         };
+        match self.states(rate, lower, config, record).await {
+            Ok(Ok(achieved_rate)) => Ok(TrainingOutcome::Success { achieved_rate }),
+            Ok(Err(reason)) => match self.exit_to_tmds(record).await {
+                Ok(()) => Ok(TrainingOutcome::FallbackRequired { reason }),
+                Err(ExitErrors { scdc, phy }) => {
+                    Err(TrainingError::ExitFailed { reason, scdc, phy })
+                }
+            },
+            Err(fault) => {
+                let exit = if config.exit_to_tmds_on_error {
+                    match self.exit_to_tmds(record).await {
+                        Ok(()) => TmdsExit::Exited,
+                        Err(ExitErrors { scdc, phy }) => TmdsExit::Failed { scdc, phy },
+                    }
+                } else {
+                    TmdsExit::Skipped
+                };
+                Err(match fault {
+                    Fault::Scdc(error) => TrainingError::Scdc { error, exit },
+                    Fault::Phy(error) => TrainingError::Phy { error, exit },
+                })
+            }
+        }
+    }
+
+    /// LTS:2 → LTS:3 → LTS:P, with LTS:4, from `rate` down through `lower`. Returns the
+    /// rate trained at, or why the attempt falls back.
+    async fn states<F: FnMut(TrainingEvent)>(
+        &mut self,
+        rate: HdmiForumFrl,
+        lower: &[HdmiForumFrl],
+        config: &TrainingConfig,
+        record: &mut F,
+    ) -> Result<Result<HdmiForumFrl, FallbackReason>, Failure<Io>> {
+        let mut rates = lower.iter().copied();
         let mut attempt = Attempt {
             rate,
             lanes: Lanes::new(rate),
@@ -296,15 +349,8 @@ impl<Io: TrainingIo> Machine<'_, Io> {
                         State::Fallback(FallbackReason::RatesExhausted)
                     }
                 },
-                State::Success => {
-                    return Ok(TrainingOutcome::Success {
-                        achieved_rate: attempt.rate,
-                    });
-                }
-                State::Fallback(reason) => {
-                    self.exit_to_tmds(record).await?;
-                    return Ok(TrainingOutcome::FallbackRequired { reason });
-                }
+                State::Success => return Ok(Ok(attempt.rate)),
+                State::Fallback(reason) => return Ok(Err(reason)),
             };
         }
     }
@@ -315,7 +361,7 @@ impl<Io: TrainingIo> Machine<'_, Io> {
         attempt: &mut Attempt,
         config: &TrainingConfig,
         record: &mut F,
-    ) -> Result<State, Error<Io>> {
+    ) -> Result<State, Failure<Io>> {
         if self.read_update_flags().await?.source_test_update {
             self.read_source_test(attempt, record).await?;
         }
@@ -336,7 +382,7 @@ impl<Io: TrainingIo> Machine<'_, Io> {
         self.io
             .set_frl_rate(attempt.rate)
             .await
-            .map_err(TrainingError::Phy)?;
+            .map_err(Fault::Phy)?;
         self.send_ltp(uniform(count, Some(LtpPattern::NyquistClock)))
             .await?;
 
@@ -346,7 +392,7 @@ impl<Io: TrainingIo> Machine<'_, Io> {
         self.io
             .write_config_0_defaults()
             .await
-            .map_err(TrainingError::Scdc)?;
+            .map_err(Fault::Scdc)?;
         self.write_rate(attempt.rate, config, record).await?;
         Ok(State::Train)
     }
@@ -358,7 +404,7 @@ impl<Io: TrainingIo> Machine<'_, Io> {
         attempt: &mut Attempt,
         config: &TrainingConfig,
         record: &mut F,
-    ) -> Result<State, Error<Io>> {
+    ) -> Result<State, Failure<Io>> {
         let max_level = config.ffe_levels.limited_to(attempt.rate).value();
         let mut polls = 0;
         loop {
@@ -376,11 +422,7 @@ impl<Io: TrainingIo> Machine<'_, Io> {
                 self.read_source_test(attempt, record).await?;
             }
 
-            let requests = self
-                .io
-                .read_ltp_requests()
-                .await
-                .map_err(TrainingError::Scdc)?;
+            let requests = self.io.read_ltp_requests().await.map_err(Fault::Scdc)?;
             if attempt.lanes.all(requests, LtpReq::None) {
                 record(TrainingEvent::TrainingPassed { after_polls: polls });
                 return Ok(State::Pass);
@@ -408,7 +450,7 @@ impl<Io: TrainingIo> Machine<'_, Io> {
         attempt: &mut Attempt,
         config: &TrainingConfig,
         record: &mut F,
-    ) -> Result<State, Error<Io>> {
+    ) -> Result<State, Failure<Io>> {
         self.send_ltp(uniform(attempt.lanes.count, None)).await?;
         self.set_frl_output(FrlOutput::GapOnly).await?;
         self.clear(FLT_UPDATE).await?;
@@ -446,7 +488,7 @@ impl<Io: TrainingIo> Machine<'_, Io> {
         rate: HdmiForumFrl,
         config: &TrainingConfig,
         record: &mut F,
-    ) -> Result<State, Error<Io>> {
+    ) -> Result<State, Failure<Io>> {
         self.send_ltp(LanePatterns::default()).await?;
         record(TrainingEvent::RateLowered {
             from: attempt.rate,
@@ -456,10 +498,7 @@ impl<Io: TrainingIo> Machine<'_, Io> {
         attempt.rate = rate;
         attempt.lanes = Lanes::new(rate);
         self.adjust_equalization(attempt.lanes.eq_params()).await?;
-        self.io
-            .set_frl_rate(rate)
-            .await
-            .map_err(TrainingError::Phy)?;
+        self.io.set_frl_rate(rate).await.map_err(Fault::Phy)?;
         self.clear(FLT_UPDATE).await?;
         self.write_rate(rate, config, record).await?;
         Ok(State::Train)
@@ -470,33 +509,37 @@ impl<Io: TrainingIo> Machine<'_, Io> {
     /// attempt never leaves the sink configured for a rate the source is not driving.
     ///
     /// Every step is attempted even when an earlier one fails, so a PHY error cannot keep
-    /// the sink in FRL, nor an SCDC error the PHY. The first error is returned.
+    /// the sink in FRL, nor an SCDC error the PHY. On failure, returns each end's first
+    /// error.
     async fn exit_to_tmds<F: FnMut(TrainingEvent)>(
         &mut self,
         record: &mut F,
-    ) -> Result<(), Error<Io>> {
-        let patterns = self.send_ltp(LanePatterns::default()).await;
-        let phy = self
-            .io
-            .set_frl_rate(HdmiForumFrl::NotSupported)
-            .await
-            .map_err(TrainingError::Phy);
-        let sink = self
+    ) -> Result<(), ExitErrors<Io::ScdcError, Io::PhyError>> {
+        let patterns = self.io.send_ltp(LanePatterns::default()).await;
+        let phy_rate = self.io.set_frl_rate(HdmiForumFrl::NotSupported).await;
+        let config = self
             .io
             .write_frl_config(FrlConfig {
                 rate: HdmiForumFrl::NotSupported,
                 ffe_levels: FfeLevels::default(),
             })
-            .await
-            .map_err(TrainingError::Scdc);
-        let flt_update = match self.read_update_flags().await {
-            Ok(flags) if flags.flt_update => self.clear(FLT_UPDATE).await,
+            .await;
+        let flt_update = match self.io.read_update_flags().await {
+            Ok(flags) if flags.flt_update => self.io.clear_update_flags(FLT_UPDATE).await,
             Ok(_) => Ok(()),
             Err(e) => Err(e),
         };
-        patterns.and(phy).and(sink).and(flt_update)?;
-        record(TrainingEvent::ExitedToTmds);
-        Ok(())
+        let phy = patterns.and(phy_rate).err();
+        let scdc = config.and(flt_update).err();
+        if phy.is_none() && scdc.is_none() {
+            record(TrainingEvent::ExitedToTmds);
+            return Ok(());
+        }
+        record(TrainingEvent::ExitToTmdsFailed {
+            scdc: scdc.is_some(),
+            phy: phy.is_some(),
+        });
+        Err(ExitErrors { scdc, phy })
     }
 
     /// Writes `Config_1` with `rate` and the FFE levels limited for it.
@@ -505,26 +548,21 @@ impl<Io: TrainingIo> Machine<'_, Io> {
         rate: HdmiForumFrl,
         config: &TrainingConfig,
         record: &mut F,
-    ) -> Result<(), Error<Io>> {
+    ) -> Result<(), Failure<Io>> {
         let ffe_levels = config.ffe_levels.limited_to(rate);
         self.io
             .write_frl_config(FrlConfig { rate, ffe_levels })
             .await
-            .map_err(TrainingError::Scdc)?;
+            .map_err(Fault::Scdc)?;
         record(TrainingEvent::RateConfigured { rate, ffe_levels });
         Ok(())
     }
 
     /// Polls `FLT_ready` up to `limit` times. Returns the number of polls it took to
     /// assert, or `None` if it did not.
-    async fn poll_flt_ready(&mut self, limit: u32) -> Result<Option<u32>, Error<Io>> {
+    async fn poll_flt_ready(&mut self, limit: u32) -> Result<Option<u32>, Failure<Io>> {
         for polls in 1..=limit {
-            if self
-                .io
-                .read_flt_ready()
-                .await
-                .map_err(TrainingError::Scdc)?
-            {
+            if self.io.read_flt_ready().await.map_err(Fault::Scdc)? {
                 return Ok(Some(polls));
             }
         }
@@ -537,12 +575,12 @@ impl<Io: TrainingIo> Machine<'_, Io> {
         &mut self,
         attempt: &mut Attempt,
         record: &mut F,
-    ) -> Result<(), Error<Io>> {
+    ) -> Result<(), Failure<Io>> {
         let source_test = self
             .io
             .read_source_test_config()
             .await
-            .map_err(TrainingError::Scdc)?;
+            .map_err(Fault::Scdc)?;
         attempt.no_timeout = source_test.flt_no_timeout;
         record(TrainingEvent::SourceTestConfigRead {
             flt_no_timeout: source_test.flt_no_timeout,
@@ -550,35 +588,26 @@ impl<Io: TrainingIo> Machine<'_, Io> {
         self.clear(SOURCE_TEST_UPDATE).await
     }
 
-    async fn read_update_flags(&mut self) -> Result<UpdateFlags, Error<Io>> {
-        self.io
-            .read_update_flags()
-            .await
-            .map_err(TrainingError::Scdc)
+    async fn read_update_flags(&mut self) -> Result<UpdateFlags, Failure<Io>> {
+        self.io.read_update_flags().await.map_err(Fault::Scdc)
     }
 
-    async fn clear(&mut self, flags: UpdateFlags) -> Result<(), Error<Io>> {
-        self.io
-            .clear_update_flags(flags)
-            .await
-            .map_err(TrainingError::Scdc)
+    async fn clear(&mut self, flags: UpdateFlags) -> Result<(), Failure<Io>> {
+        self.io.clear_update_flags(flags).await.map_err(Fault::Scdc)
     }
 
-    async fn send_ltp(&mut self, patterns: LanePatterns) -> Result<(), Error<Io>> {
-        self.io.send_ltp(patterns).await.map_err(TrainingError::Phy)
+    async fn send_ltp(&mut self, patterns: LanePatterns) -> Result<(), Failure<Io>> {
+        self.io.send_ltp(patterns).await.map_err(Fault::Phy)
     }
 
-    async fn set_frl_output(&mut self, output: FrlOutput) -> Result<(), Error<Io>> {
-        self.io
-            .set_frl_output(output)
-            .await
-            .map_err(TrainingError::Phy)
+    async fn set_frl_output(&mut self, output: FrlOutput) -> Result<(), Failure<Io>> {
+        self.io.set_frl_output(output).await.map_err(Fault::Phy)
     }
 
-    async fn adjust_equalization(&mut self, params: EqParams) -> Result<(), Error<Io>> {
+    async fn adjust_equalization(&mut self, params: EqParams) -> Result<(), Failure<Io>> {
         self.io
             .adjust_equalization(params)
             .await
-            .map_err(TrainingError::Phy)
+            .map_err(Fault::Phy)
     }
 }

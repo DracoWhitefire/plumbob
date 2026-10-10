@@ -102,27 +102,24 @@ fn training_config_defaults() {
     assert_eq!(config.frl_start_polls, 100);
     assert_eq!(config.no_timeout_poll_cap, 500);
     assert_eq!(config.max_retrains, 3);
+    assert!(config.exit_to_tmds_on_error);
 }
 
 // --- TrainingError
 
 #[test]
-fn training_error_scdc_variant() {
-    let e: TrainingError<u8, u8> = TrainingError::Scdc(42);
-    assert_eq!(e, TrainingError::Scdc(42));
-}
-
-#[test]
-fn training_error_phy_variant() {
-    let e: TrainingError<u8, u8> = TrainingError::Phy(7);
-    assert_eq!(e, TrainingError::Phy(7));
-}
-
-#[test]
 fn training_error_variants_are_distinct() {
-    let s: TrainingError<u8, u8> = TrainingError::Scdc(1);
-    let p: TrainingError<u8, u8> = TrainingError::Phy(1);
+    let exit = TmdsExit::Exited;
+    let s: TrainingError<u8, u8> = TrainingError::Scdc { error: 1, exit };
+    let p: TrainingError<u8, u8> = TrainingError::Phy { error: 1, exit };
+    let x: TrainingError<u8, u8> = TrainingError::ExitFailed {
+        reason: FallbackReason::TrainingTimeout,
+        scdc: Some(1),
+        phy: None,
+    };
     assert_ne!(s, p);
+    assert_ne!(s, x);
+    assert_ne!(p, x);
 }
 
 // --- The main path: LTS:2 → LTS:3 → LTS:P
@@ -651,30 +648,40 @@ fn run_with(sink: SimSink, phy: SimPhy) -> (Result<TrainingOutcome, Error>, SimS
 
 type Error = TrainingError<(), ()>;
 
+/// The error for a fallback whose LTS:L failed on the given ends.
+fn exit_failed(reason: FallbackReason, scdc: bool, phy: bool) -> Result<TrainingOutcome, Error> {
+    Err(TrainingError::ExitFailed {
+        reason,
+        scdc: scdc.then_some(()),
+        phy: phy.then_some(()),
+    })
+}
+
 #[test]
 fn every_lts_l_step_is_attempted_when_one_fails() {
     // `FLT_ready` never asserts, so LTS:L is the only place the PHY is called and
     // `Config_1` is written; its `Update_0` read is the second one.
+    let timeout = FallbackReason::FltReadyTimeout;
     let cases = [
         (
             SimSink::new(),
             SimPhy::new().fail(PhyOp::SendLtp),
-            Err(TrainingError::Phy(())),
+            exit_failed(timeout, false, true),
         ),
         (
             SimSink::new(),
             SimPhy::new().fail(PhyOp::SetFrlRate),
-            Err(TrainingError::Phy(())),
+            exit_failed(timeout, false, true),
         ),
         (
             SimSink::new().fail(SinkOp::WriteFrlConfig),
             SimPhy::new(),
-            Err(TrainingError::Scdc(())),
+            exit_failed(timeout, true, false),
         ),
         (
             SimSink::new().fail_call(SinkOp::ReadUpdateFlags, 2),
             SimPhy::new(),
-            Err(TrainingError::Scdc(())),
+            exit_failed(timeout, true, false),
         ),
     ];
     for (sink, phy, expected) in cases {
@@ -708,18 +715,24 @@ fn a_failed_flt_update_clear_in_lts_l_is_returned() {
         sink().fail_call(SinkOp::ClearUpdateFlags, clears as u32),
         SimPhy::new(),
     );
-    assert_eq!(result, Err(TrainingError::Scdc(())));
+    assert_eq!(
+        result,
+        exit_failed(FallbackReason::RatesExhausted, true, false)
+    );
     assert_eq!(frl_configs(&sink).last(), Some(&HdmiForumFrl::NotSupported));
     assert_eq!(phy_rates(&phy).last(), Some(&HdmiForumFrl::NotSupported));
 }
 
 #[test]
-fn lts_l_returns_its_first_error() {
+fn lts_l_reports_each_ends_error() {
     let (result, sink, _) = run_with(
         SimSink::new().fail(SinkOp::WriteFrlConfig),
         SimPhy::new().fail(PhyOp::SendLtp),
     );
-    assert_eq!(result, Err(TrainingError::Phy(())));
+    assert_eq!(
+        result,
+        exit_failed(FallbackReason::FltReadyTimeout, true, true)
+    );
     // The PHY failing first did not stop the sink's `Update_0` read.
     assert_eq!(
         count(&sink, |call| matches!(call, SinkCall::ReadUpdateFlags(_))),
@@ -930,8 +943,14 @@ fn full_sink() -> SimSink {
         .frl_start_after(0)
 }
 
+/// Asserts that the last `Config_1` written and the last PHY rate are TMDS.
+fn assert_in_tmds(sink: &SimSink, phy: &SimPhy) {
+    assert_eq!(frl_configs(sink).last(), Some(&HdmiForumFrl::NotSupported));
+    assert_eq!(phy_rates(phy).last(), Some(&HdmiForumFrl::NotSupported));
+}
+
 #[test]
-fn scdc_errors_are_returned() {
+fn scdc_errors_are_returned_after_lts_l() {
     for op in [
         SinkOp::ReadFltReady,
         SinkOp::ReadUpdateFlags,
@@ -941,24 +960,106 @@ fn scdc_errors_are_returned() {
         SinkOp::WriteConfig0Defaults,
         SinkOp::WriteFrlConfig,
     ] {
-        let mut trainer = FrlTrainer::new(full_sink().fail(op), SimPhy::new());
-        let result = trainer.train(&[RATE], &TrainingConfig::default());
-        assert_eq!(result, Err(TrainingError::Scdc(())), "{op:?}");
+        let (result, sink, phy) = run_with(full_sink().fail_call(op, 1), SimPhy::new());
+        let exit = TmdsExit::Exited;
+        assert_eq!(
+            result,
+            Err(TrainingError::Scdc { error: (), exit }),
+            "{op:?}"
+        );
+        assert_in_tmds(&sink, &phy);
     }
 }
 
 #[test]
-fn phy_errors_are_returned() {
+fn phy_errors_are_returned_after_lts_l() {
     for op in [
         PhyOp::SetFrlRate,
         PhyOp::SendLtp,
         PhyOp::SetFrlOutput,
         PhyOp::AdjustEqualization,
     ] {
-        let mut trainer = FrlTrainer::new(full_sink(), SimPhy::new().fail(op));
-        let result = trainer.train(&[RATE], &TrainingConfig::default());
-        assert_eq!(result, Err(TrainingError::Phy(())), "{op:?}");
+        let (result, sink, phy) = run_with(full_sink(), SimPhy::new().fail_call(op, 1));
+        let exit = TmdsExit::Exited;
+        assert_eq!(
+            result,
+            Err(TrainingError::Phy { error: (), exit }),
+            "{op:?}"
+        );
+        assert_in_tmds(&sink, &phy);
     }
+}
+
+#[test]
+fn a_failed_lts_l_after_an_error_reports_each_end() {
+    // Every `Config_1` write fails, so LTS:L's does too.
+    let (result, _, phy) = run_with(full_sink().fail(SinkOp::WriteFrlConfig), SimPhy::new());
+    let exit = TmdsExit::Failed {
+        scdc: Some(()),
+        phy: None,
+    };
+    assert_eq!(result, Err(TrainingError::Scdc { error: (), exit }));
+    assert_eq!(phy_rates(&phy).last(), Some(&HdmiForumFrl::NotSupported));
+
+    // Every PHY rate change fails, so LTS:L's does too.
+    let (result, sink, _) = run_with(full_sink(), SimPhy::new().fail(PhyOp::SetFrlRate));
+    let exit = TmdsExit::Failed {
+        scdc: None,
+        phy: Some(()),
+    };
+    assert_eq!(result, Err(TrainingError::Phy { error: (), exit }));
+    assert_eq!(frl_configs(&sink).last(), Some(&HdmiForumFrl::NotSupported));
+}
+
+#[test]
+fn exit_to_tmds_on_error_off_leaves_both_ends_as_they_were() {
+    let config = TrainingConfig {
+        exit_to_tmds_on_error: false,
+        ..TrainingConfig::default()
+    };
+    let mut trainer = FrlTrainer::new(
+        full_sink().fail_call(SinkOp::ReadLtpRequests, 1),
+        SimPhy::new(),
+    );
+    let result = trainer.train(&[RATE], &config);
+    let exit = TmdsExit::Skipped;
+    assert_eq!(result, Err(TrainingError::Scdc { error: (), exit }));
+    let (sink, phy) = trainer.into_parts();
+    assert_eq!(frl_configs(&sink), [RATE]);
+    assert_eq!(phy_rates(&phy), [RATE]);
+}
+
+#[test]
+fn lts_l_after_an_error_is_recorded() {
+    let events = |sink: SimSink, phy: SimPhy| {
+        let mut events = Vec::new();
+        let mut trainer = FrlTrainer::new(sink, phy);
+        let _ = trainer.run(&[RATE], &TrainingConfig::default(), &mut |event| {
+            events.push(event)
+        });
+        events.last().copied()
+    };
+    assert_eq!(
+        events(
+            full_sink().fail_call(SinkOp::ReadLtpRequests, 1),
+            SimPhy::new()
+        ),
+        Some(TrainingEvent::ExitedToTmds)
+    );
+    assert_eq!(
+        events(full_sink(), SimPhy::new().fail(PhyOp::SendLtp)),
+        Some(TrainingEvent::ExitToTmdsFailed {
+            scdc: false,
+            phy: true
+        })
+    );
+    assert_eq!(
+        events(full_sink().fail(SinkOp::WriteFrlConfig), SimPhy::new()),
+        Some(TrainingEvent::ExitToTmdsFailed {
+            scdc: true,
+            phy: false
+        })
+    );
 }
 
 // --- Traces
@@ -1229,9 +1330,13 @@ mod traced {
     fn traced_errors_are_returned() {
         let mut trainer =
             FrlTrainer::new(SimSink::new().fail(SinkOp::ReadUpdateFlags), SimPhy::new());
+        let exit = TmdsExit::Failed {
+            scdc: Some(()),
+            phy: None,
+        };
         assert_eq!(
             trainer.train_traced(&[RATE], &TrainingConfig::default()),
-            Err(TrainingError::Scdc(()))
+            Err(TrainingError::Scdc { error: (), exit })
         );
     }
 

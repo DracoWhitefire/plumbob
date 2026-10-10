@@ -53,12 +53,57 @@ pub enum TrainingOutcome {
 ///
 /// Distinct from [`TrainingOutcome::FallbackRequired`]: this means something
 /// failed at the I/O level, not that the link simply did not train at this rate.
+///
+/// After an SCDC or PHY error, plumbob performs LTS:L, returning both ends to TMDS as
+/// after a fallback, unless [`TrainingConfig::exit_to_tmds_on_error`] is off. `exit` says
+/// what happened. When LTS:L itself fails after a fallback, the error is
+/// [`ExitFailed`](Self::ExitFailed).
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrainingError<ScdcErr, PhyErr> {
     /// The `ScdcClient` returned an error.
-    Scdc(ScdcErr),
+    Scdc {
+        /// The error.
+        error: ScdcErr,
+        /// LTS:L after the error.
+        exit: TmdsExit<ScdcErr, PhyErr>,
+    },
     /// The PHY returned an error.
-    Phy(PhyErr),
+    Phy {
+        /// The error.
+        error: PhyErr,
+        /// LTS:L after the error.
+        exit: TmdsExit<ScdcErr, PhyErr>,
+    },
+    /// The attempt fell back for `reason`, and LTS:L then failed. Each end's first LTS:L
+    /// error; an end with `None` completed its steps and is in TMDS.
+    ExitFailed {
+        /// Why the attempt fell back.
+        reason: FallbackReason,
+        /// The first error of LTS:L's SCDC steps (`Config_1`, `FLT_update`), if any.
+        scdc: Option<ScdcErr>,
+        /// The first error of LTS:L's PHY steps (patterns, rate), if any.
+        phy: Option<PhyErr>,
+    },
+}
+
+/// What LTS:L did after an SCDC or PHY error.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TmdsExit<ScdcErr, PhyErr> {
+    /// LTS:L ran and every step succeeded: the sink and PHY are in TMDS.
+    Exited,
+    /// LTS:L was not run, because [`TrainingConfig::exit_to_tmds_on_error`] is off. Both
+    /// ends are as the error left them.
+    Skipped,
+    /// LTS:L ran and at least one step failed. Each end's first error; an end with `None`
+    /// completed its steps and is in TMDS.
+    Failed {
+        /// The first error of LTS:L's SCDC steps (`Config_1`, `FLT_update`), if any.
+        scdc: Option<ScdcErr>,
+        /// The first error of LTS:L's PHY steps (patterns, rate), if any.
+        phy: Option<PhyErr>,
+    },
 }
 
 /// Per-attempt training configuration.
@@ -86,6 +131,11 @@ pub struct TrainingConfig {
     /// [`FallbackReason::RetrainsExhausted`]; 0 falls back on the first one. Default 3,
     /// the AMD driver's retry count (which reruns the whole procedure rather than LTS:3).
     pub max_retrains: u32,
+    /// Whether an SCDC or PHY error is followed by LTS:L, returning both ends to TMDS as a
+    /// fallback does. Default `true`. Turn it off to leave the sink and PHY as the error
+    /// left them, for example to inspect the sink's registers; [`TrainingError`] then
+    /// reports [`TmdsExit::Skipped`].
+    pub exit_to_tmds_on_error: bool,
 }
 
 impl Default for TrainingConfig {
@@ -97,6 +147,7 @@ impl Default for TrainingConfig {
             frl_start_polls: 100,
             no_timeout_poll_cap: 500,
             max_retrains: 3,
+            exit_to_tmds_on_error: true,
         }
     }
 }
