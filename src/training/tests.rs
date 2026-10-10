@@ -1896,7 +1896,9 @@ fn reports(result: &Result<TrainingOutcome, Error>, scdc: bool) -> bool {
 }
 
 /// Fails each call of each operation the scenario makes, one at a time, and checks that
-/// every failure is reported: none is swallowed at any call site.
+/// every failure is reported: none is swallowed at any call site the scenario reaches. A
+/// site no scenario reaches is not checked, so each branch with I/O of its own needs a
+/// scenario that takes it; the three below together reach every one.
 fn every_call_site_reports_its_error(sink: fn() -> SimSink, rates: &[HdmiForumFrl]) {
     let (_, reference, phy) = run_with_rates(sink(), SimPhy::new(), rates);
     let mut sites = 0;
@@ -1967,6 +1969,24 @@ fn errors_are_reported_at_every_call_site_of_a_fallback() {
             .round(0, all(LtpReq::RateChange))
     }
     every_call_site_reports_its_error(sink, &[R12]);
+}
+
+#[test]
+fn errors_are_reported_at_every_call_site_of_a_source_test_update_and_both_flags() {
+    // `Source_Test_Update` posted in LTS:3 (re-read and cleared there), then `FRL_start`
+    // and `FLT_update` together in LTS:P (`FRL_start` cleared before the retrain).
+    fn sink() -> SimSink {
+        SimSink::new()
+            .source_test(SourceTestConfig::default())
+            .flt_ready_after(0)
+            .round_with_source_test(0, all(LtpReq::Lfsr0), SourceTestConfig::default())
+            .round(0, all(LtpReq::None))
+            .round(0, all(LtpReq::Lfsr1))
+            .frl_start_with_round(2)
+            .round(0, all(LtpReq::None))
+            .frl_start_after(0)
+    }
+    every_call_site_reports_its_error(sink, &[RATE]);
 }
 
 // --- Traces

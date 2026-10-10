@@ -76,10 +76,13 @@ kept apart, and the five distinct warnings an attempt can produce fit without `a
   returned
 - `TrainingError::Scdc` and `TrainingError::Phy` propagating from every SCDC and PHY
   operation the state machine uses, with LTS:L afterwards leaving both ends in TMDS — at
-  every call site, not only an operation's first: two scenarios (a success with a source
-  test configuration, a TxFFE raise, a rate drop and a retrain; and a fallback through
-  LTS:L) are each run once per call they make, failing that one call, and every failure
-  must be reported
+  every call site, not only an operation's first: three scenarios (a success with a
+  source test configuration, a TxFFE raise, a rate drop and a retrain; a fallback through
+  LTS:L; and a `Source_Test_Update` in LTS:3 followed by `FRL_start` and `FLT_update`
+  together in LTS:P) are each run once per call they make, failing that one call, and
+  every failure must be reported. A site no scenario reaches is not checked, so a branch
+  with I/O of its own needs a scenario that takes it; mutation testing (swallowing each
+  error in turn) shows the three reach every one
 - The step order across sink and PHY in LTS:2 (rate, then TxFFE reset), LTS:3 (the
   requested pattern and level reach the PHY before `FLT_update` is cleared) and LTS:4
   (patterns stopped, then LTS:2's end at the new rate: `FLT_update` cleared, rate, TxFFE
