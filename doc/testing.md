@@ -67,6 +67,7 @@ kept apart, and the five distinct warnings an attempt can produce fit without `a
   `ExitedToTmds` and `ExitToTmdsFailed` events, and `exit_to_tmds_on_error: false`
   leaving both ends untouched (`TmdsExit::Skipped`)
 - A fallback whose LTS:L fails returning `TrainingError::ExitFailed` with each end's error
+- `train_with_events` reporting each event as it occurs, without `alloc`
 - `exit_to_tmds` on demand: the LTS:L sequence, taking down a link an error left in FRL,
   each end's error on failure, and `lts::exit_to_tmds` recording its event
 
@@ -84,6 +85,7 @@ The `alloc`-gated tests exercise `train_traced` and `train_at_rate_traced` and a
 - `TrainingTrace` carrying the rates and the `TrainingConfig`, so poll counts in events
   are interpretable against the configured limits
 - Traced and untraced runs agreeing on the outcome
+- `train_with_events` delivering exactly the events `train_traced` collects
 - An error returned with its trace: the events up to the error, then LTS:L's event
 
 ### The sync driver

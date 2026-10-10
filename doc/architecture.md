@@ -362,6 +362,10 @@ impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
         -> (Result<Trained, TrainingError<C::Error, P::Error>>, TrainingTrace);
     pub fn train_at_rate_traced(&mut self, rate: HdmiForumFrl, config: &TrainingConfig)
         -> (Result<Trained, TrainingError<C::Error, P::Error>>, TrainingTrace);
+    /// `train`, calling `record` with each event as it occurs; no allocator needed.
+    pub fn train_with_events<F: FnMut(TrainingEvent)>(&mut self, rates: &[HdmiForumFrl],
+        config: &TrainingConfig, record: &mut F)
+        -> Result<Trained, TrainingError<C::Error, P::Error>>;
     /// LTS:L on demand: take the link down to TMDS.
     pub fn exit_to_tmds(&mut self) -> Result<(), ExitError<C::Error, P::Error>>;
     // `new` and `into_parts` construct the trainer and recover the client and PHY.
@@ -551,7 +555,8 @@ The full training state machine is available. `FrlTrainer<C, P>` is stack-alloca
 `TrainingConfig`, `TrainingOutcome`, `TrainingError`, and all owned protocol types
 (`LtpReq`, `LtpRequests`, `FfeLevels`, `UpdateFlags`, `CedCounters`, …) are stack-allocated. No heap
 use anywhere in the training loop. This tier covers bare-metal and firmware targets.
-CI builds this tier and the `alloc` tier for `thumbv7em-none-eabi`, a target without
+`train_with_events` delivers every `TrainingEvent` to a callback as it occurs, so the
+full reasoning is available without an allocator; `train` returns the warnings. CI builds this tier and the `alloc` tier for `thumbv7em-none-eabi`, a target without
 `std`.
 
 **`no_std` + `alloc` feature**

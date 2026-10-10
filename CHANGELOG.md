@@ -88,9 +88,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   drives it synchronously without an async runtime (one poll with `Waker::noop`), and
   `plumbob-async` drives the same function asynchronously, so the two cannot drift.
   Implementing `TrainingIo` drives training from any other environment.
-- **`TrainingEvent` is available without the `alloc` feature**, for `lts::run`'s event
-  callback; only `TrainingTrace` and the traced methods need `alloc`. It now derives
-  `Copy`.
+- **`TrainingEvent` is available without the `alloc` feature**: `train_with_events`
+  calls a callback with each event as it occurs (as does `lts::run`), so the full
+  reasoning is available on targets without an allocator; only `TrainingTrace` and the
+  traced methods need `alloc`. `TrainingEvent` now derives `Copy`.
 - `LtpReq::value()` — a request's 4-bit value.
 - **`TrainingWarning`**, **`Trained`** and **`MAX_WARNINGS`** — non-fatal anomalies
   returned with the outcome, starting with `UndefinedLtpRequest { lane, value, count,

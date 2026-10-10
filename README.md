@@ -182,6 +182,18 @@ for event in &trace.events {
 }
 ```
 
+Without an allocator, `train_with_events` delivers the same events as they occur, to a
+callback; the caller decides what to keep:
+
+```rust
+let mut timeouts = 0;
+let trained = trainer.train_with_events(&rates, &config, &mut |event| {
+    if matches!(event, TrainingEvent::TrainingTimeout { .. }) {
+        timeouts += 1;
+    }
+})?;
+```
+
 A successful attempt, where the sink asks for one TxFFE raise on lane 1:
 
 ```
@@ -229,7 +241,7 @@ yourself drives it from any other environment.
 | Feature | Default | Description |
 |---------|---------|-------------|
 | `std`   | no      | Implies `alloc`; no additional API surface |
-| `alloc` | no      | Enables `TrainingTrace`, `train_traced` and `train_at_rate_traced` |
+| `alloc` | no      | Enables `TrainingTrace`, `train_traced` and `train_at_rate_traced` (`train_with_events` needs no feature) |
 
 No features are enabled by default. The bare crate provides the full training state
 machine without an allocator.

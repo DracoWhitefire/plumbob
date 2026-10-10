@@ -1298,11 +1298,40 @@ fn lts_exit_to_tmds_records_its_event() {
 }
 
 #[test]
+fn train_with_events_reports_each_event_as_it_occurs() {
+    let sink = SimSink::new()
+        .flt_ready_after(0)
+        .round(0, all(LtpReq::Lfsr0))
+        .round(0, all(LtpReq::None))
+        .frl_start_after(0);
+    let mut events = Vec::new();
+    let trained = FrlTrainer::new(sink, SimPhy::new())
+        .train_with_events(&[RATE], &TrainingConfig::default(), &mut |event| {
+            events.push(event)
+        })
+        .unwrap();
+    assert_eq!(
+        trained.outcome,
+        TrainingOutcome::Success {
+            achieved_rate: RATE
+        }
+    );
+    assert_eq!(
+        events.first(),
+        Some(&TrainingEvent::FltReady { after_polls: 1 })
+    );
+    assert!(matches!(
+        events.last(),
+        Some(TrainingEvent::FrlStart { .. })
+    ));
+}
+
+#[test]
 fn lts_l_after_an_error_is_recorded() {
     let events = |sink: SimSink, phy: SimPhy| {
         let mut events = Vec::new();
         let mut trainer = FrlTrainer::new(sink, phy);
-        let _ = trainer.run(&[RATE], &TrainingConfig::default(), &mut |event| {
+        let _ = trainer.train_with_events(&[RATE], &TrainingConfig::default(), &mut |event| {
             events.push(event)
         });
         events.last().copied()
@@ -1606,6 +1635,29 @@ mod traced {
         let (_, trace) = trace(SimSink::new(), &[R12, R10], &config);
         assert_eq!(trace.rates, [R12, R10]);
         assert_eq!(trace.config, config);
+    }
+
+    #[test]
+    fn train_with_events_delivers_the_traced_events() {
+        let sink = || {
+            SimSink::new()
+                .source_test(SourceTestConfig::default())
+                .flt_ready_after(2)
+                .round(0, all(LtpReq::Lfsr1))
+                .round(0, all(LtpReq::RateChange))
+                .round(0, all(LtpReq::None))
+                .frl_start_after(1)
+        };
+        let rates = [RATE, HdmiForumFrl::Rate3Gbps3Lanes];
+        let config = ffe_3();
+        let (_, trace) = trace(sink(), &rates, &config);
+        let mut events = Vec::new();
+        let _ = FrlTrainer::new(sink(), SimPhy::new()).train_with_events(
+            &rates,
+            &config,
+            &mut |event| events.push(event),
+        );
+        assert_eq!(events, trace.events);
     }
 
     #[test]
