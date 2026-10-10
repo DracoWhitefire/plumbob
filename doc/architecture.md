@@ -232,11 +232,14 @@ driver checks every 250 ms) and calls `train` again when it is set.
 1. Stop the training patterns.
 2. Take the next rate from the list. If there is none, go to LTS:L and return
    `FallbackRequired { reason: RatesExhausted }`.
-3. Configure the PHY for the new rate, then reset every lane's TxFFE level to 0 (after the
-   rate change, as in LTS:2 and the Xilinx driver's LTS:4), clear `FLT_update` and write
-   `Config_1` with the new rate (and the FFE maximum for it). `FLT_update` is cleared
-   before `Config_1` is written, so the clear cannot remove the sink's first request at
-   the new rate.
+3. Finish as LTS:2 does (steps 3–6) at the new rate: clear `FLT_update`, configure the PHY
+   for the rate, then reset every lane's TxFFE level to 0 and send the lane model's
+   patterns (none) and gap characters only — after the rate change, which may have reset
+   the lanes or left a bring-up pattern running — and write `Config_0` and `Config_1`
+   with the new rate (and the FFE maximum for it). The Xilinx driver does the same: its
+   LTS:4 goes on through the initialisation of its LTS:2 (patterns cleared, gap
+   characters only, `Config_0` written). `FLT_update` is cleared before `Config_1` is
+   written, so the clear cannot remove the sink's first request at the new rate.
 4. Continue in LTS:3 at the new rate, with a fresh poll limit. The sink stays in FRL
    throughout; `FLT_ready` is not awaited again.
 

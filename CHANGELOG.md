@@ -52,7 +52,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   per-lane pattern set, `adjust_equalization` the per-lane TxFFE levels, and
   `set_frl_output(GapOnly)` is sent during training and LTS:P. TxFFE levels are reset
   after `set_frl_rate`, not before, so a PHY that resets its lanes on a rate change keeps
-  plumbob's levels. plumbob sends no pattern
+  plumbob's levels; LTS:4 finishes as LTS:2 does, restoring the patterns, gap characters
+  and `Config_0` after the rate change as well. plumbob sends no pattern
   in LTS:2: any bring-up the transmitter needs, such as a clock pattern held until its PLL
   locks, belongs to the PHY's `set_frl_rate`.
 - **`TrainingEvent` records the new states** (`FltReady`, `RateConfigured`,

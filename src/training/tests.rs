@@ -778,9 +778,11 @@ fn a_rate_change_resets_the_lanes() {
     // Raised to 1 at 12 Gbps, then reset to 0 for 10 Gbps.
     assert_eq!(levels_sent(&phy), [[1, 1, 1, 1], [0, 0, 0, 0]]);
     let sent = ltp_sent(&phy);
-    // LTS:4 stops the patterns; at the new rate only lane 0 has one.
+    // LTS:4 stops the patterns and restores them (none) after the rate change; at the new
+    // rate only lane 0 has one.
     assert_eq!(sent[2], LanePatterns::default());
-    assert_eq!(sent[3], patterns(Some(LtpPattern::Lfsr1), None, None, None));
+    assert_eq!(sent[3], LanePatterns::default());
+    assert_eq!(sent[4], patterns(Some(LtpPattern::Lfsr1), None, None, None));
 }
 
 #[test]
@@ -803,7 +805,8 @@ fn a_rate_change_can_move_to_three_lanes() {
         }
     );
     let lfsr2 = Some(LtpPattern::Lfsr2);
-    assert_eq!(ltp_sent(&phy)[1], patterns(lfsr2, lfsr2, lfsr2, None));
+    // After LTS:2's: [0] LTS:4 stops the patterns, [1] restores them at the new rate.
+    assert_eq!(ltp_sent(&phy)[2], patterns(lfsr2, lfsr2, lfsr2, None));
 }
 
 #[test]
@@ -1713,7 +1716,7 @@ fn lts_3_drives_the_request_before_clearing_flt_update() {
 }
 
 #[test]
-fn lts_4_stops_the_patterns_then_moves_to_the_rate() {
+fn lts_4_stops_the_patterns_then_configures_the_next_rate_as_lts_2_does() {
     let sink = SimSink::new()
         .flt_ready_after(0)
         .round(0, all(LtpReq::RateChange))
@@ -1725,13 +1728,18 @@ fn lts_4_stops_the_patterns_then_moves_to_the_rate() {
         calls_after(
             &log,
             Call::Sink(SinkCall::ReadLtpRequests(all(LtpReq::RateChange))),
-            5
+            8
         ),
         [
             Call::Phy(PhyCall::SendLtp(LanePatterns::default())),
+            // From here as at the end of LTS:2: the lanes are restored after the rate
+            // change, which may have reset them or left a bring-up pattern running.
+            Call::Sink(SinkCall::ClearUpdateFlags(FLT_UPDATE)),
             Call::Phy(PhyCall::SetFrlRate(R10)),
             Call::Phy(PhyCall::AdjustEqualization(Lanes::new(R10).eq_params())),
-            Call::Sink(SinkCall::ClearUpdateFlags(FLT_UPDATE)),
+            Call::Phy(PhyCall::SendLtp(LanePatterns::default())),
+            Call::Phy(PhyCall::SetFrlOutput(FrlOutput::GapOnly)),
+            Call::Sink(SinkCall::WriteConfig0Defaults),
             config_1(R10),
         ]
     );

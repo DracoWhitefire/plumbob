@@ -291,6 +291,8 @@ impl Lanes {
 enum State {
     /// LTS:2.
     Prepare,
+    /// The end of LTS:2, and of LTS:4 at the next rate: configure the rate.
+    ConfigureRate,
     /// LTS:3.
     Train,
     /// LTS:P.
@@ -431,10 +433,14 @@ impl<Io: TrainingIo> Machine<'_, Io> {
         loop {
             state = match state {
                 State::Prepare => self.prepare(&mut attempt, config, record).await?,
+                State::ConfigureRate => {
+                    self.configure_rate(&attempt, config, record).await?;
+                    State::Train
+                }
                 State::Train => self.train_lanes(&mut attempt, config, record).await?,
                 State::Pass => self.pass(&mut attempt, config, record).await?,
                 State::LowerRate => match rates.next() {
-                    Some(next) => self.lower_rate(&mut attempt, next, config, record).await?,
+                    Some(next) => self.lower_rate(&mut attempt, next, record).await?,
                     None => {
                         record(TrainingEvent::RatesExhausted);
                         State::Fallback(FallbackReason::RatesExhausted)
@@ -473,6 +479,18 @@ impl<Io: TrainingIo> Machine<'_, Io> {
             }
         }
 
+        Ok(State::ConfigureRate)
+    }
+
+    /// The end of LTS:2, and of LTS:4 at the next rate: clear `FLT_update`, bring the PHY
+    /// to `attempt.rate` with the lanes in the state the lane model holds, and write
+    /// `Config_0` and `Config_1`. LTS:3 starts from here.
+    async fn configure_rate<F: FnMut(TrainingEvent)>(
+        &mut self,
+        attempt: &Attempt,
+        config: &TrainingConfig,
+        record: &mut F,
+    ) -> Result<(), Failure<Io>> {
         self.clear(FLT_UPDATE).await?;
 
         // Any transmitter bring-up (such as holding a clock pattern until the PLL locks)
@@ -481,8 +499,8 @@ impl<Io: TrainingIo> Machine<'_, Io> {
             .set_frl_rate(attempt.rate)
             .await
             .map_err(Fault::Phy)?;
-        // After the rate change, so a PHY that resets its lanes when the rate changes
-        // still ends up with what the lane model holds.
+        // After the rate change, so a PHY that resets its lanes or leaves a bring-up
+        // pattern running still ends up with what the lane model holds.
         self.adjust_equalization(attempt.lanes.eq_params()).await?;
         self.send_ltp(attempt.lanes.patterns()).await?;
         self.set_frl_output(FrlOutput::GapOnly).await?;
@@ -491,8 +509,7 @@ impl<Io: TrainingIo> Machine<'_, Io> {
             .write_config_0_defaults()
             .await
             .map_err(Fault::Scdc)?;
-        self.write_rate(attempt.rate, config, record).await?;
-        Ok(State::Train)
+        self.write_rate(attempt.rate, config, record).await
     }
 
     /// LTS:3: follow the sink's per-lane requests until it passes the lanes, asks for a
@@ -607,7 +624,6 @@ impl<Io: TrainingIo> Machine<'_, Io> {
         &mut self,
         attempt: &mut Attempt,
         rate: HdmiForumFrl,
-        config: &TrainingConfig,
         record: &mut F,
     ) -> Result<State, Failure<Io>> {
         self.send_ltp(LanePatterns::default()).await?;
@@ -618,12 +634,9 @@ impl<Io: TrainingIo> Machine<'_, Io> {
 
         attempt.rate = rate;
         attempt.lanes = Lanes::new(rate);
-        self.io.set_frl_rate(rate).await.map_err(Fault::Phy)?;
-        // After the rate change, as in LTS:2 (and the Xilinx driver's LTS:4).
-        self.adjust_equalization(attempt.lanes.eq_params()).await?;
-        self.clear(FLT_UPDATE).await?;
-        self.write_rate(rate, config, record).await?;
-        Ok(State::Train)
+        // The rest is LTS:2's, as in the Xilinx driver, whose LTS:4 goes on through the
+        // same initialisation as its LTS:2 (patterns cleared, gap only, `Config_0`).
+        Ok(State::ConfigureRate)
     }
 
     /// LTS:L: leave both ends in TMDS. Stops the training patterns, returns the PHY to

@@ -82,8 +82,9 @@ kept apart, and the five distinct warnings an attempt can produce fit without `a
   must be reported
 - The step order across sink and PHY in LTS:2 (rate, then TxFFE reset), LTS:3 (the
   requested pattern and level reach the PHY before `FLT_update` is cleared) and LTS:4
-  (patterns stopped, rate, TxFFE reset, `FLT_update` cleared, then `Config_1`), from a log
-  of both in order
+  (patterns stopped, then LTS:2's end at the new rate: `FLT_update` cleared, rate, TxFFE
+  reset, patterns and gap characters restored, `Config_0`, `Config_1`), from a log of both
+  in order
 - `FLT_no_timeout` holding across a rate drop and a retrain within one call, and a TxFFE
   raise followed under it
 - After an error: a failed LTS:L reported per end (`TmdsExit::Failed`), the
