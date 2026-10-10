@@ -54,6 +54,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   each end's LTS:L error, or `Skipped`). A fallback whose LTS:L fails returns the new
   `ExitFailed { reason, scdc, phy }` instead of `FallbackRequired`. `TrainingError` is
   now `#[non_exhaustive]`.
+- **The traced methods return the trace whatever the result**: `train_traced` and
+  `train_at_rate_traced` return `(Result<TrainingOutcome, TrainingError>, TrainingTrace)`
+  instead of `Result<(TrainingOutcome, TrainingTrace), TrainingError>`, so an attempt
+  that ended in an error can be explained from its events.
 - **`TrainingTrace` records the list of rates**: its `rate` field is replaced by
   `rates: Vec<HdmiForumFrl>`, and `TrainingTrace::new` takes the rates instead of a
   single rate.

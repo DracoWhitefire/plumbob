@@ -139,7 +139,7 @@ starts video with `set_frl_output(Active)`. After `Success` the sink can still r
 driver checks every 250 ms) and calls `train` again when it is set.
 
 **LTS:4** moves to the next rate in the list and continues LTS:3 there. **LTS:L**
-returns both ends to TMDS before any `FallbackRequired`.
+returns both ends to TMDS before any `FallbackRequired`, and after an SCDC or PHY error.
 
 Poll limits are exact counts: N means exactly N polls before the state gives up. The
 defaults (50 / 100 / 100 polls) reproduce the spec's 100 ms and 200 ms timeouts, and the
@@ -155,13 +155,14 @@ See [`doc/architecture.md`](doc/architecture.md) for the procedure step by step.
 ## Diagnostics
 
 Enable the `alloc` feature to get `train_traced` (and `train_at_rate_traced`), which
-return a `TrainingTrace` alongside the outcome. The trace records the rates, the
-`TrainingConfig` in force, and an ordered `TrainingEvent` log covering the full attempt:
+return a `TrainingTrace` alongside the result, whether that is an outcome or an error.
+The trace records the rates, the `TrainingConfig` in force, and an ordered
+`TrainingEvent` log covering the full attempt:
 
 ```rust
-let (outcome, trace) = trainer.train_traced(&rates, &config)?;
+let (result, trace) = trainer.train_traced(&rates, &config);
 
-println!("Outcome: {outcome:?}");
+println!("Result: {result:?}");
 for event in &trace.events {
     println!("  {event:?}");
 }

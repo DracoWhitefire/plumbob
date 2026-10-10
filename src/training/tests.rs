@@ -1074,9 +1074,8 @@ mod traced {
         rates: &[HdmiForumFrl],
         config: &TrainingConfig,
     ) -> (TrainingOutcome, TrainingTrace) {
-        FrlTrainer::new(sink, SimPhy::new())
-            .train_traced(rates, config)
-            .unwrap()
+        let (result, trace) = FrlTrainer::new(sink, SimPhy::new()).train_traced(rates, config);
+        (result.unwrap(), trace)
     }
 
     fn ffe_3() -> TrainingConfig {
@@ -1311,11 +1310,9 @@ mod traced {
                 .frl_start_after(0)
         };
         let mut trainer = FrlTrainer::new(sink(), SimPhy::new());
-        let (outcome, trace) = trainer
-            .train_at_rate_traced(RATE, &TrainingConfig::default())
-            .unwrap();
+        let (outcome, trace) = trainer.train_at_rate_traced(RATE, &TrainingConfig::default());
         let (untraced, _, _) = run(sink(), &[RATE], &TrainingConfig::default());
-        assert_eq!(outcome, untraced);
+        assert_eq!(outcome, Ok(untraced));
         assert_eq!(trace.rates, [RATE]);
     }
 
@@ -1327,16 +1324,45 @@ mod traced {
     }
 
     #[test]
-    fn traced_errors_are_returned() {
+    fn traced_errors_are_returned_with_the_trace() {
         let mut trainer =
             FrlTrainer::new(SimSink::new().fail(SinkOp::ReadUpdateFlags), SimPhy::new());
+        let (result, trace) = trainer.train_traced(&[RATE], &TrainingConfig::default());
         let exit = TmdsExit::Failed {
             scdc: Some(()),
             phy: None,
         };
+        assert_eq!(result, Err(TrainingError::Scdc { error: (), exit }));
+        assert_eq!(trace.rates, [RATE]);
         assert_eq!(
-            trainer.train_traced(&[RATE], &TrainingConfig::default()),
-            Err(TrainingError::Scdc { error: (), exit })
+            trace.events,
+            [TrainingEvent::ExitToTmdsFailed {
+                scdc: true,
+                phy: false
+            }]
+        );
+    }
+
+    #[test]
+    fn an_error_trace_records_the_attempt_up_to_the_error() {
+        let sink = SimSink::new()
+            .flt_ready_after(2)
+            .fail_call(SinkOp::ReadLtpRequests, 1)
+            .round(0, all(LtpReq::Lfsr0));
+        let (result, trace) =
+            FrlTrainer::new(sink, SimPhy::new()).train_traced(&[RATE], &TrainingConfig::default());
+        let exit = TmdsExit::Exited;
+        assert_eq!(result, Err(TrainingError::Scdc { error: (), exit }));
+        assert_eq!(
+            trace.events,
+            [
+                TrainingEvent::FltReady { after_polls: 3 },
+                TrainingEvent::RateConfigured {
+                    rate: RATE,
+                    ffe_levels: FfeLevels::default()
+                },
+                TrainingEvent::ExitedToTmds,
+            ]
         );
     }
 

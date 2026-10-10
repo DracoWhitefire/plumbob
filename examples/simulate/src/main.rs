@@ -182,9 +182,8 @@ fn main() {
     println!();
 
     let mut trainer = FrlTrainer::new(SimSink::default(), SimPhy);
-    let (outcome, trace) = trainer
-        .train_traced(&rates, &config)
-        .expect("SimSink and SimPhy are infallible");
+    let (result, trace) = trainer.train_traced(&rates, &config);
+    let outcome = result.expect("SimSink and SimPhy are infallible");
 
     println!();
     println!("Outcome: {outcome:?}");

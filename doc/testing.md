@@ -72,6 +72,7 @@ The `alloc`-gated tests exercise `train_traced` and `train_at_rate_traced` and a
 - `TrainingTrace` carrying the rates and the `TrainingConfig`, so poll counts in events
   are interpretable against the configured limits
 - Traced and untraced runs agreeing on the outcome
+- An error returned with its trace: the events up to the error, then LTS:L's event
 
 ### The sync driver
 

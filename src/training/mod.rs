@@ -198,26 +198,30 @@ impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
     }
 
     /// Like [`train_at_rate`](Self::train_at_rate), and also returns a [`TrainingTrace`]
-    /// of the attempt.
+    /// of the attempt, whatever its result.
     #[cfg(feature = "alloc")]
     pub fn train_at_rate_traced(
         &mut self,
         rate: HdmiForumFrl,
         config: &TrainingConfig,
-    ) -> Result<(TrainingOutcome, TrainingTrace), Error<C, P>> {
+    ) -> (Result<TrainingOutcome, Error<C, P>>, TrainingTrace) {
         self.train_traced(&[rate], config)
     }
 
     /// Like [`train`](Self::train), and also returns a [`TrainingTrace`] of the attempt.
+    ///
+    /// The trace is returned whatever the result, so an attempt that ended in a
+    /// [`TrainingError`] can be explained as well: its events up to the error, then LTS:L's
+    /// `ExitedToTmds` or `ExitToTmdsFailed`.
     #[cfg(feature = "alloc")]
     pub fn train_traced(
         &mut self,
         rates: &[HdmiForumFrl],
         config: &TrainingConfig,
-    ) -> Result<(TrainingOutcome, TrainingTrace), Error<C, P>> {
+    ) -> (Result<TrainingOutcome, Error<C, P>>, TrainingTrace) {
         let mut events = Vec::new();
-        let outcome = self.run(rates, config, &mut |event| events.push(event))?;
-        Ok((outcome, TrainingTrace::new(rates.to_vec(), *config, events)))
+        let result = self.run(rates, config, &mut |event| events.push(event));
+        (result, TrainingTrace::new(rates.to_vec(), *config, events))
     }
 
     /// Runs [`lts::run`] over this trainer's SCDC client and PHY.

@@ -327,11 +327,12 @@ impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
     /// `train(&[rate], config)`.
     pub fn train_at_rate(&mut self, rate: HdmiForumFrl, config: &TrainingConfig)
         -> Result<TrainingOutcome, TrainingError<C::Error, P::Error>>;
-    /// `train` and `train_at_rate`, also returning a `TrainingTrace` (alloc).
+    /// `train` and `train_at_rate`, also returning a `TrainingTrace` (alloc), whatever
+    /// the result.
     pub fn train_traced(&mut self, rates: &[HdmiForumFrl], config: &TrainingConfig)
-        -> Result<(TrainingOutcome, TrainingTrace), TrainingError<C::Error, P::Error>>;
+        -> (Result<TrainingOutcome, TrainingError<C::Error, P::Error>>, TrainingTrace);
     pub fn train_at_rate_traced(&mut self, rate: HdmiForumFrl, config: &TrainingConfig)
-        -> Result<(TrainingOutcome, TrainingTrace), TrainingError<C::Error, P::Error>>;
+        -> (Result<TrainingOutcome, TrainingError<C::Error, P::Error>>, TrainingTrace);
     // `new` and `into_parts` construct the trainer and recover the client and PHY.
 }
 
