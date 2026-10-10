@@ -137,6 +137,9 @@ These are distinct result types representing different failure modes:
   end that completed its steps and is in TMDS.
 - **`TrainingError::ExitFailed { reason, error }`** — the attempt fell back for `reason`,
   and LTS:L then failed with the `ExitError` `error`.
+- **`TrainingError::InvalidRates { index, rate }`** — the rate list cannot be trained over:
+  `rate`, at `index`, is `NotSupported` or not strictly lower than the rate before it
+  (LTS:4 steps down). Nothing was done; no SCDC or PHY operation was performed.
 
 `FrlTrainer::exit_to_tmds` runs LTS:L on its own and returns `Result<(), ExitError>`.
 

@@ -63,8 +63,9 @@ pub enum TrainingOutcome {
 
 /// Hard error that terminated a training attempt.
 ///
-/// Distinct from [`TrainingOutcome::FallbackRequired`]: this means something
-/// failed at the I/O level, not that the link simply did not train at this rate.
+/// Distinct from [`TrainingOutcome::FallbackRequired`]: this means something failed —
+/// an SCDC or PHY operation, or a rate list the procedure cannot run
+/// ([`InvalidRates`](Self::InvalidRates)) — not that the link simply did not train.
 ///
 /// After an SCDC or PHY error, plumbob performs LTS:L, returning both ends to TMDS as
 /// after a fallback, unless [`TrainingConfig::exit_to_tmds_on_error`] is off. `exit` says
@@ -93,6 +94,15 @@ pub enum TrainingError<ScdcErr, PhyErr> {
         reason: FallbackReason,
         /// LTS:L's errors.
         error: ExitError<ScdcErr, PhyErr>,
+    },
+    /// The rate list cannot be trained over, so nothing was done: no SCDC or PHY
+    /// operation was performed. Every rate must be an FRL rate (not `NotSupported`), and
+    /// each must be strictly lower than the one before it, because LTS:4 steps down.
+    InvalidRates {
+        /// The position of the first offending rate in the list.
+        index: usize,
+        /// That rate.
+        rate: HdmiForumFrl,
     },
 }
 
@@ -231,7 +241,9 @@ impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
     /// Returns [`TrainingOutcome::Success`] once the sink sets `FRL_start`, or
     /// [`TrainingOutcome::FallbackRequired`] with the reason the attempt ended. An empty
     /// list returns `FallbackRequired { reason: RatesExhausted }` without touching the
-    /// sink. A [`TrainingError`] is returned only on SCDC or PHY failures.
+    /// sink. A [`TrainingError`] is returned on SCDC or PHY failures, and, before anything
+    /// is done, for a list with `NotSupported` or a rate not strictly lower than the one
+    /// before it ([`TrainingError::InvalidRates`]).
     pub fn train(
         &mut self,
         rates: &[HdmiForumFrl],

@@ -212,6 +212,57 @@ fn train_at_rate_is_train_with_one_rate() {
 }
 
 #[test]
+fn a_rate_list_the_procedure_cannot_run_is_rejected_without_io() {
+    use HdmiForumFrl::*;
+    let cases: [(&[HdmiForumFrl], usize, HdmiForumFrl); 5] = [
+        (&[NotSupported], 0, NotSupported),
+        (&[Rate12Gbps4Lanes, NotSupported], 1, NotSupported),
+        (&[Rate12Gbps4Lanes, Rate12Gbps4Lanes], 1, Rate12Gbps4Lanes),
+        (&[Rate10Gbps4Lanes, Rate12Gbps4Lanes], 1, Rate12Gbps4Lanes),
+        (
+            &[Rate12Gbps4Lanes, Rate6Gbps3Lanes, Rate6Gbps4Lanes],
+            2,
+            Rate6Gbps4Lanes,
+        ),
+    ];
+    for (rates, index, rate) in cases {
+        let mut trainer = FrlTrainer::new(SimSink::new().flt_ready_after(0), SimPhy::new());
+        let result = trainer.train(rates, &TrainingConfig::default());
+        assert_eq!(
+            result,
+            Err(TrainingError::InvalidRates { index, rate }),
+            "{rates:?}"
+        );
+        let (sink, phy) = trainer.into_parts();
+        assert!(sink.calls.is_empty(), "{rates:?}");
+        assert!(phy.calls.is_empty(), "{rates:?}");
+    }
+}
+
+#[test]
+fn every_rate_in_descending_order_is_accepted() {
+    use HdmiForumFrl::*;
+    let rates = [
+        Rate12Gbps4Lanes,
+        Rate10Gbps4Lanes,
+        Rate8Gbps4Lanes,
+        Rate6Gbps4Lanes,
+        Rate6Gbps3Lanes,
+        Rate3Gbps3Lanes,
+    ];
+    // The sink asks for a lower rate at every step: training walks the whole list.
+    let mut sink = SimSink::new().flt_ready_after(0);
+    for _ in 0..rates.len() {
+        sink = sink.round(0, all(LtpReq::RateChange));
+    }
+    let (outcome, sink, _) = run(sink, &rates, &TrainingConfig::default());
+    assert_eq!(outcome, fallback(FallbackReason::RatesExhausted));
+    let mut configured = rates.to_vec();
+    configured.push(NotSupported);
+    assert_eq!(frl_configs(&sink), configured);
+}
+
+#[test]
 fn empty_rate_list_does_not_touch_the_sink() {
     let (outcome, sink, phy) = run(SimSink::new(), &[], &TrainingConfig::default());
     assert_eq!(outcome, fallback(FallbackReason::RatesExhausted));

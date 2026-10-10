@@ -63,7 +63,8 @@ pub trait TrainingIo {
 /// This is the procedure behind [`FrlTrainer::train`](crate::FrlTrainer::train): the same
 /// outcomes, errors and events, with `record` called for each [`TrainingEvent`] as it
 /// occurs. An empty `rates` returns `FallbackRequired { reason: RatesExhausted }` without
-/// any I/O.
+/// any I/O; a list the procedure cannot run — `NotSupported`, or a rate not strictly lower
+/// than the one before it — returns [`TrainingError::InvalidRates`], also without any I/O.
 ///
 /// The outcome comes with the [`TrainingWarning`](crate::TrainingWarning)s the attempt
 /// produced, built from the same events `record` receives.
@@ -130,6 +131,18 @@ pub(crate) const SOURCE_TEST_UPDATE: UpdateFlags = UpdateFlags {
     frl_start: false,
     flt_update: false,
 };
+
+/// The first rate in `rates` the procedure cannot train at: `NotSupported` (not an FRL
+/// rate), or one that is not strictly lower than the rate before it (LTS:4 steps down).
+/// The discriminants of `HdmiForumFrl` are in bandwidth order.
+fn invalid_rate(rates: &[HdmiForumFrl]) -> Option<(usize, &HdmiForumFrl)> {
+    rates.iter().enumerate().find(|&(index, &rate)| {
+        rate == HdmiForumFrl::NotSupported
+            || index
+                .checked_sub(1)
+                .is_some_and(|previous| rate as u8 >= rates[previous] as u8)
+    })
+}
 
 /// The number of lanes in use at `rate`: 3 for the 3-lane rates, 4 otherwise.
 fn lane_count(rate: HdmiForumFrl) -> usize {
@@ -375,6 +388,9 @@ impl<Io: TrainingIo> Machine<'_, Io> {
         config: &TrainingConfig,
         record: &mut F,
     ) -> Result<TrainingOutcome, Error<Io>> {
+        if let Some((index, &rate)) = invalid_rate(rates) {
+            return Err(TrainingError::InvalidRates { index, rate });
+        }
         let Some((&rate, lower)) = rates.split_first() else {
             return Ok(TrainingOutcome::FallbackRequired {
                 reason: FallbackReason::RatesExhausted,

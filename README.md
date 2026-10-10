@@ -112,6 +112,10 @@ the bus. After an I/O error plumbob still returns both ends to TMDS, and the err
 `exit` field (`TmdsExit`) says whether that worked; set
 `TrainingConfig::exit_to_tmds_on_error` to `false` to leave them as the error left them.
 
+The rates must be FRL rates, each strictly lower than the one before it: LTS:4 steps
+down. Any other list is rejected with `TrainingError::InvalidRates` before anything is
+done.
+
 ```mermaid
 flowchart TD
     A["train(rates, config)"]

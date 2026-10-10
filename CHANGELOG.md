@@ -62,8 +62,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   are struct variants carrying the outcome: `Scdc { error, exit }` and
   `Phy { error, exit }`, with `exit` a `TmdsExit` (`Exited`, `Failed(ExitError)` with
   each end's LTS:L error, or `Skipped`). A fallback whose LTS:L fails returns the new
-  `ExitFailed { reason, error }` instead of `FallbackRequired`. `TrainingError` is now
-  `#[non_exhaustive]`.
+  `ExitFailed { reason, error }` instead of `FallbackRequired`. A rate list the
+  procedure cannot run — `NotSupported`, or a rate not strictly lower than the one before
+  it, since LTS:4 steps down — is rejected before any I/O with the new
+  `InvalidRates { index, rate }`. `TrainingError` is now `#[non_exhaustive]`.
 - **The traced methods return the trace whatever the result**: `train_traced` and
   `train_at_rate_traced` return `(Result<Trained, TrainingError>, TrainingTrace)` instead
   of `Result<(TrainingOutcome, TrainingTrace), TrainingError>`, so an attempt that ended

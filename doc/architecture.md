@@ -93,7 +93,12 @@ the caller and trains at that rate.
 `train` runs the source side of FRL link training over a caller-supplied list of rates, in
 order, and returns when it reaches a terminal state; `train_at_rate` is the same with a
 single rate. An empty list returns `FallbackRequired { reason: RatesExhausted }` without
-touching the sink. The sequence follows the link training states (LTS) of the
+touching the sink. The list must be one the procedure can run: LTS:4 is a step down, so
+every rate must be strictly lower than the one before it, and `NotSupported` is not an
+FRL rate. Any other list is rejected with `TrainingError::InvalidRates { index, rate }`
+before any SCDC or PHY operation — the specification decides this, not the caller, and
+running a list LTS:4 cannot follow would invent behaviour. Which valid rates to try
+remains the caller's choice. The sequence follows the link training states (LTS) of the
 HDMI 2.1 specification as implemented by open-source HDMI 2.1 transmitters: the
 AMD/Xilinx `v_hdmitx1` driver (`xv_hdmitx1_frl.c`) and the Intel `xe` FRL series
 (`intel_hdmi_train_lanes`). LTS:1 (reading the sink's EDID and SCDC capability) is the
@@ -414,6 +419,8 @@ pub enum TrainingError<ScdcErr, PhyErr> {
     Phy { error: PhyErr, exit: TmdsExit<ScdcErr, PhyErr> },
     /// The attempt fell back, and LTS:L then failed.
     ExitFailed { reason: FallbackReason, error: ExitError<ScdcErr, PhyErr> },
+    /// The rate list cannot be trained over; nothing was done.
+    InvalidRates { index: usize, rate: HdmiForumFrl },
 }
 
 /// What LTS:L did after an SCDC or PHY error.
