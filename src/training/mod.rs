@@ -221,6 +221,27 @@ impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
         (self.scdc, self.phy)
     }
 
+    /// The SCDC client.
+    pub fn scdc(&self) -> &C {
+        &self.scdc
+    }
+
+    /// The SCDC client, mutably.
+    pub fn scdc_mut(&mut self) -> &mut C {
+        &mut self.scdc
+    }
+
+    /// The PHY.
+    pub fn phy(&self) -> &P {
+        &self.phy
+    }
+
+    /// The PHY, mutably: after `Success`, for example, to start video with
+    /// `set_frl_output(FrlOutput::Active)`.
+    pub fn phy_mut(&mut self) -> &mut P {
+        &mut self.phy
+    }
+
     /// LTS:L on demand: stops the training patterns, returns the PHY to TMDS, turns FRL
     /// off in `Config_1` and clears `FLT_update` if it is set.
     ///
@@ -288,7 +309,7 @@ impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
     }
 
     /// Like [`train`](Self::train), calling `record` with each [`TrainingEvent`] as it
-    /// occurs: the events [`train_traced`](Self::train_traced) collects, without an
+    /// occurs: the events `train_traced` (with `alloc`) collects, without an
     /// allocator. The caller decides what to keep — log each event, count them, or store
     /// the last few.
     pub fn train_with_events<F: FnMut(TrainingEvent)>(

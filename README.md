@@ -61,8 +61,7 @@ Construct an `FrlTrainer` and train over the rates to try, highest first. plumbo
 down through the list when the sink asks for a lower rate:
 
 ```rust
-use display_types::cea861::hdmi_forum::HdmiForumFrl;
-use plumbob::{FrlTrainer, TrainingConfig, TrainingOutcome};
+use plumbob::{FrlOutput, FrlTrainer, HdmiForumFrl, HdmiPhy, TrainingConfig, TrainingOutcome};
 
 let mut trainer = FrlTrainer::new(scdc, phy);
 let config = TrainingConfig::default();
@@ -77,7 +76,7 @@ let trained = trainer.train(&rates, &config)?;
 match trained.outcome {
     TrainingOutcome::Success { achieved_rate } => {
         println!("Trained at {achieved_rate:?}");
-        // Start video: phy.set_frl_output(FrlOutput::Active)
+        trainer.phy_mut().set_frl_output(FrlOutput::Active)?; // start video
     }
     TrainingOutcome::FallbackRequired { reason } => {
         println!("No FRL link ({reason:?}); the sink is back in TMDS");
@@ -156,10 +155,11 @@ the full per-lane set is sent to the PHY after every `FLT_update`. All lanes rep
 
 **LTS:P** sends gap characters until the sink sets `FRL_start` (success) or `FLT_update`
 (retrain, up to `TrainingConfig::max_retrains` times per call); if it sets both at once,
-the retrain wins. After `Success`, the caller
-starts video with `set_frl_output(Active)`. After `Success` the sink can still request retraining during active video by setting
-`FLT_update`; plumbob does not watch for it. The caller polls `Update_0` (the Xilinx
-driver checks every 250 ms) and calls `train` again when it is set.
+the retrain wins. After `Success`, the caller starts video with
+`trainer.phy_mut().set_frl_output(FrlOutput::Active)`. The sink can still request
+retraining during active video by setting `FLT_update`; plumbob does not watch for it.
+The caller polls `Update_0` (the Xilinx driver checks every 250 ms) and calls `train`
+again when it is set.
 
 **LTS:4** moves to the next rate in the list and continues LTS:3 there. **LTS:L**
 returns both ends to TMDS before any `FallbackRequired`, and after an SCDC or PHY error.

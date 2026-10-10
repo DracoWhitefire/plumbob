@@ -37,6 +37,14 @@ pub use types::{
 };
 
 pub use trace::TrainingEvent;
+
+/// The FRL rate and the PHY interface `FrlTrainer` drives, re-exported from `display-types`
+/// and `hdmi-hal` so that callers and PHY implementations use the same versions plumbob
+/// does without depending on those crates themselves.
+pub use display_types::cea861::hdmi_forum::HdmiForumFrl;
+pub use hdmi_hal::phy::{
+    EqParams, FrlOutput, HdmiPhy, LaneEqParams, LanePatterns, LtpPattern, TxFfeLevel,
+};
 #[cfg(feature = "alloc")]
 pub use trace::TrainingTrace;
 pub use warning::{MAX_WARNINGS, Trained, TrainingWarning};

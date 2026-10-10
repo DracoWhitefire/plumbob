@@ -1473,6 +1473,21 @@ fn exit_to_tmds_on_error_off_leaves_both_ends_as_they_were() {
     assert_eq!(phy_rates(&phy), [RATE]);
 }
 
+// --- Accessors
+
+#[test]
+fn the_trainer_gives_access_to_its_client_and_phy() {
+    let mut trainer = FrlTrainer::new(SimSink::new(), SimPhy::new());
+    // Starting video after training goes through the PHY the trainer holds.
+    trainer.phy_mut().set_frl_output(FrlOutput::Active).unwrap();
+    trainer.scdc_mut().read_flt_ready().unwrap();
+    assert_eq!(
+        trainer.phy().calls,
+        [PhyCall::SetFrlOutput(FrlOutput::Active)]
+    );
+    assert_eq!(trainer.scdc().calls, [SinkCall::ReadFltReady(false)]);
+}
+
 // --- exit_to_tmds on demand
 
 #[test]

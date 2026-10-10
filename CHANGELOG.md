@@ -84,6 +84,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **`FrlTrainer::phy`, `phy_mut`, `scdc` and `scdc_mut`** — access to the PHY and SCDC
+  client the trainer holds, for example to start video after `Success` without
+  `into_parts`.
+- Re-exports of `HdmiForumFrl`, `HdmiPhy` and the PHY types (`EqParams`, `LaneEqParams`,
+  `LanePatterns`, `FrlOutput`, `LtpPattern`, `TxFfeLevel`), so callers and PHY
+  implementations need no direct `display-types` or `hdmi-hal` dependency and cannot end
+  up with versions other than plumbob's.
 - **`FrlTrainer::train(rates, config)`** — trains over a caller-supplied list of rates,
   stepping down when the sink requests a lower rate (LTS:4). `train_at_rate` is `train`
   with one rate. `train_traced` is its traced form, alongside `train_at_rate_traced`.

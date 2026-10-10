@@ -182,8 +182,8 @@ If training has not passed within the poll limit, go to LTS:L and return
      as in the Xilinx driver: `frl_start` is cleared (so it cannot end the next LTS:P
      early) and `FrlStartWithRetrain` is recorded; then the retrain below.
    - **`frl_start`** — clear it and return `Success`. The caller starts video
-     (`set_frl_output(Active)`) on the PHY it gets back from `into_parts`, or through the
-     trainer it keeps.
+     (`set_frl_output(Active)`) on the PHY, through `FrlTrainer::phy_mut` or after
+     `into_parts`.
    - **`flt_update`** — the sink requests retraining: go back to LTS:3, at most
      `TrainingConfig::max_retrains` times per `train` call. LTS:3 resumes from the state
      LTS:P left: no pattern on any lane, the TxFFE levels as they were. The next request
