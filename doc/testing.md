@@ -54,8 +54,9 @@ kept apart, and the five distinct warnings an attempt can produce fit without `a
 - `FLT_no_timeout` suspending the limits (from LTS:2 or LTS:3) up to its cap, holding for
   every attempt while it stays set, and the cap ending LTS:2, LTS:3 or LTS:P with
   `NoTimeoutHold` and no LTS:L (while LTS:P without it still falls back)
-- Retraining from LTS:P, bounded by `max_retrains` (including 0), counted across a rate
-  drop, and still falling back when exhausted under `FLT_no_timeout`
+- Retraining from LTS:P: resuming LTS:3 with no pattern on any lane and the TxFFE levels
+  kept, bounded by `max_retrains` (including 0), counted across a rate drop, and still
+  falling back when exhausted under `FLT_no_timeout`
 - Warnings: undefined requests returned as `TrainingWarning`s, merged per lane with a
   count, on a success and on a fallback, and none for a clean attempt
 - LTS:4: stepping down through the list, resetting the lanes, moving to a 3-lane rate, a

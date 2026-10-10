@@ -125,8 +125,10 @@ The number of active lanes follows from the rate: 3 for `Rate3Gbps3Lanes` and
 
 ### LTS:3 — Train
 
-plumbob keeps the current pattern and TxFFE level of every lane. Each lane starts with no
-pattern and TxFFE level 0. Repeat, at most `TrainingConfig::ltp_polls` times:
+plumbob keeps the current pattern and TxFFE level of every lane, and that state is
+always what the PHY was last told: LTS:2 leaves every lane with no pattern and TxFFE level
+0, LTS:P stops the patterns (keeping the levels), and LTS:4 resets both. Repeat, at most
+`TrainingConfig::ltp_polls` times:
 
 1. Read `UpdateFlags`. If `flt_update` is not set, poll again.
 2. If `source_test_update` is set, re-read `SourceTestConfig` and clear the flag.
@@ -151,7 +153,9 @@ pattern and TxFFE level 0. Repeat, at most `TrainingConfig::ltp_polls` times:
 
      Then send the full per-lane pattern set to the PHY (`send_ltp`) and, if any TxFFE
      level changed, the per-lane levels (`adjust_equalization`). The PHY applies exactly
-     what it is given; plumbob holds the state.
+     what it is given; plumbob holds the state, and the state never differs from what the
+     PHY was last told — so plumbob never sends a pattern no request and no state of its
+     own accounts for.
 4. Clear `FLT_update` so the sink can post its next request.
 
 If training has not passed within the poll limit, go to LTS:L and return
@@ -167,7 +171,8 @@ If training has not passed within the poll limit, go to LTS:L and return
      (`set_frl_output(Active)`) on the PHY it gets back from `into_parts`, or through the
      trainer it keeps.
    - **`flt_update`** — the sink requests retraining: go back to LTS:3, at most
-     `TrainingConfig::max_retrains` times per `train` call. The next request after that
+     `TrainingConfig::max_retrains` times per `train` call. LTS:3 resumes from the state
+     LTS:P left: no pattern on any lane, the TxFFE levels as they were. The next request after that
      goes to LTS:L and returns `FallbackRequired { reason: RetrainsExhausted }`.
 3. If neither arrives within the limit, go to LTS:L and return
    `FallbackRequired { reason: FrlStartTimeout }` — or, under `FLT_no_timeout`, hold the
@@ -731,8 +736,13 @@ and recorded by `hdmi-hal-i2c-dev`'s `StubPhy`):
   in place; plumbob tracks and sends the full per-lane set.
 - FRL output control (`set_frl_output`) is part of `HdmiPhy`.
 - In LTS:P, `FRL_start` is checked before `FLT_update` when both are set.
-- Retraining from LTS:P keeps each lane's pattern and TxFFE level and starts LTS:3 with a
-  fresh poll limit; levels are reset only in LTS:2 and LTS:4. Retraining is bounded by
+- Retraining from LTS:P starts LTS:3 from the state LTS:P left — no pattern on any lane,
+  each lane's TxFFE level kept — with a fresh poll limit; levels are reset only in LTS:2
+  and LTS:4. This follows from plumbob's lane model being what the PHY was last told
+  (LTS:P stopped the patterns but not the levels), and matches the Xilinx driver, which
+  clears the patterns on entering LTS:P and again on the retrain but keeps its TxFFE
+  adjustments. Intel rebuilds every lane's pattern from scratch on each request, and AMD
+  reruns the whole procedure. Retraining is bounded by
   `max_retrains` (default 3) per `train` call, so the LTS:P ↔ LTS:3 cycle always ends.
   The reference drivers differ here: Xilinx returns to LTS:3 without a limit (its state
   machine is timer-driven, not blocking), AMD reruns the whole procedure up to 3 times,

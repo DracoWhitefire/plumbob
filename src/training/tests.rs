@@ -1136,6 +1136,51 @@ fn flt_update_in_lts_p_returns_to_lts_3() {
 }
 
 /// A sink that passes training and then asks to retrain `retrains` times.
+#[test]
+fn a_retrain_starts_lts_3_from_no_pattern_and_keeps_the_levels() {
+    let config = TrainingConfig {
+        ffe_levels: FfeLevels::new(3).unwrap(),
+        ..TrainingConfig::default()
+    };
+    let sink = SimSink::new()
+        .flt_ready_after(0)
+        .round(0, all(LtpReq::Lfsr0))
+        .round(
+            0,
+            requests(LtpReq::None, LtpReq::FfeChange, LtpReq::None, LtpReq::None),
+        )
+        .round(0, all(LtpReq::None))
+        // The retrain: only lane 1 asks for a pattern.
+        .round(
+            1,
+            requests(LtpReq::None, LtpReq::Lfsr1, LtpReq::None, LtpReq::None),
+        )
+        .round(0, all(LtpReq::None))
+        .frl_start_after(0);
+    let (outcome, _, phy) = run(sink, &[RATE], &config);
+    assert_eq!(
+        outcome,
+        TrainingOutcome::Success {
+            achieved_rate: RATE
+        }
+    );
+    let lfsr0 = Some(LtpPattern::Lfsr0);
+    assert_eq!(
+        ltp_sent(&phy),
+        [
+            uniform(4, lfsr0),
+            uniform(4, lfsr0),
+            // LTS:P stops every pattern...
+            LanePatterns::default(),
+            // ...so after the retrain, lanes asking for 0x0 stay without one.
+            patterns(None, Some(LtpPattern::Lfsr1), None, None),
+            LanePatterns::default(),
+        ]
+    );
+    // Lane 1's raised level carries over the retrain: no reset is sent.
+    assert_eq!(levels_sent(&phy), [[0, 1, 0, 0]]);
+}
+
 fn retraining_sink(retrains: usize) -> SimSink {
     let mut sink = SimSink::new()
         .flt_ready_after(0)

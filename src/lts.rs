@@ -158,8 +158,9 @@ fn lane_eq(level: u8) -> LaneEqParams {
     params
 }
 
-/// Each lane's current pattern and TxFFE level, held by plumbob through LTS:3. The PHY
-/// applies exactly what it is given.
+/// Each lane's current pattern and TxFFE level, held by plumbob. The PHY applies exactly
+/// what it is given, and the lanes always hold what it was last told: LTS:P's stop clears
+/// the patterns, LTS:4 resets everything.
 #[derive(Debug)]
 pub(crate) struct Lanes {
     count: usize,
@@ -175,6 +176,11 @@ impl Lanes {
             patterns: [None; 4],
             levels: [0; 4],
         }
+    }
+
+    /// Stops every lane's pattern, keeping its TxFFE level: what LTS:P tells the PHY.
+    fn stop_patterns(&mut self) {
+        self.patterns = [None; 4];
     }
 
     /// Updates each lane from the sink's request for it, recording each TxFFE raise.
@@ -545,7 +551,11 @@ impl<Io: TrainingIo> Machine<'_, Io> {
         config: &TrainingConfig,
         record: &mut F,
     ) -> Result<State, Failure<Io>> {
-        self.send_ltp(uniform(attempt.lanes.count, None)).await?;
+        // The lanes always hold what the PHY was last told: stopping the patterns here
+        // means a retrain starts LTS:3 from no pattern, as the PHY does. The TxFFE
+        // levels are not touched, so they carry over.
+        attempt.lanes.stop_patterns();
+        self.send_ltp(attempt.lanes.patterns()).await?;
         self.set_frl_output(FrlOutput::GapOnly).await?;
         self.clear(FLT_UPDATE).await?;
 

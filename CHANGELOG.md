@@ -89,7 +89,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   retrains as well, not only to the attempt that saw `Source_Test_Update`.
 - **Retraining from LTS:P** — a `FLT_update` before `FRL_start` returns to LTS:3, up to
   `TrainingConfig::max_retrains` times per call (default 3); the next request ends the
-  attempt with `RetrainsExhausted`, so training always terminates.
+  attempt with `RetrainsExhausted`, so training always terminates. LTS:3 resumes from the
+  state LTS:P left: no pattern on any lane, TxFFE levels kept.
 - **`plumbob::lts`** — the state machine as one I/O-free `async fn`, `lts::run`, over
   the `TrainingIo` trait (the SCDC and PHY operations training performs). `FrlTrainer`
   drives it synchronously without an async runtime (one poll with `Waker::noop`), and
