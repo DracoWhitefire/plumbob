@@ -155,8 +155,10 @@ always what the PHY was last told: LTS:2 leaves every lane with no pattern and T
    - otherwise, per lane, update the lane's state:
      - **0x1, 0x2, 0x4–0x8** — that lane's pattern becomes the requested one.
      - **0x3** (Nyquist clock) — becomes the lane's pattern only when `flt_no_timeout` is
-       set. Otherwise the lane keeps its previous pattern, as the Xilinx driver does
-       (citing the spec's Table 6-32, LTP3 row) and AMD's driver does equivalently.
+       set. Otherwise the lane keeps its previous pattern and the other lanes are acted
+       on, as the Xilinx driver does (citing the spec's Table 6-32, LTP3 row). The AMD
+       driver differs: a 0x3 on any lane makes it skip the whole request set and wait
+       for the next `FLT_update`.
      - **0xE** — the lane's TxFFE level rises by one, up to the advertised maximum, and is
        held at the maximum if the sink keeps asking (the Intel series does this; the
        Xilinx driver wraps to 0 instead).
@@ -853,6 +855,11 @@ How a caller keeps a call shorter than the worst case:
   returns `NoTimeoutHold` without LTS:L. Both agree with the Xilinx driver, which has no
   limit, that the source does not leave FRL on its own timer under test. The Intel series
   does not handle `FLT_no_timeout`.
+- The 100 ms `FLT_ready` limit (50 polls) is the spec's and the shortest of the
+  references: the Xilinx driver waits 100 ms, the AMD driver up to 105 polls at least
+  2 ms apart (≈ 210 ms), the Intel series 250 ms. A sink that asserts `FLT_ready` within
+  those drivers' limits but after 100 ms ends the attempt with `FltReadyTimeout`; raise
+  `flt_ready_polls` for it.
 - A lane's TxFFE level is raised up to the advertised maximum and held there.
 - `TrainingConfig::ffe_levels` defaults to 3, the number the AMD and Intel drivers
   advertise (limited to the rate's maximum, which is 3 up to 12 Gbps). With 0, the sink
@@ -881,5 +888,6 @@ How a caller keeps a call shorter than the worst case:
   too: unlike the poll limits it is not suspended there, and exhausting it falls back
   rather than holding the link (see "`FLT_no_timeout` — holding the link").
 - A 0xF on some lanes but not all keeps those lanes' state, like 0x0; only 0xF on every
-  active lane lowers the rate.
+  active lane lowers the rate, as in the Xilinx driver and the Intel series. The AMD
+  driver lowers the rate on 0xF from any single lane.
 - The state machine does not call `read_ced`; CED counters are diagnostics.
