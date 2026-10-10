@@ -154,7 +154,8 @@ the full per-lane set is sent to the PHY after every `FLT_update`. All lanes rep
 0x0 passes training; all lanes reporting 0xF asks for a lower rate.
 
 **LTS:P** sends gap characters until the sink sets `FRL_start` (success) or `FLT_update`
-(retrain, up to `TrainingConfig::max_retrains` times per call). After `Success`, the caller
+(retrain, up to `TrainingConfig::max_retrains` times per call); if it sets both at once,
+the retrain wins. After `Success`, the caller
 starts video with `set_frl_output(Active)`. After `Success` the sink can still request retraining during active video by setting
 `FLT_update`; plumbob does not watch for it. The caller polls `Update_0` (the Xilinx
 driver checks every 250 ms) and calls `train` again when it is set.
