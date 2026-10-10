@@ -691,7 +691,11 @@ with no I/O of its own. Drivers supply the I/O:
   `.await`ing `run`.
 
 `TrainingIo`'s futures are not required to be `Send`, as in `hdmi-hal-async`: the targets
-are single-threaded executors and the sync driver.
+are single-threaded executors and the sync driver. Over concrete I/O types the `run`
+future is `Send` when their futures are; a caller generic over the I/O traits cannot spawn
+it on a multi-threaded executor. The fix — `Send` variants of the leaf traits in
+`hdmi-hal-async` and `plumbob-async`; `TrainingIo` itself needs none — is recorded, and
+deferred, in the stack design document ("Sync and Async Companions", "`Send` futures for multi-threaded executors").
 
 ---
 
