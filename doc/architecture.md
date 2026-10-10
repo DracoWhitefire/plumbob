@@ -52,12 +52,16 @@ The following are out of scope:
   decode raw register bytes or know SCDC register addresses.
 - **PHY vendor sequences** — plumbob calls `HdmiPhy` methods; the register sequences
   for lane reconfiguration are in platform PHY backends.
-- **Timing** — plumbob is synchronous and poll-based. No sleep, no timers. The spec's
-  timeouts (100 ms for `FLT_ready`, 200 ms for LTS:3) are expressed as poll limits in
-  `TrainingConfig`; their defaults assume one poll every 2 ms, which the caller's
-  transport or loop must provide.
-- **TMDS link setup** — plumbob handles FRL training only. TMDS mode is the fallback
-  that concordance selects if no FRL tier trains successfully; plumbob has no role in it.
+- **Timing** — plumbob is poll-based and has no clock: no sleep, no timers. `FrlTrainer`
+  blocks until training ends; `plumbob-async` drives the same state machine on the
+  caller's executor. The spec's timeouts (100 ms for `FLT_ready`, 200 ms for LTS:3) are
+  expressed as poll limits in `TrainingConfig`; their defaults assume one poll every 2 ms.
+  plumbob runs the polling loop itself, so the interval has to come from the polled
+  `ScdcClient` methods, which wait before they read.
+- **TMDS link setup** — plumbob handles FRL training only. Its part in TMDS ends at LTS:L,
+  which leaves both ends in TMDS: the PHY through `set_frl_rate(NotSupported)`, the sink
+  through `Config_1` with FRL off. Setting up the TMDS link — scrambling, the clock
+  ratio, the mode the caller chooses instead — is outside plumbob.
 - **CED-driven equalization** — equalization during training follows the sink's FFE
   change requests (0xE). Using CED counters to tune equalization beyond that is not part
   of the training procedure and is left to the caller.
@@ -113,13 +117,14 @@ The number of active lanes follows from the rate: 3 for `Rate3Gbps3Lanes` and
 ### LTS:2 — Prepare
 
 1. Read `SourceTestConfig`, and clear `UpdateFlags::source_test_update` if it is set.
-   `flt_no_timeout` suspends the poll limits of LTS:2 and LTS:3 (compliance testing). The
-   configuration is read on every attempt, not only when the update flag is set: a tester
-   sets `FLT_no_timeout` and leaves it, while the flag is cleared by the first attempt
-   that sees it. The Xilinx and AMD drivers read it unconditionally too. In LTS:3 it is
-   re-read when the flag is raised.
-2. Poll `StatusFlags::flt_ready` until the sink asserts it. If it does not within
-   `TrainingConfig::flt_ready_polls`, go to LTS:L and return
+   `flt_no_timeout` (compliance testing) replaces the poll limits of LTS:2, LTS:3 and LTS:P
+   with `TrainingConfig::no_timeout_poll_cap` (see below). The configuration is read on
+   every attempt, not only when the update flag is set: a tester sets `FLT_no_timeout`
+   and leaves it, while the flag is cleared by the first attempt that sees it. The Xilinx
+   and AMD drivers read it unconditionally too. In LTS:3 it is re-read when the flag is
+   raised.
+2. Poll `FLT_ready` (`ScdcClient::read_flt_ready`) until the sink asserts it. If it
+   does not within `TrainingConfig::flt_ready_polls`, go to LTS:L and return
    `FallbackRequired { reason: FltReadyTimeout }` — or, under `FLT_no_timeout`, hold the
    link (see below).
 3. Clear `FLT_update`.
@@ -358,6 +363,7 @@ pub enum TrainingWarning {
     UndefinedLtpRequest { lane: u8, value: u8, count: u32, in_use: bool },
 }
 
+#[non_exhaustive]
 pub enum TrainingOutcome {
     /// Training passed and the sink set FRL_start. The link is ready at this rate.
     Success { achieved_rate: HdmiForumFrl },
@@ -478,13 +484,14 @@ pub enum TrainingEvent {
     FltReady { after_polls: u32 },
     /// LTS:2: FLT_ready did not assert.
     FltReadyTimeout { polls: u32 },
-    /// LTS:2: Config_1 written.
+    /// LTS:2 or LTS:4: Config_1 written with this rate.
     RateConfigured { rate: HdmiForumFrl, ffe_levels: FfeLevels },
     /// LTS:3: the sink posted new requests (one event per FLT_update, not per poll).
     LtpRequested { requests: LtpRequests },
     /// LTS:3: a lane's TxFFE level was raised in response to 0xE.
     FfeRaised { lane: u8, level: u8 },
-    /// LTS:3: an active lane requested an undefined value (0x9–0xD); it was ignored.
+    /// LTS:3: a lane requested an undefined value (0x9–0xD). A lane in use keeps its
+    /// pattern and TxFFE level; lane 3 at a 3-lane rate is not in use.
     UndefinedLtpRequest { lane: u8, value: u8, in_use: bool },
     /// LTS:3: all active lanes reported 0x0.
     TrainingPassed { after_polls: u32 },
@@ -494,9 +501,9 @@ pub enum TrainingEvent {
     RatesExhausted,
     /// LTS:3: training did not pass within the poll limit.
     TrainingTimeout { polls: u32 },
-    /// LTS:P: the sink requested retraining (FLT_update) before FRL_start.
     /// LTS:P: FRL_start and FLT_update were set together; the retrain wins.
     FrlStartWithRetrain,
+    /// LTS:P: the sink requested retraining (FLT_update) before FRL_start.
     RetrainRequested,
     /// LTS:P: the sink requested retraining once more after max_retrains retrains.
     RetrainsExhausted { retrains: u32 },

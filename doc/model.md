@@ -49,7 +49,8 @@ is 0; `TrainingConfig`'s default advertises 3.
 
 ### `FrlConfig`
 
-Written to `Config_1` in LTS:2: the FRL rate (bits 3:0) and `FfeLevels` (bits 7:4).
+Written to `Config_1` in LTS:2, and again in LTS:4 for each lower rate: the FRL rate
+(bits 3:0) and `FfeLevels` (bits 7:4).
 `HdmiForumFrl::NotSupported` turns FRL off (LTS:L).
 
 ### `UpdateFlags` and `SourceTestConfig`
