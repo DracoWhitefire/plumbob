@@ -20,8 +20,11 @@ Tests for the owned protocol types cover:
   every rate up to 12 Gbps
 - Constructor invariants: `CedCount::new` strips the validity bit (`bits[14:0]` preserved,
   bit 15 masked off)
-- Defaults and equality for `UpdateFlags`, `SourceTestConfig`, `LtpRequests` and the CED
-  types
+- Defaults and equality for `UpdateFlags`, `SourceTestConfig`, `LtpRequests` and
+  `CedCount`
+
+Plain data types with no behaviour (`FrlConfig`, `CedCounters`) have no tests of their
+own: building one and reading its fields back would test only the compiler.
 
 ### The simulated sink and PHY (`src/training/sim.rs`)
 
@@ -111,8 +114,9 @@ The `alloc`-gated tests exercise `train_traced` and `train_at_rate_traced` and a
 ### The sync driver
 
 The state machine tests run through `FrlTrainer`, so they exercise `lts::run` driven
-synchronously. One more test checks the driver's guard: a future that is still pending
-after one poll — impossible over the sync adapter — panics rather than being dropped.
+synchronously. One more test checks the driver's guard by running `block_on` over a
+future that waits once — impossible over the sync adapter — with the trainer's own output
+type: it panics rather than dropping the attempt.
 
 A size test keeps the training future within a budget (408 bytes without `alloc`, 384
 with it), so a change that grows it fails until the budget is raised on purpose. CI runs

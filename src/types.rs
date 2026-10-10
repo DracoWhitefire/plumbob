@@ -305,16 +305,6 @@ mod tests {
     // --- FrlConfig, UpdateFlags, SourceTestConfig ---
 
     #[test]
-    fn frl_config_carries_rate_and_levels() {
-        let config = FrlConfig {
-            rate: HdmiForumFrl::Rate10Gbps4Lanes,
-            ffe_levels: FfeLevels::new(3).unwrap(),
-        };
-        assert_eq!(config.rate, HdmiForumFrl::Rate10Gbps4Lanes);
-        assert_eq!(config.ffe_levels.value(), 3);
-    }
-
-    #[test]
     fn update_flags_default_is_all_clear() {
         let flags = UpdateFlags::default();
         assert!(!flags.source_test_update);
@@ -370,44 +360,5 @@ mod tests {
         let a = CedCount::new(42);
         assert_eq!(a, a.clone());
         assert_ne!(CedCount::new(1), CedCount::new(2));
-    }
-
-    // --- CedCounters ---
-
-    #[test]
-    fn ced_counters_all_none() {
-        let c = CedCounters {
-            lane0: None,
-            lane1: None,
-            lane2: None,
-            lane3: None,
-        };
-        assert!(c.lane0.is_none());
-        assert!(c.lane3.is_none());
-    }
-
-    #[test]
-    fn ced_counters_individual_lanes() {
-        let c = CedCounters {
-            lane0: Some(CedCount::new(10)),
-            lane1: Some(CedCount::new(20)),
-            lane2: None,
-            lane3: Some(CedCount::new(30)),
-        };
-        assert_eq!(c.lane0.unwrap().value(), 10);
-        assert_eq!(c.lane1.unwrap().value(), 20);
-        assert!(c.lane2.is_none());
-        assert_eq!(c.lane3.unwrap().value(), 30);
-    }
-
-    #[test]
-    fn ced_counters_clone_eq() {
-        let a = CedCounters {
-            lane0: Some(CedCount::new(5)),
-            lane1: None,
-            lane2: None,
-            lane3: None,
-        };
-        assert_eq!(a, a.clone());
     }
 }

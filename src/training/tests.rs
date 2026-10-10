@@ -2320,9 +2320,31 @@ fn the_training_future_stays_within_its_size_budget() {
     assert!(size <= BUDGET, "{size} bytes, budget {BUDGET}");
 }
 
+/// A future that is `Pending` once before completing, as I/O that waits would be.
+struct WaitOnce(bool);
+
+impl Future for WaitOnce {
+    type Output = ();
+
+    fn poll(mut self: core::pin::Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<()> {
+        if self.0 {
+            Poll::Ready(())
+        } else {
+            self.0 = true;
+            cx.waker().wake_by_ref();
+            Poll::Pending
+        }
+    }
+}
+
 #[test]
 #[should_panic(expected = "plumbob's sync training waited on I/O")]
 fn the_sync_driver_rejects_a_future_that_waits() {
-    // The same output type as the trainer tests' runs, so the check is on that path.
-    let _ = ready::<Result<Trained, TrainingError<(), ()>>>(Poll::Pending);
+    // `block_on` over a future that waits, with the trainer's output type: the guard
+    // that turns a plumbob bug into a panic rather than a dropped attempt.
+    let waits = async {
+        WaitOnce(false).await;
+        Err::<Trained, TrainingError<(), ()>>(TrainingError::NoRates)
+    };
+    let _ = block_on(waits);
 }
