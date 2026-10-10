@@ -1,7 +1,7 @@
 extern crate std;
 use std::vec::Vec;
 
-use super::sim::{PhyCall, PhyOp, SimPhy, SimSink, SinkCall, SinkOp, all};
+use super::sim::{Call, Log, PhyCall, PhyOp, SimPhy, SimSink, SinkCall, SinkOp, all};
 use super::*;
 use crate::lts::{FLT_UPDATE, FRL_START, Lanes, SOURCE_TEST_UPDATE};
 use crate::types::LtpReq;
@@ -189,8 +189,8 @@ fn trains_through_lts_2_3_and_p() {
         phy.calls,
         [
             // LTS:2
-            PhyCall::AdjustEqualization(Lanes::new(RATE).eq_params()),
             PhyCall::SetFrlRate(RATE),
+            PhyCall::AdjustEqualization(Lanes::new(RATE).eq_params()),
             PhyCall::SendLtp(LanePatterns::default()),
             PhyCall::SetFrlOutput(FrlOutput::GapOnly),
             // LTS:3
@@ -1613,6 +1613,277 @@ fn lts_l_after_an_error_is_recorded() {
             phy: false
         })
     );
+}
+
+// --- Step order and persistence across states
+
+/// Runs `sink` with a log of the sink's and the PHY's calls in the order they happened.
+fn logged(sink: SimSink, rates: &[HdmiForumFrl]) -> (TrainingOutcome, Vec<Call>) {
+    let log = Log::default();
+    let mut trainer = FrlTrainer::new(sink.log_to(&log), SimPhy::new().log_to(&log));
+    let outcome = trainer
+        .train(rates, &TrainingConfig::default())
+        .unwrap()
+        .outcome;
+    let calls = log.borrow().clone();
+    (outcome, calls)
+}
+
+/// The `n` calls after the first one equal to `after`.
+fn calls_after(log: &[Call], after: Call, n: usize) -> &[Call] {
+    let at = log
+        .iter()
+        .position(|call| *call == after)
+        .expect("call not made");
+    &log[at + 1..at + 1 + n]
+}
+
+fn config_1(rate: HdmiForumFrl) -> Call {
+    Call::Sink(SinkCall::WriteFrlConfig(FrlConfig {
+        rate,
+        ffe_levels: FfeLevels::new(3).unwrap(),
+    }))
+}
+
+#[test]
+fn lts_2_sets_the_rate_then_resets_the_levels() {
+    let sink = SimSink::new()
+        .flt_ready_after(0)
+        .round(0, all(LtpReq::None))
+        .frl_start_after(0);
+    let (_, log) = logged(sink, &[R12]);
+    assert_eq!(
+        calls_after(&log, Call::Sink(SinkCall::ReadFltReady(true)), 7),
+        [
+            Call::Sink(SinkCall::ClearUpdateFlags(FLT_UPDATE)),
+            Call::Phy(PhyCall::SetFrlRate(R12)),
+            // After the rate change, so a PHY that resets its lanes keeps plumbob's levels.
+            Call::Phy(PhyCall::AdjustEqualization(Lanes::new(R12).eq_params())),
+            Call::Phy(PhyCall::SendLtp(LanePatterns::default())),
+            Call::Phy(PhyCall::SetFrlOutput(FrlOutput::GapOnly)),
+            Call::Sink(SinkCall::WriteConfig0Defaults),
+            config_1(R12),
+        ]
+    );
+}
+
+#[test]
+fn lts_3_drives_the_request_before_clearing_flt_update() {
+    let raise_lane_1 = requests(LtpReq::None, LtpReq::FfeChange, LtpReq::None, LtpReq::None);
+    let sink = SimSink::new()
+        .flt_ready_after(0)
+        .round(0, all(LtpReq::Lfsr0))
+        .round(0, raise_lane_1)
+        .round(0, all(LtpReq::None))
+        .frl_start_after(0);
+    let (_, log) = logged(sink, &[R12]);
+    let lfsr0 = Call::Phy(PhyCall::SendLtp(uniform(4, Some(LtpPattern::Lfsr0))));
+    let clear = Call::Sink(SinkCall::ClearUpdateFlags(FLT_UPDATE));
+    // The sink must never evaluate a stale pattern or level: the PHY gets them first.
+    assert_eq!(
+        calls_after(
+            &log,
+            Call::Sink(SinkCall::ReadLtpRequests(all(LtpReq::Lfsr0))),
+            2
+        ),
+        [lfsr0, clear]
+    );
+    let after_raise = calls_after(&log, Call::Sink(SinkCall::ReadLtpRequests(raise_lane_1)), 3);
+    assert_eq!(after_raise[0], lfsr0);
+    assert!(matches!(
+        after_raise[1],
+        Call::Phy(PhyCall::AdjustEqualization(eq)) if eq.lane1.tx_ffe_level.value() == 1
+    ));
+    assert_eq!(after_raise[2], clear);
+}
+
+#[test]
+fn lts_4_stops_the_patterns_then_moves_to_the_rate() {
+    let sink = SimSink::new()
+        .flt_ready_after(0)
+        .round(0, all(LtpReq::RateChange))
+        .round(0, all(LtpReq::None))
+        .frl_start_after(0);
+    let (outcome, log) = logged(sink, &[R12, R10]);
+    assert_eq!(outcome, TrainingOutcome::Success { achieved_rate: R10 });
+    assert_eq!(
+        calls_after(
+            &log,
+            Call::Sink(SinkCall::ReadLtpRequests(all(LtpReq::RateChange))),
+            5
+        ),
+        [
+            Call::Phy(PhyCall::SendLtp(LanePatterns::default())),
+            Call::Phy(PhyCall::SetFrlRate(R10)),
+            Call::Phy(PhyCall::AdjustEqualization(Lanes::new(R10).eq_params())),
+            Call::Sink(SinkCall::ClearUpdateFlags(FLT_UPDATE)),
+            config_1(R10),
+        ]
+    );
+}
+
+#[test]
+fn flt_no_timeout_holds_across_a_rate_drop() {
+    let config = TrainingConfig {
+        ltp_polls: 2,
+        ..TrainingConfig::default()
+    };
+    // The round at the lower rate comes after 5 polls: past ltp_polls, within the cap.
+    let sink = SimSink::new()
+        .source_test(NO_TIMEOUT)
+        .flt_ready_after(0)
+        .round(0, all(LtpReq::RateChange))
+        .round(5, all(LtpReq::None))
+        .frl_start_after(0);
+    let (outcome, _, _) = run(sink, &[R12, R10], &config);
+    assert_eq!(outcome, TrainingOutcome::Success { achieved_rate: R10 });
+}
+
+#[test]
+fn flt_no_timeout_holds_across_a_retrain() {
+    let config = TrainingConfig {
+        ltp_polls: 2,
+        ..TrainingConfig::default()
+    };
+    let sink = SimSink::new()
+        .source_test(NO_TIMEOUT)
+        .flt_ready_after(0)
+        .round(0, all(LtpReq::None))
+        .round(0, all(LtpReq::Lfsr0)) // the retrain request
+        .round(5, all(LtpReq::None))
+        .frl_start_after(0);
+    let (outcome, _, phy) = run(sink, &[R12], &config);
+    assert_eq!(outcome, TrainingOutcome::Success { achieved_rate: R12 });
+    assert_eq!(retrain_count(&phy), 1);
+}
+
+#[test]
+fn a_txffe_raise_is_followed_under_flt_no_timeout() {
+    let sink = SimSink::new()
+        .source_test(NO_TIMEOUT)
+        .flt_ready_after(0)
+        .round(0, all(LtpReq::FfeChange))
+        .round(0, all(LtpReq::None))
+        .frl_start_after(0);
+    let (outcome, _, phy) = run(sink, &[R12], &TrainingConfig::default());
+    assert_eq!(outcome, TrainingOutcome::Success { achieved_rate: R12 });
+    assert_eq!(levels_sent(&phy), [[1, 1, 1, 1]]);
+}
+
+// --- Errors at every call site
+
+fn sink_op(call: &SinkCall) -> SinkOp {
+    match call {
+        SinkCall::ReadFltReady(_) => SinkOp::ReadFltReady,
+        SinkCall::ReadUpdateFlags(_) => SinkOp::ReadUpdateFlags,
+        SinkCall::ClearUpdateFlags(_) => SinkOp::ClearUpdateFlags,
+        SinkCall::ReadLtpRequests(_) => SinkOp::ReadLtpRequests,
+        SinkCall::ReadSourceTestConfig(_) => SinkOp::ReadSourceTestConfig,
+        SinkCall::WriteConfig0Defaults => SinkOp::WriteConfig0Defaults,
+        SinkCall::WriteFrlConfig(_) => SinkOp::WriteFrlConfig,
+        SinkCall::ReadCed => SinkOp::ReadCed,
+    }
+}
+
+fn phy_op(call: &PhyCall) -> PhyOp {
+    match call {
+        PhyCall::SetFrlRate(_) => PhyOp::SetFrlRate,
+        PhyCall::SendLtp(_) => PhyOp::SendLtp,
+        PhyCall::SetFrlOutput(_) => PhyOp::SetFrlOutput,
+        PhyCall::AdjustEqualization(_) => PhyOp::AdjustEqualization,
+        PhyCall::SetScrambling(_) => PhyOp::SetScrambling,
+    }
+}
+
+/// Whether `result` reports a failed SCDC (`scdc`) or PHY operation: as the error itself
+/// (followed by a successful LTS:L), or as LTS:L's own error after a fallback.
+fn reports(result: &Result<TrainingOutcome, Error>, scdc: bool) -> bool {
+    match result {
+        Err(TrainingError::Scdc { exit, .. }) => scdc && *exit == TmdsExit::Exited,
+        Err(TrainingError::Phy { exit, .. }) => !scdc && *exit == TmdsExit::Exited,
+        Err(TrainingError::ExitFailed { error, .. }) => {
+            if scdc {
+                error.scdc.is_some()
+            } else {
+                error.phy.is_some()
+            }
+        }
+        _ => false,
+    }
+}
+
+/// Fails each call of each operation the scenario makes, one at a time, and checks that
+/// every failure is reported: none is swallowed at any call site.
+fn every_call_site_reports_its_error(sink: fn() -> SimSink, rates: &[HdmiForumFrl]) {
+    let (_, reference, phy) = run_with_rates(sink(), SimPhy::new(), rates);
+    let mut sites = 0;
+    for (index, call) in reference.calls.iter().enumerate() {
+        let op = sink_op(call);
+        let nth = reference.calls[..=index]
+            .iter()
+            .filter(|c| sink_op(c) == op)
+            .count() as u32;
+        let (result, _, _) = run_with_rates(sink().fail_call(op, nth), SimPhy::new(), rates);
+        assert!(reports(&result, true), "{op:?} call {nth}: {result:?}");
+        sites += 1;
+    }
+    for (index, call) in phy.calls.iter().enumerate() {
+        let op = phy_op(call);
+        let nth = phy.calls[..=index]
+            .iter()
+            .filter(|c| phy_op(c) == op)
+            .count() as u32;
+        let (result, _, _) = run_with_rates(sink(), SimPhy::new().fail_call(op, nth), rates);
+        assert!(reports(&result, false), "{op:?} call {nth}: {result:?}");
+        sites += 1;
+    }
+    assert!(
+        sites >= 20,
+        "the scenario should reach many call sites, reached {sites}"
+    );
+}
+
+fn run_with_rates(
+    sink: SimSink,
+    phy: SimPhy,
+    rates: &[HdmiForumFrl],
+) -> (Result<TrainingOutcome, Error>, SimSink, SimPhy) {
+    let mut trainer = FrlTrainer::new(sink, phy);
+    let result = trainer
+        .train(rates, &TrainingConfig::default())
+        .map(|trained| trained.outcome);
+    let (sink, phy) = trainer.into_parts();
+    (result, sink, phy)
+}
+
+#[test]
+fn errors_are_reported_at_every_call_site_of_a_success() {
+    // Source test configuration, a TxFFE raise, a rate drop and a retrain.
+    fn sink() -> SimSink {
+        SimSink::new()
+            .source_test(SourceTestConfig::default())
+            .flt_ready_after(1)
+            .round(0, all(LtpReq::Lfsr0))
+            .round(0, all(LtpReq::FfeChange))
+            .round(0, all(LtpReq::RateChange))
+            .round(1, all(LtpReq::Lfsr1))
+            .round(0, all(LtpReq::None))
+            .round(0, all(LtpReq::None))
+            .frl_start_after(1)
+    }
+    every_call_site_reports_its_error(sink, &[R12, R10]);
+}
+
+#[test]
+fn errors_are_reported_at_every_call_site_of_a_fallback() {
+    // Rates exhausted with FLT_update pending: LTS:L clears it.
+    fn sink() -> SimSink {
+        SimSink::new()
+            .flt_ready_after(0)
+            .round(0, all(LtpReq::Lfsr0))
+            .round(0, all(LtpReq::RateChange))
+    }
+    every_call_site_reports_its_error(sink, &[R12]);
 }
 
 // --- Traces

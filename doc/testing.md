@@ -34,6 +34,8 @@ Tests for the owned protocol types cover:
   order and can fail any one operation, on every call or only on its N-th call.
 - `SimPhy` — records every PHY call in order and can fail any one operation, on every
   call or only on its N-th call.
+- A shared `Log` (`log_to` on both) records the sink's and the PHY's calls interleaved, in
+  the order they happened, for tests of step order across the two.
 
 The sim has its own tests, so it is fully covered before the state machine uses it.
 
@@ -70,7 +72,17 @@ kept apart, and the five distinct warnings an attempt can produce fit without `a
   ending in TMDS, and every step attempted when one of them fails, with the first error
   returned
 - `TrainingError::Scdc` and `TrainingError::Phy` propagating from every SCDC and PHY
-  operation the state machine uses, with LTS:L afterwards leaving both ends in TMDS
+  operation the state machine uses, with LTS:L afterwards leaving both ends in TMDS — at
+  every call site, not only an operation's first: two scenarios (a success with a source
+  test configuration, a TxFFE raise, a rate drop and a retrain; and a fallback through
+  LTS:L) are each run once per call they make, failing that one call, and every failure
+  must be reported
+- The step order across sink and PHY in LTS:2 (rate, then TxFFE reset), LTS:3 (the
+  requested pattern and level reach the PHY before `FLT_update` is cleared) and LTS:4
+  (patterns stopped, rate, TxFFE reset, `FLT_update` cleared, then `Config_1`), from a log
+  of both in order
+- `FLT_no_timeout` holding across a rate drop and a retrain within one call, and a TxFFE
+  raise followed under it
 - After an error: a failed LTS:L reported per end (`TmdsExit::Failed`), the
   `ExitedToTmds` and `ExitToTmdsFailed` events, and `exit_to_tmds_on_error: false`
   leaving both ends untouched (`TmdsExit::Skipped`)

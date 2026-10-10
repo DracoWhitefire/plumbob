@@ -121,11 +121,13 @@ The number of active lanes follows from the rate: 3 for `Rate3Gbps3Lanes` and
    `TrainingConfig::flt_ready_polls`, go to LTS:L and return
    `FallbackRequired { reason: FltReadyTimeout }` — or, under `FLT_no_timeout`, hold the
    link (see below).
-3. Clear `FLT_update`. Reset every lane's TxFFE level to 0 on the PHY.
+3. Clear `FLT_update`.
 4. Configure the PHY for the rate (`set_frl_rate`). Any bring-up the transmitter needs —
    the Xilinx transmitter, for example, holds a Nyquist clock pattern until its link is
    up — is the PHY's, inside `set_frl_rate`: only the PHY knows when its link is ready.
-   The AMD and Intel drivers send no pattern here.
+   The AMD and Intel drivers send no pattern here. Then reset every lane's TxFFE level to
+   0 (`adjust_equalization`): after the rate change, so a PHY that resets its lanes when
+   the rate changes still ends up with the levels plumbob's lane model holds.
 5. Send no pattern on any lane and gap characters only (`set_frl_output(GapOnly)`). LTS:3
    starts from this state.
 6. Write `Config_0` (no read requests, `FLT_no_retrain` clear) and `Config_1` (the first
@@ -222,8 +224,11 @@ driver checks every 250 ms) and calls `train` again when it is set.
 1. Stop the training patterns.
 2. Take the next rate from the list. If there is none, go to LTS:L and return
    `FallbackRequired { reason: RatesExhausted }`.
-3. Reset every lane's TxFFE level to 0, configure the PHY for the new rate, clear
-   `FLT_update` and write `Config_1` with the new rate (and the FFE maximum for it).
+3. Configure the PHY for the new rate, then reset every lane's TxFFE level to 0 (after the
+   rate change, as in LTS:2 and the Xilinx driver's LTS:4), clear `FLT_update` and write
+   `Config_1` with the new rate (and the FFE maximum for it). `FLT_update` is cleared
+   before `Config_1` is written, so the clear cannot remove the sink's first request at
+   the new rate.
 4. Continue in LTS:3 at the new rate, with a fresh poll limit. The sink stays in FRL
    throughout; `FLT_ready` is not awaited again.
 

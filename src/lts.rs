@@ -474,7 +474,6 @@ impl<Io: TrainingIo> Machine<'_, Io> {
         }
 
         self.clear(FLT_UPDATE).await?;
-        self.adjust_equalization(attempt.lanes.eq_params()).await?;
 
         // Any transmitter bring-up (such as holding a clock pattern until the PLL locks)
         // is the PHY's, inside `set_frl_rate`: only the PHY knows when its link is up.
@@ -482,6 +481,9 @@ impl<Io: TrainingIo> Machine<'_, Io> {
             .set_frl_rate(attempt.rate)
             .await
             .map_err(Fault::Phy)?;
+        // After the rate change, so a PHY that resets its lanes when the rate changes
+        // still ends up with what the lane model holds.
+        self.adjust_equalization(attempt.lanes.eq_params()).await?;
         self.send_ltp(attempt.lanes.patterns()).await?;
         self.set_frl_output(FrlOutput::GapOnly).await?;
 
@@ -616,8 +618,9 @@ impl<Io: TrainingIo> Machine<'_, Io> {
 
         attempt.rate = rate;
         attempt.lanes = Lanes::new(rate);
-        self.adjust_equalization(attempt.lanes.eq_params()).await?;
         self.io.set_frl_rate(rate).await.map_err(Fault::Phy)?;
+        // After the rate change, as in LTS:2 (and the Xilinx driver's LTS:4).
+        self.adjust_equalization(attempt.lanes.eq_params()).await?;
         self.clear(FLT_UPDATE).await?;
         self.write_rate(rate, config, record).await?;
         Ok(State::Train)

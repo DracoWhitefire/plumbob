@@ -6,7 +6,9 @@
 
 extern crate std;
 
+use std::cell::RefCell;
 use std::collections::VecDeque;
+use std::rc::Rc;
 use std::vec::Vec;
 
 use display_types::cea861::hdmi_forum::HdmiForumFrl;
@@ -35,6 +37,16 @@ pub struct Round {
     pub requests: LtpRequests,
     pub source_test: Option<SourceTestConfig>,
 }
+
+/// One call to the sink or the PHY, for a log of both in order.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Call {
+    Sink(SinkCall),
+    Phy(PhyCall),
+}
+
+/// A log shared by a [`SimSink`] and a [`SimPhy`] (see their `log_to`).
+pub type Log = Rc<RefCell<Vec<Call>>>;
 
 /// An SCDC operation, for failure injection.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -81,6 +93,7 @@ pub struct SimSink {
     frl_start_with_round: Option<usize>,
     source_test: SourceTestConfig,
     fail: Option<Failure<SinkOp>>,
+    log: Option<Log>,
 
     flt_ready_polls: u32,
     configured: bool,
@@ -155,6 +168,19 @@ impl SimSink {
         self
     }
 
+    /// Also records every call in `log`, interleaved with the PHY's calls.
+    pub fn log_to(mut self, log: &Log) -> Self {
+        self.log = Some(log.clone());
+        self
+    }
+
+    fn log_call(&mut self, call: SinkCall) {
+        if let Some(log) = &self.log {
+            log.borrow_mut().push(Call::Sink(call));
+        }
+        self.calls.push(call);
+    }
+
     fn check(&mut self, op: SinkOp) -> Result<(), ()> {
         match &mut self.fail {
             Some(failure) => failure.check(op),
@@ -172,7 +198,7 @@ impl ScdcClient for SimSink {
             .flt_ready_after
             .is_some_and(|n| self.flt_ready_polls >= n);
         self.flt_ready_polls += 1;
-        self.calls.push(SinkCall::ReadFltReady(ready));
+        self.log_call(SinkCall::ReadFltReady(ready));
         Ok(ready)
     }
 
@@ -199,7 +225,7 @@ impl ScdcClient for SimSink {
             }
             self.update_polls += 1;
         }
-        self.calls.push(SinkCall::ReadUpdateFlags(self.flags));
+        self.log_call(SinkCall::ReadUpdateFlags(self.flags));
         Ok(self.flags)
     }
 
@@ -219,7 +245,7 @@ impl ScdcClient for SimSink {
             }
         }
         self.flags.source_test_update &= !flags.source_test_update;
-        self.calls.push(SinkCall::ClearUpdateFlags(flags));
+        self.log_call(SinkCall::ClearUpdateFlags(flags));
         Ok(())
     }
 
@@ -229,20 +255,19 @@ impl ScdcClient for SimSink {
             .rounds
             .front()
             .map_or(all(LtpReq::None), |round| round.requests);
-        self.calls.push(SinkCall::ReadLtpRequests(requests));
+        self.log_call(SinkCall::ReadLtpRequests(requests));
         Ok(requests)
     }
 
     fn read_source_test_config(&mut self) -> Result<SourceTestConfig, ()> {
         self.check(SinkOp::ReadSourceTestConfig)?;
-        self.calls
-            .push(SinkCall::ReadSourceTestConfig(self.source_test));
+        self.log_call(SinkCall::ReadSourceTestConfig(self.source_test));
         Ok(self.source_test)
     }
 
     fn write_config_0_defaults(&mut self) -> Result<(), ()> {
         self.check(SinkOp::WriteConfig0Defaults)?;
-        self.calls.push(SinkCall::WriteConfig0Defaults);
+        self.log_call(SinkCall::WriteConfig0Defaults);
         Ok(())
     }
 
@@ -250,13 +275,13 @@ impl ScdcClient for SimSink {
         self.check(SinkOp::WriteFrlConfig)?;
         self.configured = config.rate != HdmiForumFrl::NotSupported;
         self.update_polls = 0;
-        self.calls.push(SinkCall::WriteFrlConfig(config));
+        self.log_call(SinkCall::WriteFrlConfig(config));
         Ok(())
     }
 
     fn read_ced(&mut self) -> Result<CedCounters, ()> {
         self.check(SinkOp::ReadCed)?;
-        self.calls.push(SinkCall::ReadCed);
+        self.log_call(SinkCall::ReadCed);
         Ok(CedCounters {
             lane0: None,
             lane1: None,
@@ -327,6 +352,7 @@ pub enum PhyCall {
 #[derive(Debug, Default)]
 pub struct SimPhy {
     fail: Option<Failure<PhyOp>>,
+    log: Option<Log>,
     /// Every call received, in order. Failed calls are not recorded.
     pub calls: Vec<PhyCall>,
 }
@@ -348,9 +374,18 @@ impl SimPhy {
         self
     }
 
+    /// Also records every call in `log`, interleaved with the sink's calls.
+    pub fn log_to(mut self, log: &Log) -> Self {
+        self.log = Some(log.clone());
+        self
+    }
+
     fn record(&mut self, op: PhyOp, call: PhyCall) -> Result<(), ()> {
         if let Some(failure) = &mut self.fail {
             failure.check(op)?;
+        }
+        if let Some(log) = &self.log {
+            log.borrow_mut().push(Call::Phy(call));
         }
         self.calls.push(call);
         Ok(())
