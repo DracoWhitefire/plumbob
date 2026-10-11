@@ -4,19 +4,21 @@
 
 `plumbob` implements the Fixed Rate Link (FRL) training state machine defined in the HDMI
 2.1 specification. It defines the interface its dependencies must satisfy rather than
-depending on any specific SCDC implementation, and it is itself replaceable by any crate
-that implements the `LinkTrainer` trait defined by the integration layer above it.
+depending on any specific SCDC implementation. It is meant to be replaceable in the same
+way: the integration layer above it (not yet built) will define a `LinkTrainer` trait for
+plumbob, or any other crate, to implement.
 
 Training establishes actual link capability, not just theoretical negotiation. A
 `NegotiatedConfig` from concordance identifies what the hardware should support; link
-training determines what it actually achieves. The caller is responsible for deciding what
-to do with a `FallbackRequired` outcome — whether to retry at a lower tier, fall back to
-TMDS, or surface the failure.
+training determines what it actually achieves. The caller supplies the rates to try, in
+order; plumbob steps down through them when the sink asks for a lower rate. The caller is
+responsible for deciding what to do with a `FallbackRequired` outcome — whether to retry
+with other rates, fall back to TMDS, or surface the failure.
 
 plumbob is usable as a standalone crate without the broader concordance/piaf stack. A
 firmware image, an embedded hardware vendor's SDK, or a kernel driver can depend directly
 on plumbob, supply their own `ScdcClient` and `HdmiPhy` implementations, and call
-`train_at_rate` without any negotiation layer above it. The concordance integration is one
+`train` or `train_at_rate` without any negotiation layer above it. The concordance integration is one
 deployment model, not a requirement.
 
 ---
@@ -25,32 +27,47 @@ deployment model, not a requirement.
 
 plumbob covers:
 
-- the FRL link training state machine: four-phase training per HDMI 2.1 §10.x,
+- the FRL link training state machine: LTS:2 → LTS:3 → LTS:P, with LTS:4 (lower rate)
+  on the sink's request and LTS:L (exit to TMDS) on failure, per HDMI 2.1 §6,
 - `ScdcClient`: the typed SCDC interface trait, defined here and implemented by SCDC crates,
 - `FrlTrainer<C, P>`: the central type, owning an `ScdcClient` and a PHY,
-- `TrainingOutcome`: the result of a single training attempt (`Success` or `FallbackRequired`),
-- `TrainingConfig`: per-attempt configuration (FFE levels, iteration limits),
-- `TrainingError`: hard failures (transport or protocol errors),
-- owned protocol types: `LtpReq`, `FfeLevels`, `TrainingStatus`, `CedCounters`,
+- `lts`: the state machine as one I/O-free function returning a future (`lts::run`) over
+  the `TrainingIo` trait, which `FrlTrainer` drives synchronously and `plumbob-async`
+  asynchronously,
+- `TrainingOutcome`: the result of a training attempt (`Success`, `FallbackRequired` with
+  a `FallbackReason`, or `NoTimeoutHold` under compliance test),
+- `TrainingConfig`: per-attempt configuration (maximum FFE level, poll limits),
+- `TrainingError`: hard SCDC or PHY failures with what LTS:L did afterwards (`TmdsExit`),
+  a fallback whose LTS:L failed (`ExitFailed`), or a rate list the procedure cannot run
+  (`InvalidRates`, `NoRates`),
+- owned protocol types: `LtpReq`, `LtpRequests`, `FfeLevels`, `FrlConfig`,
+  `UpdateFlags`, `SourceTestConfig`, `CedCounters`,
 - simulation support: the training procedure is fully exercisable without real hardware
   by using simulated implementations of `ScdcClient` and `HdmiPhy`.
 
 The following are out of scope:
 
-- **Rate fallback policy** — `train_at_rate` returns `FallbackRequired`; the caller
-  decides the retry sequence. plumbob does not maintain a rate table or retry loop.
+- **Rate fallback policy** — the caller decides which rates to try and in what order (for
+  example from concordance's ranking, keeping only rates the chosen mode still fits in).
+  plumbob walks that list when the sink requests a lower rate, and does not maintain a
+  rate table of its own. Timeouts end the attempt; they do not step down.
 - **SCDC register decoding** — plumbob reads typed values from `ScdcClient` and does not
   decode raw register bytes or know SCDC register addresses.
 - **PHY vendor sequences** — plumbob calls `HdmiPhy` methods; the register sequences
   for lane reconfiguration are in platform PHY backends.
-- **Timing** — plumbob is synchronous and poll-based. No sleep, no timers. Timing
-  between polls is implicit in the transport; the iteration limits in `TrainingConfig`
-  are the only timeout mechanism.
-- **TMDS link setup** — plumbob handles FRL training only. TMDS mode is the fallback
-  that concordance selects if no FRL tier trains successfully; plumbob has no role in it.
-- **CED-driven equalization** — CED counter feedback from the `ScdcClient` will eventually
-  inform equalization adjustments during the LTP loop. This is blocked on `EqParams`
-  being expanded; the placeholder call exists but does nothing useful yet.
+- **Timing** — plumbob is poll-based and has no clock: no sleep, no timers. `FrlTrainer`
+  blocks until training ends; `plumbob-async` drives the same state machine on the
+  caller's executor. The spec's timeouts (100 ms for `FLT_ready`, 200 ms for LTS:3) are
+  expressed as poll limits in `TrainingConfig`; their defaults assume one poll every 2 ms.
+  plumbob runs the polling loop itself, so the interval has to come from the polled
+  `ScdcClient` methods, which wait before they read.
+- **TMDS link setup** — plumbob handles FRL training only. Its part in TMDS ends at LTS:L,
+  which leaves both ends in TMDS: the PHY through `set_frl_rate(NotSupported)`, the sink
+  through `Config_1` with FRL off. Setting up the TMDS link — scrambling, the clock
+  ratio, the mode the caller chooses instead — is outside plumbob.
+- **CED-driven equalization** — equalization during training follows the sink's FFE
+  change requests (0xE). Using CED counters to tune equalization beyond that is not part
+  of the training procedure and is left to the caller.
 
 ---
 
@@ -59,68 +76,213 @@ The following are out of scope:
 ```
 display-types  ─┐
 hdmi-hal       ─┴─►  plumbob  ◄─  culvert (implements ScdcClient, feature-gated)
-                               ◄─  integration layer (defines LinkTrainer, plumbob implements it)
+                               ◄─  integration layer (planned: will define LinkTrainer)
 ```
 
-- `hdmi-hal` — `HdmiPhy`, `EqParams`
+- `hdmi-hal` — `HdmiPhy`, `LanePatterns`, `LtpPattern`, `FrlOutput`, `EqParams`,
+  `LaneEqParams`, `TxFfeLevel`
 - `display-types` — `HdmiForumFrl`
 
 plumbob does not depend on `culvert`. The relationship runs the other way: culvert
 implements `plumbob::ScdcClient` for `Scdc<T>`, gated behind a `plumbob` cargo feature.
 Any crate that implements `ScdcClient` can be used in place of culvert.
 
-plumbob does not depend on the integration layer. The integration layer defines a
-`LinkTrainer` trait; plumbob implements it. Any crate that implements `LinkTrainer` can
-be used in place of plumbob.
+plumbob will not depend on the integration layer either. The integration layer, which is
+not yet built, will define a `LinkTrainer` trait for plumbob to implement, so that any
+crate implementing `LinkTrainer` can be used in place of plumbob.
 
 plumbob does not depend on `concordance` or `piaf`. It receives a target FRL rate from
 the caller and trains at that rate.
 
 ---
 
-## Training Procedure (HDMI 2.1 §10.x)
+## Training Procedure (HDMI 2.1 §6, link training states)
 
-FRL link training has four phases. `train_at_rate` runs the full sequence for a single
-rate and returns when it reaches a terminal state.
+`train` runs the source side of FRL link training over a caller-supplied list of rates, in
+order, and returns when it reaches a terminal state; `train_at_rate` is the same with a
+single rate. The list must be one the procedure can run: LTS:4 is a step down, so every
+rate must be strictly lower than the one before it, and `NotSupported` is not an FRL
+rate. Any other list is rejected with `TrainingError::InvalidRates { index, rate }`
+before any SCDC or PHY operation — the specification decides this, not the caller, and
+running a list LTS:4 cannot follow would invent behaviour. An empty list has nothing to
+train at and is rejected the same way, as `TrainingError::NoRates`; a caller with no FRL
+rate to try (a sink without FRL) does not train, and calls `exit_to_tmds` if an earlier
+FRL link must come down. So every `FallbackRequired` follows training, and leaves both
+ends in TMDS. Which valid rates to try remains the caller's choice. The sequence follows the link training states (LTS) of the
+HDMI 2.1 specification as implemented by open-source HDMI 2.1 transmitters: the
+AMD/Xilinx `v_hdmitx1` driver (`xv_hdmitx1_frl.c`) and the Intel `xe` FRL series
+(`intel_hdmi_train_lanes`). LTS:1 (reading the sink's EDID and SCDC capability) is the
+caller's job; training starts at LTS:2.
 
-### Phase 1 — Configuration
+The number of active lanes follows from the rate: 3 for `Rate3Gbps3Lanes` and
+`Rate6Gbps3Lanes`, 4 otherwise. In 3-lane mode lane 3 is ignored everywhere below.
 
-1. Call `ScdcClient::write_frl_config` with the target rate and FFE level count.
-2. Call `HdmiPhy::set_frl_rate` to configure the physical lanes for this rate.
+### LTS:2 — Prepare
 
-Configuration is a write-then-forget step. The sink detects the rate change and begins its
-own internal preparation.
+1. Read `SourceTestConfig`, and clear `UpdateFlags::source_test_update` if it is set.
+   `flt_no_timeout` (compliance testing) replaces the poll limits of LTS:2, LTS:3 and LTS:P
+   with `TrainingConfig::no_timeout_poll_cap` (see below). The configuration is read on
+   every attempt, not only when the update flag is set: a tester sets `FLT_no_timeout`
+   and leaves it, while the flag is cleared by the first attempt that sees it. The Xilinx
+   and AMD drivers read it unconditionally too. In LTS:3 it is re-read when the flag is
+   raised. It is not re-read while step 2 polls `FLT_ready`, where the Xilinx driver
+   re-reads it on every 5 ms tick: a tester who sets it during that wait is seen from the
+   next attempt, or in LTS:3 if `FLT_ready` arrives in time.
+2. Poll `FLT_ready` (`ScdcClient::read_flt_ready`) until the sink asserts it. If it
+   does not within `TrainingConfig::flt_ready_polls`, go to LTS:L and return
+   `FallbackRequired { reason: FltReadyTimeout }` — or, under `FLT_no_timeout`, hold the
+   link (see below).
+3. Clear `FLT_update`.
+4. Configure the PHY for the rate (`set_frl_rate`). Any bring-up the transmitter needs —
+   the Xilinx transmitter, for example, holds a Nyquist clock pattern until its link is
+   up — is the PHY's, inside `set_frl_rate`: only the PHY knows when its link is ready.
+   The AMD and Intel drivers send no pattern here. Then reset every lane's TxFFE level to
+   0 (`adjust_equalization`): after the rate change, so a PHY that resets its lanes when
+   the rate changes still ends up with the levels plumbob's lane model holds.
+5. Send no pattern on any lane and gap characters only (`set_frl_output(GapOnly)`). LTS:3
+   starts from this state.
+6. Write `Config_0` (no read requests, `FLT_no_retrain` clear) and `Config_1` (the first
+   rate in the list, and the highest TxFFE level: `TrainingConfig::ffe_levels`, limited to
+   the maximum for that rate).
 
-### Phase 2 — Readiness
+### LTS:3 — Train
 
-Poll `ScdcClient::read_training_status` until the sink asserts `flt_ready`. This flag
-signals that the sink has completed its internal preparation for Fixed Link Training at the
-requested rate.
+plumbob keeps the current pattern and TxFFE level of every lane, and that state is
+always what the PHY was last told: LTS:2 leaves every lane with no pattern and TxFFE level
+0, LTS:P stops the patterns (keeping the levels), and LTS:4 resets both. Repeat, at most
+`TrainingConfig::ltp_polls` times:
 
-If `flt_ready` does not assert within `TrainingConfig::flt_ready_timeout` iterations, the
-attempt terminates with `TrainingOutcome::FallbackRequired`.
+1. Read `UpdateFlags`. If `flt_update` is not set, poll again.
+2. If `source_test_update` is set, re-read `SourceTestConfig` and clear the flag.
+3. Read the per-lane requests (`LtpRequests`) and act on the active lanes:
+   - **all 0x0** — training passed: go to LTS:P.
+   - **all 0xF** — the sink requests a lower rate: go to LTS:4.
+   - otherwise, per lane, update the lane's state:
+     - **0x1, 0x2, 0x4–0x8** — that lane's pattern becomes the requested one.
+     - **0x3** (Nyquist clock) — becomes the lane's pattern only when `flt_no_timeout` is
+       set. Otherwise the lane keeps its previous pattern and the other lanes are acted
+       on, as the Xilinx driver does (citing the spec's Table 6-32, LTP3 row). The AMD
+       driver differs: a 0x3 on any lane makes it skip the whole request set and wait
+       for the next `FLT_update`.
+     - **0xE** — the lane's TxFFE level rises by one, up to the advertised maximum, and is
+       held at the maximum if the sink keeps asking (the Intel series does this; the
+       Xilinx driver wraps to 0 instead).
+     - **0x0** — the lane keeps its pattern and level.
+     - **0x9–0xD** (undefined, `LtpReq::Reserved`) — the lane keeps its pattern and
+       level, and the trace records `UndefinedLtpRequest`; the result carries a
+       `TrainingWarning`. The Xilinx driver ignores these values the same way; the Intel
+       series rebuilds every lane's pattern on each request, so there a lane with an
+       undefined value gets no pattern. An undefined value on one lane does not stop the
+       others from training, and on lane 3 at a 3-lane rate it is not looked at, like any
+       lane-3 request there.
 
-### Phase 3 — Initiation
+     Then send the full per-lane pattern set to the PHY (`send_ltp`) and, if any TxFFE
+     level changed, the per-lane levels (`adjust_equalization`). The PHY applies exactly
+     what it is given; plumbob holds the state, and the state never differs from what the
+     PHY was last told — so plumbob never sends a pattern no request and no state of its
+     own accounts for.
+4. Clear `FLT_update` so the sink can post its next request.
 
-Poll `ScdcClient::read_training_status` until the sink asserts `frl_start`. This flag
-signals that the sink is ready for the LTP training loop to begin.
+If training has not passed within the poll limit, go to LTS:L and return
+`FallbackRequired { reason: TrainingTimeout }` — or, under `FLT_no_timeout`, hold the link
+(see below). A timeout does not step down: only the sink's request does.
 
-If `frl_start` does not assert within `TrainingConfig::frl_start_timeout` iterations, the
-attempt terminates with `TrainingOutcome::FallbackRequired`.
+### LTS:P — Pass
 
-### Phase 4 — LTP Loop
+1. Stop the training patterns (no pattern on any lane) and send gap characters only
+   (`set_frl_output(GapOnly)`). Clear `FLT_update`.
+2. Poll `UpdateFlags`, at most `TrainingConfig::frl_start_polls` times:
+   - **`flt_update`** is checked first. If `frl_start` is set as well, the retrain wins,
+     as in the Xilinx driver: `frl_start` is cleared (so it cannot end the next LTS:P
+     early) and `FrlStartWithRetrain` is recorded; then the retrain below.
+   - **`frl_start`** — clear it and return `Success`. The caller starts video
+     (`set_frl_output(Active)`) on the PHY, through `FrlTrainer::phy_mut` or after
+     `into_parts`.
+   - **`flt_update`** — the sink requests retraining: go back to LTS:3, at most
+     `TrainingConfig::max_retrains` times per `train` call. LTS:3 resumes from the state
+     LTS:P left: no pattern on any lane, the TxFFE levels as they were. The next request
+     after that goes to LTS:L and returns `FallbackRequired { reason: RetrainsExhausted }`.
+3. If neither arrives within the limit, go to LTS:L and return
+   `FallbackRequired { reason: FrlStartTimeout }` — or, under `FLT_no_timeout`, hold the
+   link (see below).
 
-On each iteration:
-1. Read `TrainingStatus::ltp_req` via `ScdcClient::read_training_status`.
-2. If `LtpReq::None` — all lanes are satisfied. Training succeeded.
-3. Otherwise — drive the requested Link Training Pattern on the PHY lanes and iterate.
 
-If `ltp_req` does not reach `None` within `TrainingConfig::ltp_timeout` iterations, the
-attempt terminates with `TrainingOutcome::FallbackRequired`.
+### `FLT_no_timeout` — holding the link
 
-**Open item:** Step 3 requires a `send_ltp(req: LtpReq)` method on `HdmiPhy`. The trait
-does not currently have this method. Until it is added, the LTP phase falls back to calling
-`adjust_equalization` as a placeholder. See [Open Items](#open-items).
+When the sink sets `FLT_no_timeout` it is under compliance test, and the test equipment
+controls the link. The LTS:2, LTS:3 and LTS:P limits are then replaced by
+`TrainingConfig::no_timeout_poll_cap`, and when that runs out plumbob does not fall back:
+it records `NoTimeoutCapReached` and returns `TrainingOutcome::NoTimeoutHold { rate }`
+with **no LTS:L**, leaving the link as it is (in LTS:3 or LTS:P the PHY and `Config_1`
+stay at `rate`; in LTS:2 nothing has been configured yet). Neither reference driver
+leaves FRL on its own timer under `FLT_no_timeout`: the Xilinx driver has no limit at all
+there, and the AMD driver returns success when its 500-poll cap runs out and skips the
+`FRL_start` wait. plumbob keeps a cap so that `train` always returns, and reports the
+truth rather than success; the caller decides whether to keep the link up for the test,
+train again, or call `exit_to_tmds`.
+
+One bound still falls back under `FLT_no_timeout`: a sink that keeps requesting
+retraining past `max_retrains` ends the attempt with `RetrainsExhausted` and LTS:L, as
+it does without the flag. This is deliberate. The cap is a source-side timer, which a
+test must be able to suspend; the retrain bound is not a timer but the guarantee that the
+LTS:P ↔ LTS:3 cycle ends. A sink that requests retraining without end is stuck, or its
+`FLT_update` is never cleared — the failure that made the bound necessary — and holding
+such a link would hide that. A test that needs more retrains raises `max_retrains`.
+
+After `Success` the sink can still request retraining during active video by setting
+`FLT_update`; plumbob does not watch for it. The caller polls `Update_0` (the Xilinx
+driver checks every 250 ms) and calls `train` again when it is set.
+
+### LTS:4 — Lower rate
+
+1. Stop the training patterns.
+2. Take the next rate from the list. If there is none, go to LTS:L and return
+   `FallbackRequired { reason: RatesExhausted }`.
+3. Finish as LTS:2 does (steps 3–6) at the new rate: clear `FLT_update`, configure the PHY
+   for the rate, then reset every lane's TxFFE level to 0 and send the lane model's
+   patterns (none) and gap characters only — after the rate change, which may have reset
+   the lanes or left a bring-up pattern running — and write `Config_0` and `Config_1`
+   with the new rate (and the FFE maximum for it). The Xilinx driver does the same: its
+   LTS:4 goes on through the initialisation of its LTS:2 (patterns cleared, gap
+   characters only, `Config_0` written). `FLT_update` is cleared before `Config_1` is
+   written, so the clear cannot remove the sink's first request at the new rate.
+4. Continue in LTS:3 at the new rate, with a fresh poll limit. The sink stays in FRL
+   throughout; `FLT_ready` is not awaited again.
+
+### LTS:L — Exit to TMDS
+
+Before returning `FallbackRequired`, plumbob leaves both ends in a defined state: it stops
+the training patterns, returns the PHY to TMDS (`set_frl_rate(NotSupported)`), writes
+`Config_1` with `HdmiForumFrl::NotSupported` (FRL off) and clears `FLT_update` if it is
+set. A failed attempt never leaves the sink configured for an FRL rate the source is not
+driving. Every step is attempted even if an earlier one fails, so a PHY error cannot keep
+the sink in FRL, nor an SCDC error the PHY.
+
+LTS:L also follows an SCDC or PHY error, wherever it happens: the spec's exit from a
+failed attempt applies whatever made it fail. The error is returned as
+`TrainingError::Scdc` or `TrainingError::Phy`, with `exit: TmdsExit` saying what LTS:L
+did — `Exited`, or `Failed` with an `ExitError`: the first error of each end whose steps
+failed (an end without one is in TMDS). If LTS:L fails after a fallback, `train` returns
+`TrainingError::ExitFailed` with the fallback reason and the `ExitError` instead of
+`FallbackRequired`. The trace records `ExitedToTmds` or `ExitToTmdsFailed`.
+
+`TrainingConfig::exit_to_tmds_on_error` (default `true`) turns the exit after an error
+off, for callers that want the sink and PHY as the error left them — a validation tool
+reading the sink's registers, for example. The error then reports `TmdsExit::Skipped`.
+
+While the sink sets `FLT_no_timeout`, an error does not lead to LTS:L either: the test
+equipment is in control, and the source does not leave FRL on its own, as when the poll
+cap runs out (`NoTimeoutHold`, below). One NACK must not end a compliance run; the
+Xilinx driver retries a failed read on its next tick and never leaves. The error reports
+`TmdsExit::HeldUnderTest`, and the caller decides whether to call `exit_to_tmds`. The
+flag is the one last read, as for the poll limits: an error after the tester cleared it
+exits as usual.
+
+LTS:L is also available on its own, as `FrlTrainer::exit_to_tmds` (and
+`lts::exit_to_tmds` for other drivers): a link that trained has to come down again when
+the display is disabled or unplugged, or before a mode change, and a caller that turned
+`exit_to_tmds_on_error` off, or whose link was held under test, decides when to leave FRL. It can be called in any state and
+returns `Result<(), ExitError>`.
 
 ---
 
@@ -133,285 +295,292 @@ interface and the training state machine. SCDC implementations convert to them; 
 training state machine uses them directly.
 
 ```rust
-/// Link Training Pattern requested by the sink via Status_Flags_1 bits[7:4].
+/// Link training pattern requested by the sink for one lane (4-bit field).
 #[non_exhaustive]
 pub enum LtpReq {
-    None  = 0,
-    Lfsr0 = 1,
-    Lfsr1 = 2,
-    Lfsr2 = 3,
-    Lfsr3 = 4,
+    None,           // 0x0: lane trained
+    AllOnes,        // 0x1
+    AllZeros,       // 0x2
+    NyquistClock,   // 0x3
+    DdeCompliance,  // 0x4
+    Lfsr0,          // 0x5
+    Lfsr1,          // 0x6
+    Lfsr2,          // 0x7
+    Lfsr3,          // 0x8
+    FfeChange,      // 0xE: raise this lane's TxFFE level
+    RateChange,     // 0xF: drop the FRL rate
+    Reserved(u8),   // 0x9–0xD: undefined by the specification
 }
+// `LtpReq::value()` returns the 4-bit value.
 
-/// FFE (Feed-Forward Equalization) level count advertised to the sink in Config_0.
-pub enum FfeLevels {
-    Ffe0 = 0,
-    Ffe1 = 1,
-    // ... through Ffe7
-}
+/// Requests for all four lanes; lane 3 is ignored in 3-lane FRL.
+pub struct LtpRequests { pub lane0: LtpReq, pub lane1: LtpReq, pub lane2: LtpReq, pub lane3: LtpReq }
 
-/// FRL configuration written to Config_0.
-///
-/// `dsc_frl_max` is sourced from `TrainingConfig` and reflects whether the
-/// negotiated configuration requires DSC transport (`NegotiatedConfig.resolved.dsc_required`).
-/// plumbob passes it through without interpreting it.
-pub struct FrlConfig {
-    pub rate: HdmiForumFrl,
-    pub ffe_levels: FfeLevels,
-    pub dsc_frl_max: bool,
-}
+/// Highest TxFFE level index the source supports (0–7; at most 3 up to 12 Gbps).
+pub struct FfeLevels(u8);
 
-/// The subset of SCDC status that the training state machine reads on each poll.
-pub struct TrainingStatus {
-    pub flt_ready: bool,
-    pub frl_start: bool,
-    pub ltp_req: LtpReq,
-}
+/// Written to Config_1.
+pub struct FrlConfig { pub rate: HdmiForumFrl, pub ffe_levels: FfeLevels }
 
-/// A 15-bit per-lane character error count.
-pub struct CedCount(u16);
+/// The Update_0 flags the state machine reads and clears.
+pub struct UpdateFlags { pub source_test_update: bool, pub frl_start: bool, pub flt_update: bool }
 
-/// Per-lane character error counts used for equalization feedback.
-pub struct CedCounters {
-    pub lane0: Option<CedCount>,
-    pub lane1: Option<CedCount>,
-    pub lane2: Option<CedCount>,
-    pub lane3: Option<CedCount>,  // None in 3-lane FRL mode
-}
+/// The Source_Test_Configuration field the state machine honours.
+pub struct SourceTestConfig { pub flt_no_timeout: bool }
+
+/// Per-lane character error counts (diagnostics).
+pub struct CedCounters { pub lane0: Option<CedCount>, /* … */ pub lane3: Option<CedCount> }
 ```
 
 ### `ScdcClient`
 
-The typed SCDC interface required by the link training state machine. Defined here so
-that the state machine has no dependency on any specific SCDC implementation.
+The typed SCDC interface required by the training state machine, one method per register
+operation it performs. Defined here so the state machine has no dependency on any specific
+SCDC implementation.
 
 ```rust
 pub trait ScdcClient {
     type Error;
 
-    /// Write FRL rate and configuration to Config_0.
+    /// Status_Flags_0 bit 6.
+    fn read_flt_ready(&mut self) -> Result<bool, Self::Error>;
+    /// Update_0 bits 3–5.
+    fn read_update_flags(&mut self) -> Result<UpdateFlags, Self::Error>;
+    /// Write-1-to-clear the given Update_0 flags.
+    fn clear_update_flags(&mut self, flags: UpdateFlags) -> Result<(), Self::Error>;
+    /// Status_Flags_1/2: the per-lane requests.
+    fn read_ltp_requests(&mut self) -> Result<LtpRequests, Self::Error>;
+    /// Source_Test_Configuration (0x35).
+    fn read_source_test_config(&mut self) -> Result<SourceTestConfig, Self::Error>;
+    /// Config_0: read requests disabled, FLT_no_retrain clear.
+    fn write_config_0_defaults(&mut self) -> Result<(), Self::Error>;
+    /// Config_1: FRL rate and FFE levels.
     fn write_frl_config(&mut self, config: FrlConfig) -> Result<(), Self::Error>;
-
-    /// Read flt_ready, frl_start, and ltp_req from Status_Flags.
-    fn read_training_status(&mut self) -> Result<TrainingStatus, Self::Error>;
-
-    /// Read per-lane character error counts for equalization feedback.
+    /// ERR_DET counters, for diagnostics.
     fn read_ced(&mut self) -> Result<CedCounters, Self::Error>;
 }
 ```
 
-Implementations are provided by SCDC crates. culvert implements this for `Scdc<T>` via a
-`plumbob` cargo feature. A simulated implementation for testing requires only a struct with
-a register array.
+culvert implements this for `Scdc<T>` behind its `plumbob` feature; each method maps to
+one culvert method. A simulated implementation for testing needs only a register array.
 
 ### Training types
 
 ```rust
-/// Outcome of a training attempt at a single FRL rate.
-pub enum TrainingOutcome {
-    /// All lanes satisfied. The link is ready at this rate.
-    Success { achieved_rate: HdmiForumFrl },
-    /// Training did not converge within the timeout.
-    /// Caller should retry at a lower rate or fall back to TMDS.
-    FallbackRequired,
+/// The outcome of an attempt with the warnings it produced.
+#[non_exhaustive]
+pub struct Trained {
+    pub outcome: TrainingOutcome,
+    pub warnings: Vec<TrainingWarning>,  // `[Option<TrainingWarning>; MAX_WARNINGS]`
+                                         // and `num_warnings` without alloc
 }
 
-/// Per-attempt training configuration.
+/// A non-fatal anomaly; repeats are merged.
+#[non_exhaustive]
+pub enum TrainingWarning {
+    /// A lane requested an undefined value (0x9–0xD): `count` times, the last `value`.
+    UndefinedLtpRequest { lane: u8, value: u8, count: u32, in_use: bool },
+}
+
+#[non_exhaustive]
+pub enum TrainingOutcome {
+    /// Training passed and the sink set FRL_start. The link is ready at this rate.
+    Success { achieved_rate: HdmiForumFrl },
+    /// Training did not succeed at any of the rates; the sink is back in TMDS.
+    FallbackRequired { reason: FallbackReason },
+    /// FLT_no_timeout: the poll cap ran out; the link is left as it is, at `rate`.
+    NoTimeoutHold { rate: HdmiForumFrl },
+}
+
+#[non_exhaustive]
+pub enum FallbackReason {
+    /// LTS:2: FLT_ready did not assert within the poll limit.
+    FltReadyTimeout,
+    /// LTS:3: the lanes did not pass within the poll limit.
+    TrainingTimeout,
+    /// LTS:P: FRL_start did not assert within the poll limit.
+    FrlStartTimeout,
+    /// LTS:4: the sink requested a lower rate than the last one in the list.
+    RatesExhausted,
+    /// LTS:P: the sink requested retraining after max_retrains retrains.
+    RetrainsExhausted,
+}
+
 #[non_exhaustive]
 #[derive(Clone, Copy)]
 pub struct TrainingConfig {
-    /// FFE levels advertised to the sink in Config_0.
+    /// Highest TxFFE level the source supports, written to Config_1. Default 3.
     pub ffe_levels: FfeLevels,
-    /// Whether to set DSC_FRL_Max in Config_0.
-    ///
-    /// Set to `true` when the negotiated configuration requires DSC transport
-    /// (`NegotiatedConfig.resolved.dsc_required`). The integration layer is
-    /// responsible for supplying this value; plumbob passes it through into
-    /// `FrlConfig` without interpreting it. Defaults to `false`.
-    pub dsc_frl_max: bool,
-    /// Maximum poll iterations waiting for flt_ready (phase 2).
-    pub flt_ready_timeout: u32,
-    /// Maximum poll iterations waiting for frl_start (phase 3).
-    pub frl_start_timeout: u32,
-    /// Maximum poll iterations in the LTP training loop (phase 4).
-    pub ltp_timeout: u32,
-}
-
-/// Hard error that terminated a training attempt.
-///
-/// Distinct from FallbackRequired: this means something failed at the I/O level,
-/// not that the link simply didn't train at this rate.
-pub enum TrainingError<ScdcErr, PhyErr> {
-    /// The ScdcClient returned an error.
-    Scdc(ScdcErr),
-    /// The PHY returned an error.
-    Phy(PhyErr),
-}
-
-/// The central training type. Owns an ScdcClient and an HdmiPhy.
-///
-/// `FrlTrainer` is reusable across multiple `train_at_rate` calls. A caller
-/// performing rate fallback calls `train_at_rate` repeatedly on the same trainer,
-/// stepping down through FRL tiers, without reconstructing it between attempts.
-/// `into_parts` is for when training is finished entirely and the caller wants
-/// the SCDC client and PHY back for ongoing use (link monitoring, re-training
-/// on degradation, etc.).
-pub struct FrlTrainer<C, P> { ... }
-
-impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
-    pub fn new(scdc: C, phy: P) -> Self;
-    pub fn into_parts(self) -> (C, P);
-
-    /// Run the full four-phase training sequence at the given FRL rate.
-    pub fn train_at_rate(
-        &mut self,
-        rate: HdmiForumFrl,
-        config: &TrainingConfig,
-    ) -> Result<TrainingOutcome, TrainingError<C::Error, P::Error>>;
-
-    /// Like `train_at_rate`, but also returns a `TrainingTrace` recording the
-    /// full event sequence. Requires the `alloc` feature.
-    #[cfg(feature = "alloc")]
-    pub fn train_at_rate_traced(
-        &mut self,
-        rate: HdmiForumFrl,
-        config: &TrainingConfig,
-    ) -> Result<(TrainingOutcome, TrainingTrace), TrainingError<C::Error, P::Error>>;
+    /// Poll limit for FLT_ready in LTS:2. Default 50 (100 ms at 2 ms per poll).
+    pub flt_ready_polls: u32,
+    /// Poll limit for LTS:3. Default 100 (200 ms at 2 ms per poll).
+    pub ltp_polls: u32,
+    /// Poll limit for FRL_start in LTS:P. Default 100 (200 ms at 2 ms per poll).
+    pub frl_start_polls: u32,
+    /// The LTS:2, LTS:3 and LTS:P limit while the sink sets FLT_no_timeout. Default 500.
+    pub no_timeout_poll_cap: u32,
+    /// Returns from LTS:P to LTS:3 allowed per train call. Default 3.
+    pub max_retrains: u32,
+    /// Whether an SCDC or PHY error is followed by LTS:L. Default true.
+    pub exit_to_tmds_on_error: bool,
 }
 ```
 
-`TrainingConfig` is `#[non_exhaustive]` and implements `Default`. The default values are
-`ffe_levels: FfeLevels::Ffe0`, `dsc_frl_max: false`, `flt_ready_timeout: 1000`,
-`frl_start_timeout: 1000`, and `ltp_timeout: 1000`. These are reasonable for hardware use
-but are not tuned for any specific platform; callers should adjust the timeout values for
-their polling cadence.
+```rust
+impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
+    /// Train over `rates` in order, stepping down when the sink requests it.
+    pub fn train(&mut self, rates: &[HdmiForumFrl], config: &TrainingConfig)
+        -> Result<Trained, TrainingError<C::Error, P::Error>>;
+    /// `train(&[rate], config)`.
+    pub fn train_at_rate(&mut self, rate: HdmiForumFrl, config: &TrainingConfig)
+        -> Result<Trained, TrainingError<C::Error, P::Error>>;
+    /// `train` and `train_at_rate`, also returning a `TrainingTrace` (alloc), whatever
+    /// the result.
+    pub fn train_traced(&mut self, rates: &[HdmiForumFrl], config: &TrainingConfig)
+        -> (Result<Trained, TrainingError<C::Error, P::Error>>, TrainingTrace);
+    pub fn train_at_rate_traced(&mut self, rate: HdmiForumFrl, config: &TrainingConfig)
+        -> (Result<Trained, TrainingError<C::Error, P::Error>>, TrainingTrace);
+    /// `train`, calling `record` with each event as it occurs; no allocator needed.
+    pub fn train_with_events<F: FnMut(TrainingEvent)>(&mut self, rates: &[HdmiForumFrl],
+        config: &TrainingConfig, record: &mut F)
+        -> Result<Trained, TrainingError<C::Error, P::Error>>;
+    /// LTS:L on demand: take the link down to TMDS.
+    pub fn exit_to_tmds(&mut self) -> Result<(), ExitError<C::Error, P::Error>>;
+    // `new` and `into_parts` construct the trainer and recover the client and PHY;
+    // `scdc`, `scdc_mut`, `phy` and `phy_mut` reach them in between (for example to start
+    // video with `phy_mut().set_frl_output(FrlOutput::Active)` after `Success`).
+}
+
+/// A hard I/O failure, kept separate from the protocol outcome.
+#[non_exhaustive]
+pub enum TrainingError<ScdcErr, PhyErr> {
+    Scdc { error: ScdcErr, exit: TmdsExit<ScdcErr, PhyErr> },
+    Phy { error: PhyErr, exit: TmdsExit<ScdcErr, PhyErr> },
+    /// The attempt fell back, and LTS:L then failed.
+    ExitFailed { reason: FallbackReason, error: ExitError<ScdcErr, PhyErr> },
+    /// The rate list cannot be trained over; nothing was done.
+    InvalidRates { index: usize, rate: HdmiForumFrl },
+    /// The rate list is empty; nothing was done.
+    NoRates,
+}
+
+/// What LTS:L did after an SCDC or PHY error.
+#[non_exhaustive]
+pub enum TmdsExit<ScdcErr, PhyErr> {
+    Exited,
+    /// `TrainingConfig::exit_to_tmds_on_error` is off.
+    Skipped,
+    /// The sink had set `FLT_no_timeout`: the link is held for the test equipment.
+    HeldUnderTest,
+    Failed(ExitError<ScdcErr, PhyErr>),
+}
+
+/// LTS:L failed: each end's first error; an end with `None` is in TMDS.
+#[non_exhaustive]
+pub struct ExitError<ScdcErr, PhyErr> { pub scdc: Option<ScdcErr>, pub phy: Option<PhyErr> }
+```
+
+`Trained` follows the stack's convention for non-fatal findings (piaf's `ParsedEdid`,
+cartouche's `Decoded`, concordance's `NegotiatedConfig`): the accepted result carries
+typed warnings next to the value, in a `Vec` with `alloc` and a fixed array without, read
+through `iter_warnings`; failures carry errors, not warnings. One difference fits a
+procedure that polls: a sink may repeat an anomaly on every round, so repeats are merged
+into one warning per kind and lane, with a count. An attempt then produces at most five
+warnings — lanes 0–2, and lane 3 in and out of use — so the `MAX_WARNINGS` (5) slots
+without `alloc` never drop one. The trace records every occurrence.
 
 ---
 
 ## Diagnostics
 
-Concordance records every decision it considers in a `ReasoningTrace`. plumbob is a
-sequential state machine rather than a decision pipeline, so the diagnostic equivalent is
-an ordered event log: a record of what the sink signaled, when each phase completed, and
-why training succeeded or did not. A driver or diagnostic tool must be able to reconstruct
-the full training sequence from the trace without inspecting internal state or reading logs.
+The trace is an ordered event log from LTS:2 to the terminal state, so a driver or
+diagnostic tool can reconstruct the whole attempt without reading internal state.
 
 ### `TrainingEvent`
-
-Each phase transition and significant sink signal produces a `TrainingEvent`. Events are
-recorded in order from phase 1 through the terminal state.
 
 ```rust
 #[non_exhaustive]
 pub enum TrainingEvent {
-    /// Phase 1: Config_0 was written with this rate and FFE level count.
-    RateConfigured {
-        rate: HdmiForumFrl,
-        ffe_levels: FfeLevels,
-    },
-
-    /// Phase 2: the sink asserted flt_ready after this many poll iterations.
-    FltReadyReceived { after_iterations: u32 },
-
-    /// Phase 2: timed out waiting for flt_ready.
-    FltReadyTimeout { iterations_elapsed: u32 },
-
-    /// Phase 3: the sink asserted frl_start after this many poll iterations.
-    FrlStartReceived { after_iterations: u32 },
-
-    /// Phase 3: timed out waiting for frl_start.
-    FrlStartTimeout { iterations_elapsed: u32 },
-
-    /// Phase 4: the sink changed its LTP request to this pattern.
-    ///
-    /// Recorded each time ltp_req transitions to a new value, not on every poll.
-    /// The sequence of these events shows how the sink's pattern requests evolved
-    /// during training.
-    LtpPatternRequested { pattern: LtpReq },
-
-    /// Phase 4: ltp_req reached None on all lanes. Training succeeded.
-    AllLanesSatisfied { after_iterations: u32 },
-
-    /// Phase 4: timed out in the LTP loop before ltp_req reached None.
-    LtpLoopTimeout { iterations_elapsed: u32 },
+    /// The sink's Source_Test_Configuration was read (LTS:2 or LTS:3).
+    SourceTestConfigRead { flt_no_timeout: bool },
+    /// LTS:2: FLT_ready asserted after this many polls.
+    FltReady { after_polls: u32 },
+    /// LTS:2: FLT_ready did not assert.
+    FltReadyTimeout { polls: u32 },
+    /// LTS:2 or LTS:4: Config_1 written with this rate.
+    RateConfigured { rate: HdmiForumFrl, ffe_levels: FfeLevels },
+    /// LTS:3: the sink posted new requests (one event per FLT_update, not per poll).
+    LtpRequested { requests: LtpRequests },
+    /// LTS:3: a lane's TxFFE level was raised in response to 0xE.
+    FfeRaised { lane: u8, level: u8 },
+    /// LTS:3: a lane requested an undefined value (0x9–0xD). A lane in use keeps its
+    /// pattern and TxFFE level; lane 3 at a 3-lane rate is not in use.
+    UndefinedLtpRequest { lane: u8, value: u8, in_use: bool },
+    /// LTS:3: all active lanes reported 0x0.
+    TrainingPassed { after_polls: u32 },
+    /// LTS:4: the sink requested a lower rate; training continues at `to`.
+    RateLowered { from: HdmiForumFrl, to: HdmiForumFrl },
+    /// LTS:4: the sink requested a lower rate than the last one in the list.
+    RatesExhausted,
+    /// LTS:3: training did not pass within the poll limit.
+    TrainingTimeout { polls: u32 },
+    /// LTS:P: FRL_start and FLT_update were set together; the retrain wins.
+    FrlStartWithRetrain,
+    /// LTS:P: the sink requested retraining (FLT_update) before FRL_start.
+    RetrainRequested,
+    /// LTS:P: the sink requested retraining once more after max_retrains retrains.
+    RetrainsExhausted { retrains: u32 },
+    /// LTS:P: FRL_start asserted. Training succeeded.
+    FrlStart { after_polls: u32 },
+    /// LTS:P: FRL_start did not assert.
+    FrlStartTimeout { polls: u32 },
+    /// FLT_no_timeout: the poll cap ran out (LTS:2, LTS:3 or LTS:P); the link is held.
+    NoTimeoutCapReached { polls: u32 },
+    /// LTS:L: the sink was returned to TMDS.
+    ExitedToTmds,
+    /// LTS:L: a step failed on the SCDC side, the PHY side, or both.
+    ExitToTmdsFailed { scdc: bool, phy: bool },
 }
 ```
-
-Only transitions in `ltp_req` are recorded as `LtpPatternRequested`, not every poll. A
-sink that holds the same pattern for 50 iterations produces one event, not 50. This keeps
-the trace compact while preserving the information a diagnostic tool actually needs: what
-patterns were requested, and in what order.
 
 ### `TrainingTrace`
 
-```rust
-/// Full event log for a single training attempt.
-#[non_exhaustive]
-pub struct TrainingTrace {
-    /// The FRL rate that was attempted.
-    pub rate: HdmiForumFrl,
-    /// The configuration in force during this attempt.
-    ///
-    /// Recorded so that a trace is fully self-describing: timeout counts in
-    /// the events (e.g. `FltReadyTimeout { iterations_elapsed: 47 }`) are only
-    /// meaningful when read against the limit that was configured.
-    pub config: TrainingConfig,
-    /// Ordered event log from phase 1 through the terminal state.
-    pub events: Vec<TrainingEvent>,
-}
-```
-
-`TrainingTrace` uses `Vec` and requires the `alloc` feature. The non-allocating
-`train_at_rate` is always available; `train_at_rate_traced` is alloc-gated.
-
-`TrainingConfig` derives `Clone` and `Copy` (all its fields are `Copy`); storing it
-in `TrainingTrace` is a value copy with no allocation.
+The rates passed in, the `TrainingConfig` in force (so poll counts can be read against their
+limits), and the ordered `events`. It requires the `alloc` feature.
 
 ### Interpreting the trace
 
-A complete successful trace looks like:
-
 ```
-RateConfigured { rate: Rate9Gbps3Lanes, ffe_levels: Ffe0 }
-FltReadyReceived { after_iterations: 5 }
-FrlStartReceived { after_iterations: 12 }
-LtpPatternRequested { pattern: Lfsr0 }
-LtpPatternRequested { pattern: Lfsr2 }
-LtpPatternRequested { pattern: None }   ← not recorded; AllLanesSatisfied is emitted instead
-AllLanesSatisfied { after_iterations: 47 }
-```
-
-A trace that timed out in phase 2 — the sink never completed internal preparation:
-
-```
-RateConfigured { rate: Rate12Gbps4Lanes, ffe_levels: Ffe0 }
-FltReadyTimeout { iterations_elapsed: 1000 }
+SourceTestConfigRead { flt_no_timeout: false }
+FltReady { after_polls: 3 }
+RateConfigured { rate: Rate12Gbps4Lanes, ffe_levels: FfeLevels(3) }
+LtpRequested { requests: LtpRequests { lane0: Lfsr0, lane1: Lfsr1, lane2: Lfsr2, lane3: Lfsr3 } }
+LtpRequested { requests: LtpRequests { lane0: None, lane1: FfeChange, lane2: None, lane3: None } }
+FfeRaised { lane: 1, level: 1 }
+TrainingPassed { after_polls: 41 }
+FrlStart { after_polls: 6 }
 ```
 
-A trace that timed out in phase 3 — the sink became ready but never signalled to begin:
+A sink that asks for a lower rate, trained over `[Rate12Gbps4Lanes, Rate10Gbps4Lanes]`:
 
 ```
-RateConfigured { rate: Rate12Gbps4Lanes, ffe_levels: Ffe0 }
-FltReadyReceived { after_iterations: 4 }
-FrlStartTimeout { iterations_elapsed: 1000 }
+SourceTestConfigRead { flt_no_timeout: false }
+FltReady { after_polls: 2 }
+RateConfigured { rate: Rate12Gbps4Lanes, ffe_levels: FfeLevels(3) }
+LtpRequested { requests: LtpRequests { lane0: RateChange, lane1: RateChange, lane2: RateChange, lane3: RateChange } }
+RateLowered { from: Rate12Gbps4Lanes, to: Rate10Gbps4Lanes }
+RateConfigured { rate: Rate10Gbps4Lanes, ffe_levels: FfeLevels(3) }
+LtpRequested { requests: LtpRequests { lane0: Lfsr0, lane1: Lfsr0, lane2: Lfsr0, lane3: Lfsr0 } }
+TrainingPassed { after_polls: 12 }
+FrlStart { after_polls: 4 }
 ```
 
-A trace that timed out in phase 4 — the sink requested patterns but lanes never converged:
-
-```
-RateConfigured { rate: Rate12Gbps4Lanes, ffe_levels: Ffe0 }
-FltReadyReceived { after_iterations: 4 }
-FrlStartReceived { after_iterations: 3 }
-LtpPatternRequested { pattern: Lfsr1 }
-LtpPatternRequested { pattern: Lfsr3 }
-LtpLoopTimeout { iterations_elapsed: 1000 }
-```
-
-Each timeout phase tells the caller something distinct about what went wrong: a phase 2
-timeout means the sink did not complete internal preparation at this rate; a phase 3 timeout
-means it prepared but did not initiate training; a phase 4 timeout means the sink entered
-the LTP loop but lanes failed to lock, which is more likely a signal integrity or
-equalization issue.
+A timeout in LTS:2 means the sink did not prepare at this rate; one in LTS:3 means lanes
+did not converge (signal integrity or equalization); one in LTS:P means training passed but
+the sink never released the link. `RateLowered` means the sink itself judged a rate
+unattainable, and `RatesExhausted` that it judged every listed rate unattainable. Every
+`FallbackRequired` trace ends with `ExitedToTmds`; a trace ending with `ExitToTmdsFailed`
+belongs to a `TrainingError`.
 
 ---
 
@@ -421,14 +590,14 @@ plumbob sits between two interfaces, and defines one of them.
 
 ### Below: `ScdcClient` (defined here, implemented by SCDC crates)
 
-**The SCDC implementation's responsibility:** typed register access. Given a desired FRL
-rate, write it into `Config_0`. Given a status register, decode it into `TrainingStatus`.
-The SCDC implementation does not know what to do with a `TrainingStatus`; it only knows
-how to read one.
+**The SCDC implementation's responsibility:** typed register access. Write `Config_0` and
+`Config_1`, read and clear the `Update_0` flags, read `FLT_ready`, the per-lane requests and
+`Source_Test_Configuration`. It does not know what to do with those values; it only knows
+how to read and write them.
 
-**plumbob's responsibility toward the SCDC layer:** sequence the calls. Write `Config_0`.
-Poll for `frl_start`. Read `ltp_req`. Declare success or fall back. That sequencing, the
-iteration limits, and the fallback signal live here.
+**plumbob's responsibility toward the SCDC layer:** sequence the calls through LTS:2,
+LTS:3 and LTS:P, clear the flags it has serviced, and return the sink to TMDS when an
+attempt fails. That sequencing, the poll limits and the outcome live here.
 
 The rule: if it touches state across multiple register accesses, timeout logic, or the
 decision of what to do with a register value, it belongs in plumbob. If it reads or writes
@@ -436,34 +605,32 @@ registers and returns typed results, it belongs in the SCDC implementation.
 
 #### Type ownership and the culvert boundary
 
-plumbob owns the types that form the vocabulary of `ScdcClient`: `LtpReq`, `FfeLevels`,
-`FrlConfig`, `TrainingStatus`, `CedCount`, `CedCounters`. These are the types the state
+plumbob owns the types that form the vocabulary of `ScdcClient`: `LtpReq`, `LtpRequests`,
+`FfeLevels`, `FrlConfig`, `UpdateFlags`, `SourceTestConfig`, `CedCount`, `CedCounters`. These are the types the state
 machine reasons about.
 
 culvert independently defines its own register-layer types (`culvert::LtpReq`,
 `culvert::FfeLevels`, etc.) for its own purposes — they are the output of SCDC register
-decoding, not the input to a training state machine. The two sets of types happen to be
-structurally identical today but exist at different layers and can evolve independently.
+decoding, not the input to a training state machine.
 
-When culvert implements `ScdcClient` (via its `plumbob` cargo feature), it converts between
-its own types and plumbob's at the impl boundary:
+The two sets are not identical today. Two names differ by accident: the 0x4 request is
+`DdeCompliance` in plumbob and `RxDdeCompliance` in culvert, and `FrlConfig`'s rate is
+`rate` in plumbob and `frl_rate` in culvert. And plumbob's types leave out fields
+training does not use: its `UpdateFlags` has 3 of the 7 `Update_0` flags, its
+`SourceTestConfig` only `flt_no_timeout` of the 6 `Source_Test_Configuration` fields.
 
-```rust
-#[cfg(feature = "plumbob")]
-impl<T: ScdcTransport> plumbob::ScdcClient for Scdc<T> {
-    fn read_training_status(&mut self) -> Result<plumbob::TrainingStatus, ...> {
-        let flags = self.read_status_flags()?;
-        Ok(plumbob::TrainingStatus {
-            frl_start: flags.frl_start,
-            ltp_req: flags.ltp_req.into(), // culvert::LtpReq → plumbob::LtpReq
-        })
-    }
-    // ...
-}
-```
+The plan is to mirror them (see `roadmap.md`): the same names, and every field of the
+registers in plumbob's types as well, with the state machine still acting only on the
+fields it uses. Leaving fields out saves an `ScdcClient` nothing, since it reads the
+whole register anyway, and it hides from plumbob, and so from its trace, the compliance
+tester's other settings (`TxFFE_No_FFE`, `TxFFE_Pre_Shoot_Only`, `TxFFE_De_Emphasis_Only`,
+`FRL_Max`, `DSC_FRL_Max`). The types stay separate, so neither crate depends on the
+other, and the conversions become field-for-field copies.
 
-`From` impls between the corresponding types live in the same feature-gated module.
-culvert's own types are unchanged; the conversion is confined to the impl.
+When culvert implements `ScdcClient` (via its `plumbob` cargo feature), each trait method
+calls one culvert method and converts culvert's type to plumbob's (`culvert::LtpRequests` →
+`plumbob::LtpRequests`, and so on). `From` impls live in the same feature-gated module;
+culvert's own types are unchanged.
 
 This approach is intentional. The alternative — making culvert's types re-exports of
 plumbob's when the feature is active — would make `culvert::LtpReq` mean different things
@@ -471,15 +638,16 @@ depending on the feature set, breaking crates that use culvert without plumbob. 
 dependency unconditional would force plumbob into every culvert user's dependency graph.
 The boundary conversion is small, explicit, and keeps both crates independently usable.
 
-### Above: `LinkTrainer` (defined by the integration layer, implemented here)
+### Above: `LinkTrainer` (planned)
 
-The integration layer defines the interface it needs from link training. plumbob
-implements it. This means the integration layer has no dependency on plumbob specifically
-— any crate that implements `LinkTrainer` is substitutable.
+The integration layer will define the interface it needs from link training, and plumbob
+will implement it. The integration layer will then have no dependency on plumbob
+specifically — any crate that implements `LinkTrainer` will be substitutable.
 
-The `LinkTrainer` trait is defined in the integration layer crate (not yet built). Its
-surface will be driven by what the DRM/KMS integration actually needs to call: at minimum,
-`train_at_rate` and the ability to recover the SCDC client and PHY on completion.
+The `LinkTrainer` trait does not exist yet; it will live in the integration layer crate,
+which is not yet built. Its surface will be driven by what the DRM/KMS integration
+actually needs to call: at minimum, `train` and the ability to recover the SCDC client and
+PHY on completion. Until then, callers use `FrlTrainer` directly.
 
 ---
 
@@ -492,16 +660,27 @@ available depending on the target environment:
 
 The full training state machine is available. `FrlTrainer<C, P>` is stack-allocated;
 `TrainingConfig`, `TrainingOutcome`, `TrainingError`, and all owned protocol types
-(`LtpReq`, `FfeLevels`, `TrainingStatus`, `CedCounters`) are stack-allocated. No heap
+(`LtpReq`, `LtpRequests`, `FfeLevels`, `UpdateFlags`, `CedCounters`, …) are stack-allocated. No heap
 use anywhere in the training loop. This tier covers bare-metal and firmware targets.
+
+The training future is 416 bytes in this tier, and 392 with `alloc` (where `Trained`
+holds its warnings in a `Vec` rather than inline), measured over the sync driver's I/O
+with zero-sized error types and Rust 1.94 (larger error types add their size); an `async` I/O implementation adds the size of its own futures. Where it
+lives depends on the driver: `FrlTrainer` (sync) keeps it on the caller's stack for the
+duration of `train`, while under an async executor such as Embassy it is part of the
+task's future and so lives wherever the task is stored, typically in static memory. A
+test keeps the size within a budget, so growth is a deliberate decision.
+`train_with_events` delivers every `TrainingEvent` to a callback as it occurs, so the
+full reasoning is available without an allocator; `train` returns the warnings. CI builds this tier and the `alloc` tier for `thumbv7em-none-eabi`, a target without
+`std`.
 
 **`no_std` + `alloc` feature**
 
-Adds `TrainingTrace` and `train_at_rate_traced`. The trace requires `Vec` to accumulate
+Adds `TrainingTrace`, `train_traced` and `train_at_rate_traced`. The trace requires `Vec` to accumulate
 events; everything else is unchanged. Enable with:
 
-```toml
-plumbob = { version = "0.1", features = ["alloc"] }
+```sh
+cargo add plumbob --features alloc
 ```
 
 **`std` feature**
@@ -511,11 +690,58 @@ a convenience for targets where it is available and for host-side tooling.
 
 **Async**
 
-The sync `ScdcClient` trait is blocking. Async link training follows the same pattern as
-`hdmi-hal` / `hdmi-hal-async`: a companion crate `plumbob-async` will mirror `ScdcClient`
-and `FrlTrainer` with `async fn` methods, depend on `plumbob` for shared data types, and
-be implemented against `culvert-async`. This is out of scope for the current phase; the
-sync API is designed so that adding the async companion requires no changes to this crate.
+The state machine is one function returning a future, `lts::run` (see below), so async
+link training needs no second implementation. `plumbob-async` defines an async
+`ScdcClient` and an async `FrlTrainer` that drives `lts::run` over async I/O, and depends
+on `plumbob` for the state machine and all shared types; `culvert-async` implements its
+`ScdcClient`. See the stack design document's "Sync and Async Companions" section for why
+the core lives here.
+
+### `plumbob::lts`
+
+```rust
+pub trait TrainingIo {
+    type ScdcError;
+    type PhyError;
+    // The SCDC operations of `ScdcClient` that training uses (all but `read_ced`) and the
+    // four `HdmiPhy` operations, as `async fn`s.
+    async fn read_flt_ready(&mut self) -> Result<bool, Self::ScdcError>;
+    async fn send_ltp(&mut self, patterns: LanePatterns) -> Result<(), Self::PhyError>;
+    // …
+}
+
+// A plain `fn` returning a future, used exactly like an `async fn`; it saves an async
+// layer in the future the caller holds (see "`no_std`, `alloc`, and `async`").
+pub fn run<Io: TrainingIo, F: FnMut(TrainingEvent)>(
+    io: &mut Io,
+    rates: &[HdmiForumFrl],
+    config: &TrainingConfig,
+    record: &mut F,
+) -> impl Future<Output = Result<Trained, TrainingError<Io::ScdcError, Io::PhyError>>>;
+
+pub async fn exit_to_tmds<Io: TrainingIo, F: FnMut(TrainingEvent)>(
+    io: &mut Io,
+    record: &mut F,
+) -> Result<(), ExitError<Io::ScdcError, Io::PhyError>>;
+```
+
+`run` is the procedure described above, and `exit_to_tmds` its LTS:L on its own: the same outcomes, errors and `TrainingEvent`s,
+with no I/O of its own. Drivers supply the I/O:
+
+- **`FrlTrainer` (sync).** An adapter implements `TrainingIo` over the trainer's
+  `ScdcClient` and `HdmiPhy`; each method is the sync call itself, so its future is ready
+  when first polled. The trainer polls `run` once with `core::task::Waker::noop()` (stable
+  since Rust 1.85, plumbob's MSRV) and it completes: no executor, no runtime, `no_std`.
+  A `Pending` there would be a plumbob bug and panics.
+- **`plumbob-async`.** An adapter over async `ScdcClient` and `HdmiPhy` implementations,
+  `.await`ing `run`.
+
+`TrainingIo`'s futures are not required to be `Send`, as in `hdmi-hal-async`: the targets
+are single-threaded executors and the sync driver. Over concrete I/O types the `run`
+future is `Send` when their futures are; a caller generic over the I/O traits cannot spawn
+it on a multi-threaded executor. The fix — `Send` variants of the leaf traits in
+`hdmi-hal-async` and `plumbob-async`; `TrainingIo` itself needs none — is recorded, and
+deferred, in the stack design document ("Sync and Async Companions", "`Send` futures for multi-threaded executors").
 
 ---
 
@@ -523,18 +749,25 @@ sync API is designed so that adding the async companion requires no changes to t
 
 - **Interfaces owned by consumers.** plumbob defines the interface its dependencies
   must satisfy (`ScdcClient`) rather than depending on a concrete implementation.
-  The integration layer above defines the interface plumbob must satisfy (`LinkTrainer`).
+  The integration layer above will define the interface plumbob must satisfy
+  (`LinkTrainer`, planned).
   Each layer is substitutable independently.
 - **Deterministic and testable.** The training procedure runs identically against a
   simulated `ScdcClient` and real hardware. Implement `ScdcClient` with a register
   array, pre-load it with the values a sink would produce at each phase, run the state
   machine, assert on the outcome. No hardware required for any test.
-- **State machine, not scattered logic.** The four phases are an explicit sequence.
-  Phase transitions are clear, terminal states are explicit, and every exit point
-  produces a typed result. No implicit control flow, no silent completion.
-- **Policy at the right layer.** plumbob implements the spec, not strategy. Rate
-  fallback order, retry counts above the per-attempt limit, and the decision of whether
-  to surface a `FallbackRequired` to the user are the caller's concerns.
+- **One implementation, sync and async.** The state machine is written once, as an
+  I/O-free function returning a future; the sync and async trainers only supply the I/O. A fix to the
+  procedure reaches both.
+- **State machine, not scattered logic.** The link training states are an explicit
+  sequence. State transitions are clear, terminal states are explicit, and every exit
+  point produces a typed result and leaves the sink in a defined state: TMDS after a
+  fallback or an error, or, when LTS:L itself fails, an error saying which end did not
+  get there. No implicit control flow, no silent completion.
+- **Policy at the right layer.** plumbob implements the spec, not strategy. Which rates to
+  try and in what order, retries beyond one call, and the decision of whether to surface
+  a `FallbackRequired` to the user are the caller's concerns. Stepping down on the sink's
+  request is the spec's LTS:4, so it happens inside `train`.
 - **Transport and PHY errors are distinct.** A caller diagnosing a training failure
   needs to know whether it came from the I²C bus, the PHY, or the protocol. `TrainingError`
   keeps them separate.
@@ -547,24 +780,140 @@ sync API is designed so that adding the async companion requires no changes to t
 
 ---
 
-## Open Items
+## What plumbob uses from hdmi-hal
 
-**`HdmiPhy::send_ltp`** — Phase 3 of training requires the source to drive a specific Link
-Training Pattern on the physical lanes, as requested by the sink via `LtpReq`. This is a
-PHY operation. `HdmiPhy` currently has `set_frl_rate`, `adjust_equalization`, and
-`set_scrambling`, but no method for driving LTP patterns.
+The procedure above relies on these parts of `hdmi-hal` (mirrored in `hdmi-hal-async`,
+and recorded by `hdmi-hal-i2c-dev`'s `StubPhy`):
 
-The method will be added to `hdmi-hal` as `send_ltp(pattern: LtpPattern)`, where
-`LtpPattern` is a newtype defined in hdmi-hal. This keeps hdmi-hal free of any dependency
-on plumbob. plumbob converts from its `LtpReq` to `hdmi_hal::LtpPattern` before calling
-the PHY; `LtpReq::None` is the exit condition for the LTP loop and never reaches the call.
+- **`LtpPattern` with the spec values**: 1 = all ones, 2 = all zeros, 3 = Nyquist clock,
+  4 = DDE compliance and 5–8 = LFSR 0–3. `LtpReq::pattern` maps a request to the pattern
+  of the same value.
+- **Per-lane patterns.** `HdmiPhy::send_ltp` takes the full per-lane set
+  (`LanePatterns`, an `Option<LtpPattern>` per lane, `None` meaning no pattern on that
+  lane). The PHY applies the set as given; plumbob tracks which pattern each lane carries.
+- **Per-lane TxFFE levels.** `LaneEqParams::tx_ffe_level` (a `TxFfeLevel`, 0–7), applied
+  through `HdmiPhy::adjust_equalization`.
+- **FRL output mode on `HdmiPhy`.** `set_frl_output(FrlOutput)`: plumbob sets `GapOnly`
+  during training and LTS:P, and the caller sets `Active` (video, data islands and
+  control) after `Success`. It sits on `HdmiPhy` because both plumbob and the integration
+  layer drive it, and because `HdmiPhy` already carries link-level operations
+  (`set_scrambling`, `send_ltp`).
+- **`set_frl_rate` includes bring-up.** It returns once the PHY transmits at the rate,
+  after whatever its hardware needs to get there, such as a clock pattern held until its
+  PLL locks. plumbob sends no pattern during LTS:2 itself: it cannot observe when a
+  transmitter's link is up, and a zero-length pattern would do nothing.
+- **Block reads on `ScdcTransport`.** `read_block` lets an SCDC implementation read
+  `Status_Flags_1/2` (and the CED block) in one transaction when its transport can.
 
-Until `send_ltp` and `LtpPattern` are added to hdmi-hal, the LTP loop calls
-`adjust_equalization` as a placeholder. The state machine structure is complete; only this
-one call is a stub.
+## How long one `train` call can take
 
-**`EqParams` expansion** — `EqParams` in hdmi-hal is currently an empty placeholder struct.
-`ScdcClient::read_ced` returns `CedCounters` (defined here) which will feed equalization
-adjustments during the LTP loop once `EqParams` is expanded to carry the relevant fields.
-The training loop already calls `read_ced`; the equalization call is the stub.
+Every state polls a bounded number of times, so `train` always returns. The bound, in
+polls (reads of `FLT_ready` or `Update_0`), is:
 
+```text
+flt_ready_polls                               LTS:2, once per call
++ (n_rates + max_retrains) × ltp_polls        LTS:3: the first rate, each step down
+                                              (at most n_rates − 1), each retrain
++ (max_retrains + 1) × frl_start_polls        LTS:P: the first pass and each retrain
+```
+
+While the sink sets `FLT_no_timeout`, each of the three limits is `no_timeout_poll_cap`
+instead. Each LTS:3 and LTS:P entry gets a fresh limit, and `n_rates` is at most six (a
+valid list is strictly descending FRL rates), so the bound is finite for every list
+`train` accepts. With the defaults, at one poll every 2 ms:
+
+| | 1 rate | 6 rates |
+|---|---|---|
+| Normal limits (50 / 100 / 100, 3 retrains) | 850 polls, ≈ 1.7 s | 1350 polls, ≈ 2.7 s |
+| `FLT_no_timeout` throughout (cap 500) | 4500 polls, ≈ 9 s | 7000 polls, ≈ 14 s |
+
+These are worst cases: a sink that answers late in every state, steps down through the
+whole list and retrains as often as allowed. The SCDC and PHY operations between polls
+add to the wall-clock time; how long a poll lasts is the `ScdcClient` implementation's,
+since plumbob counts polls, not time.
+
+Two consequences for implementers:
+
+- **The polled methods must actually wait.** If `read_flt_ready` and `read_update_flags`
+  return at bus speed instead of waiting the poll interval, every limit shrinks in
+  proportion: 100 polls of I²C reads last a few milliseconds, not 200 ms, and training
+  times out early.
+- **Async: an operation that never waits never yields.** `plumbob-async` runs the state
+  machine with `.await` on each operation; an `ScdcClient` whose futures are always ready
+  (a blocking bus wrapped in `async fn`, say, with no timer) keeps the executor for the
+  whole call. Awaiting the poll interval is what lets other tasks run.
+
+How a caller keeps a call shorter than the worst case:
+
+- **Lower the limits.** All five are `TrainingConfig` fields. `max_retrains: 0` alone
+  removes the retrain terms: `flt_ready_polls + n_rates × ltp_polls + frl_start_polls`.
+  A lower `no_timeout_poll_cap` ends a compliance test sooner, in `NoTimeoutHold`.
+- **Pass fewer rates.** Each rate after the first can add an LTS:3 pass.
+- **Set the poll interval.** It is the `ScdcClient` implementation's, so the wall-clock
+  time per poll is the implementer's to choose.
+- **Async: cancel.** Drop the `train` future (after a `select!` or `timeout`) and call
+  `exit_to_tmds()`; see plumbob-async's "Cancellation".
+- **Sync: a wall-clock deadline has no direct support.** The limits are counts, and the
+  `train_with_events` callback observes but cannot stop training. A deadline can be built
+  into the `ScdcClient`: once it has passed, the polled methods return an error, plumbob
+  stops and runs LTS:L, and `train` returns `TrainingError::Scdc { error, exit }`. Two
+  caveats: the client must still let LTS:L's own SCDC calls through (`write_frl_config`,
+  `read_update_flags`, `clear_update_flags`), or the exit fails and `exit` is
+  `TmdsExit::Failed`; and the deadline is reported as an SCDC error, so the caller tells
+  it apart by its own error value. Built-in deadline support is in the stack's ideadump.
+
+---
+
+## Decisions
+
+- The sink's rate-drop request is handled inside `train` (LTS:4) over the caller's rate
+  list, and every non-success is `FallbackRequired { reason }` with a non-exhaustive
+  `FallbackReason`.
+- Poll limits default to 50 / 100 / 100 polls (100 / 200 / 200 ms at 2 ms per poll), with
+  `FLT_no_timeout` honoured up to `no_timeout_poll_cap` (500 polls). The 200 ms
+  `FRL_start` wait is the AMD and Intel drivers' (the Xilinx driver has none). The number
+  500 is the AMD driver's cap, but what happens when it runs out is plumbob's: AMD applies
+  it in LTS:3 only and returns success; plumbob applies it in LTS:2, LTS:3 and LTS:P and
+  returns `NoTimeoutHold` without LTS:L. Both agree with the Xilinx driver, which has no
+  limit, that the source does not leave FRL on its own timer under test. The Intel series
+  does not handle `FLT_no_timeout`.
+- The 100 ms `FLT_ready` limit (50 polls) is the spec's and the shortest of the
+  references: the Xilinx driver waits 100 ms, the AMD driver up to 105 polls at least
+  2 ms apart (≈ 210 ms), the Intel series 250 ms. A sink that asserts `FLT_ready` within
+  those drivers' limits but after 100 ms ends the attempt with `FltReadyTimeout`; raise
+  `flt_ready_polls` for it.
+- A lane's TxFFE level is raised up to the advertised maximum and held there.
+- `TrainingConfig::ffe_levels` defaults to 3, the number the AMD and Intel drivers
+  advertise (limited to the rate's maximum, which is 3 up to 12 Gbps). With 0, the sink
+  could request no TxFFE raises at all and plumbob would ignore every 0xE; a PHY that
+  cannot apply TxFFE sets it to 0 explicitly.
+- A Nyquist clock request (0x3) without `FLT_no_timeout` leaves the lane's previous pattern
+  in place; plumbob tracks and sends the full per-lane set.
+- FRL output control (`set_frl_output`) is part of `HdmiPhy`.
+- In LTS:P, when the sink sets `FRL_start` and `FLT_update` together, the retrain wins:
+  `FRL_start` is cleared and LTS:3 resumes, within `max_retrains`. Starting video on a
+  link the sink has asked to retrain would only have to be undone. The Xilinx driver ends
+  up in LTS:3 the same way; AMD passes and retrains later; Intel clears both and passes,
+  discarding the sink's request.
+- Retraining from LTS:P starts LTS:3 from the state LTS:P left — no pattern on any lane,
+  each lane's TxFFE level kept — with a fresh poll limit; levels are reset only in LTS:2
+  and LTS:4. This follows from plumbob's lane model being what the PHY was last told
+  (LTS:P stopped the patterns but not the levels), and matches the Xilinx driver, which
+  clears the patterns on entering LTS:P and again on the retrain but keeps its TxFFE
+  adjustments. Intel rebuilds every lane's pattern from scratch on each request, and AMD
+  retrains only after link-up, by running the whole procedure again. Retraining is
+  bounded by `max_retrains` (default 3) per `train` call, so the LTS:P ↔ LTS:3 cycle
+  always ends. The reference drivers differ here: Xilinx returns to LTS:3 without a limit
+  (its state machine is timer-driven, not blocking); AMD's LTS:P clears `FLT_update` and
+  stops waiting, and a retrain request reaches it later through its link-status check,
+  which reruns the whole procedure; Intel falls back to TMDS on the first request. The
+  default borrows the number of retries AMD allows a failed procedure (3, so up to four
+  runs), applied here to retrains. `max_retrains: 0` gives Intel's fallback on a retrain
+  request, except when `FRL_start` is set as well: Intel then clears both and passes,
+  while plumbob clears `FRL_start` and falls back. The bound applies under `FLT_no_timeout`
+  too: unlike the poll limits it is not suspended there, and exhausting it falls back
+  rather than holding the link (see "`FLT_no_timeout` — holding the link").
+- A 0xF on some lanes but not all keeps those lanes' state, like 0x0; only 0xF on every
+  active lane lowers the rate, as in the Xilinx driver and the Intel series. The AMD
+  driver lowers the rate on 0xF from any single lane.
+- The state machine does not call `read_ced`; CED counters are diagnostics.
