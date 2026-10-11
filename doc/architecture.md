@@ -679,8 +679,8 @@ full reasoning is available without an allocator; `train` returns the warnings. 
 Adds `TrainingTrace`, `train_traced` and `train_at_rate_traced`. The trace requires `Vec` to accumulate
 events; everything else is unchanged. Enable with:
 
-```toml
-plumbob = { version = "0.1", features = ["alloc"] }
+```sh
+cargo add plumbob --features alloc
 ```
 
 **`std` feature**

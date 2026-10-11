@@ -21,9 +21,8 @@ scope: plumbob implements the spec, not the strategy around it.
 
 ## Usage
 
-```toml
-[dependencies]
-plumbob = "0.1"
+```sh
+cargo add plumbob
 ```
 
 Implement `ScdcClient` against your SCDC transport, one method per register operation:
@@ -276,14 +275,14 @@ and firmware targets.
 
 **`no_std` + `alloc`** — adds `TrainingTrace`, `train_traced` and `train_at_rate_traced`:
 
-```toml
-plumbob = { version = "0.1", features = ["alloc"] }
+```sh
+cargo add plumbob --features alloc
 ```
 
 **`std`** — implies `alloc`:
 
-```toml
-plumbob = { version = "0.1", features = ["std"] }
+```sh
+cargo add plumbob --features std
 ```
 
 ## Stack position
