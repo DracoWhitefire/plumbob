@@ -18,21 +18,25 @@ use alloc::vec::Vec;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrainingEvent {
     /// The sink's `Source_Test_Configuration` was read (LTS:2 or LTS:3).
+    #[non_exhaustive]
     SourceTestConfigRead {
         /// Whether the sink set `FLT_no_timeout`.
         flt_no_timeout: bool,
     },
     /// LTS:2: `FLT_ready` asserted.
+    #[non_exhaustive]
     FltReady {
         /// Polls of `FLT_ready`, including the one that saw it.
         after_polls: u32,
     },
     /// LTS:2: `FLT_ready` did not assert.
+    #[non_exhaustive]
     FltReadyTimeout {
         /// Polls made: the limit.
         polls: u32,
     },
     /// LTS:2 or LTS:4: `Config_1` written with this rate.
+    #[non_exhaustive]
     RateConfigured {
         /// The FRL rate.
         rate: HdmiForumFrl,
@@ -43,11 +47,13 @@ pub enum TrainingEvent {
     /// The requests that pass training are recorded as [`TrainingPassed`] instead.
     ///
     /// [`TrainingPassed`]: TrainingEvent::TrainingPassed
+    #[non_exhaustive]
     LtpRequested {
         /// The requests for all four lanes.
         requests: LtpRequests,
     },
     /// LTS:3: a lane's TxFFE level was raised in response to 0xE.
+    #[non_exhaustive]
     FfeRaised {
         /// The lane (0–3).
         lane: u8,
@@ -57,6 +63,7 @@ pub enum TrainingEvent {
     /// LTS:3: a lane requested a value the specification leaves undefined (0x9–0xD). A
     /// lane in use keeps its pattern and TxFFE level; lane 3 at a 3-lane rate is not in
     /// use, and its requests are not acted on whatever their value.
+    #[non_exhaustive]
     UndefinedLtpRequest {
         /// The lane (0–3).
         lane: u8,
@@ -66,11 +73,13 @@ pub enum TrainingEvent {
         in_use: bool,
     },
     /// LTS:3: all active lanes reported 0x0.
+    #[non_exhaustive]
     TrainingPassed {
         /// Polls of `Update_0` in this pass through LTS:3, including the one that saw it.
         after_polls: u32,
     },
     /// LTS:4: the sink requested a lower rate; training continues at `to`.
+    #[non_exhaustive]
     RateLowered {
         /// The rate the sink rejected.
         from: HdmiForumFrl,
@@ -80,6 +89,7 @@ pub enum TrainingEvent {
     /// LTS:4: the sink requested a lower rate than the last one in the list.
     RatesExhausted,
     /// LTS:3: training did not pass within the poll limit.
+    #[non_exhaustive]
     TrainingTimeout {
         /// Polls made in this pass through LTS:3: the limit, or more if the tester cleared
         /// `FLT_no_timeout` after the normal limit had passed.
@@ -91,16 +101,19 @@ pub enum TrainingEvent {
     /// LTS:P: the sink requested retraining (`FLT_update`); training returns to LTS:3.
     RetrainRequested,
     /// LTS:P: the sink requested retraining once more after `max_retrains` retrains.
+    #[non_exhaustive]
     RetrainsExhausted {
         /// Retrains made: `max_retrains`.
         retrains: u32,
     },
     /// LTS:P: `FRL_start` asserted. Training succeeded.
+    #[non_exhaustive]
     FrlStart {
         /// Polls of `Update_0` in LTS:P, including the one that saw it.
         after_polls: u32,
     },
     /// LTS:P: `FRL_start` did not assert.
+    #[non_exhaustive]
     FrlStartTimeout {
         /// Polls made: the limit.
         polls: u32,
@@ -109,6 +122,7 @@ pub enum TrainingEvent {
     /// [`no_timeout_poll_cap`](crate::TrainingConfig::no_timeout_poll_cap) ran out. The
     /// attempt ends with `NoTimeoutHold`, leaving the link as it is. The state is the one
     /// the events before it lead into.
+    #[non_exhaustive]
     NoTimeoutCapReached {
         /// Polls made in the state: the cap, or more if the sink set `FLT_no_timeout` in
         /// LTS:3 after a cap lower than the polls already made.
@@ -118,6 +132,7 @@ pub enum TrainingEvent {
     ExitedToTmds,
     /// LTS:L: a step failed. Every step was attempted; an end whose steps all succeeded
     /// is in TMDS.
+    #[non_exhaustive]
     ExitToTmdsFailed {
         /// An SCDC step (`Config_1`, `FLT_update`) failed.
         scdc: bool,

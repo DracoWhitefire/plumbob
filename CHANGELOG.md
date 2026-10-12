@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking changes
+
+- **Every struct variant of `TrainingOutcome`, `TrainingError`, `TrainingWarning` and
+  `TrainingEvent` is `#[non_exhaustive]`**, so a later release can add a field to one
+  without breaking callers. Patterns need `..` (`TrainingOutcome::Success { achieved_rate,
+  .. }`), and code outside plumbob can no longer build these variants: tests that compare
+  an outcome, error or trace with `assert_eq!` against a constructed value match on it
+  instead (`matches!`, or a pattern with `..`).
+
 ## [0.2.0] - 2026-10-11
 
 ### Breaking changes

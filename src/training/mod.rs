@@ -39,11 +39,13 @@ pub enum FallbackReason {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrainingOutcome {
     /// Training passed and the sink set `FRL_start`. The link is ready at this rate.
+    #[non_exhaustive]
     Success {
         /// The FRL rate at which training succeeded.
         achieved_rate: HdmiForumFrl,
     },
     /// Training did not succeed at any of the rates.
+    #[non_exhaustive]
     FallbackRequired {
         /// Why the attempt ended.
         reason: FallbackReason,
@@ -54,6 +56,7 @@ pub enum TrainingOutcome {
     /// in LTS:3 or LTS:P the PHY and `Config_1` stay at `rate`; in LTS:2 nothing has been
     /// configured yet. The caller decides what comes next — keep the link up for the test,
     /// train again, or [`exit_to_tmds`](FrlTrainer::exit_to_tmds).
+    #[non_exhaustive]
     NoTimeoutHold {
         /// The rate being trained when the cap ran out.
         rate: HdmiForumFrl,
@@ -76,6 +79,7 @@ pub enum TrainingOutcome {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrainingError<ScdcErr, PhyErr> {
     /// The `ScdcClient` returned an error.
+    #[non_exhaustive]
     Scdc {
         /// The error.
         error: ScdcErr,
@@ -83,6 +87,7 @@ pub enum TrainingError<ScdcErr, PhyErr> {
         exit: TmdsExit<ScdcErr, PhyErr>,
     },
     /// The PHY returned an error.
+    #[non_exhaustive]
     Phy {
         /// The error.
         error: PhyErr,
@@ -90,6 +95,7 @@ pub enum TrainingError<ScdcErr, PhyErr> {
         exit: TmdsExit<ScdcErr, PhyErr>,
     },
     /// The attempt fell back for `reason`, and LTS:L then failed.
+    #[non_exhaustive]
     ExitFailed {
         /// Why the attempt fell back.
         reason: FallbackReason,
@@ -99,6 +105,7 @@ pub enum TrainingError<ScdcErr, PhyErr> {
     /// The rate list cannot be trained over, so nothing was done: no SCDC or PHY
     /// operation was performed. Every rate must be an FRL rate (not `NotSupported`), and
     /// each must be strictly lower than the one before it, because LTS:4 steps down.
+    #[non_exhaustive]
     InvalidRates {
         /// The position of the first offending rate in the list.
         index: usize,

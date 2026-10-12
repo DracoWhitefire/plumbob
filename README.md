@@ -74,11 +74,11 @@ let rates = [
 
 let trained = trainer.train(&rates, &config)?;
 match trained.outcome {
-    TrainingOutcome::Success { achieved_rate } => {
+    TrainingOutcome::Success { achieved_rate, .. } => {
         println!("Trained at {achieved_rate:?}");
         trainer.phy_mut().set_frl_output(FrlOutput::Active)?; // start video
     }
-    TrainingOutcome::FallbackRequired { reason } => {
+    TrainingOutcome::FallbackRequired { reason, .. } => {
         println!("No FRL link ({reason:?}); the sink is back in TMDS");
     }
     _ => {}

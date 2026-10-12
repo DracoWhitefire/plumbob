@@ -23,6 +23,7 @@ pub const MAX_WARNINGS: usize = 5;
 pub enum TrainingWarning {
     /// A lane requested a value the specification leaves undefined (0x9–0xD). LTS:3
     /// left the lane as it was.
+    #[non_exhaustive]
     UndefinedLtpRequest {
         /// The lane (0–3).
         lane: u8,
