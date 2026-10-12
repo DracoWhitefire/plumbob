@@ -371,8 +371,12 @@ one culvert method. A simulated implementation for testing needs only a register
 #[non_exhaustive]
 pub struct Trained {
     pub outcome: TrainingOutcome,
-    pub warnings: Vec<TrainingWarning>,  // `[Option<TrainingWarning>; MAX_WARNINGS]`
-                                         // and `num_warnings` without alloc
+    // private: a `Vec` with alloc, `MAX_WARNINGS` inline slots without
+}
+
+impl Trained {
+    pub fn warnings(&self) -> &[TrainingWarning];
+    pub fn iter_warnings(&self) -> impl Iterator<Item = &TrainingWarning>;
 }
 
 /// A non-fatal anomaly; repeats are merged.
@@ -482,8 +486,10 @@ pub struct ExitError<ScdcErr, PhyErr> { pub scdc: Option<ScdcErr>, pub phy: Opti
 
 `Trained` follows the stack's convention for non-fatal findings (piaf's `ParsedEdid`,
 cartouche's `Decoded`, concordance's `NegotiatedConfig`): the accepted result carries
-typed warnings next to the value, in a `Vec` with `alloc` and a fixed array without, read
-through `iter_warnings`; failures carry errors, not warnings. One difference fits a
+typed warnings next to the value, read through `iter_warnings`; failures carry errors,
+not warnings. The storage is private, a `Vec` with `alloc` and a fixed array without, so
+every build has the same API: features are additive, and code written against a bare
+`no_std` build must keep compiling when another crate enables `alloc`. One difference fits a
 procedure that polls: a sink may repeat an anomaly on every round, so repeats are merged
 into one warning per kind and lane, with a count. An attempt then produces at most five
 warnings — lanes 0–2, and lane 3 in and out of use — so the `MAX_WARNINGS` (5) slots

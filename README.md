@@ -91,9 +91,9 @@ for warning in trained.iter_warnings() {
 `train` returns a `Trained`: the outcome, and the `TrainingWarning`s the attempt
 produced — non-fatal anomalies such as a sink requesting an undefined pattern value,
 which plumbob ignores. They do not change the outcome; they are there so that what the
-sink did is visible without a trace. As elsewhere in the stack, they are a `Vec` with
-the `alloc` feature and a fixed array (`MAX_WARNINGS`) without it; `iter_warnings` reads
-either.
+sink did is visible without a trace. Read them with `warnings()` (a slice) or
+`iter_warnings()`; the API is the same with and without the `alloc` feature, which only
+changes the private storage (a `Vec`, or `MAX_WARNINGS` inline slots).
 
 To take a trained link down again — the display is disabled or unplugged, or a mode
 change is coming — call `trainer.exit_to_tmds()`, which runs LTS:L on its own.

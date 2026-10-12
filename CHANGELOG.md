@@ -15,6 +15,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   .. }`), and code outside plumbob can no longer build these variants: tests that compare
   an outcome, error or trace with `assert_eq!` against a constructed value match on it
   instead (`matches!`, or a pattern with `..`).
+- **`Trained`'s warnings are private, and its API no longer depends on the `alloc`
+  feature.** The public `warnings` field (a `Vec` with `alloc`, an
+  `[Option<TrainingWarning>; MAX_WARNINGS]` without) and `num_warnings` (without `alloc`)
+  are gone; read the warnings with the new `warnings()` (a slice, in every build) or
+  `iter_warnings()`. `Trained` is no longer `Copy` without `alloc`. Cargo enables a
+  feature for every crate in a build that one of them asks for, so code written against a
+  bare `no_std` plumbob used to stop compiling as soon as another dependency enabled
+  `alloc`; now both builds have the same API and traits.
 
 ### Changed
 

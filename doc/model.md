@@ -109,11 +109,12 @@ produced. A warning is a non-fatal anomaly that did not change the outcome:
 | `UndefinedLtpRequest { lane, value, count, in_use }` | The lane requested an undefined value (0x9–0xD) `count` times, the last being `value`; plumbob left the lane as it was. `in_use` is false for lane 3 at a 3-lane rate. |
 
 Repeats are merged per kind and lane (and `in_use`), so an attempt has at most five
-warnings. With `alloc`, `warnings` is a `Vec`; without it, a `[Option<TrainingWarning>;
-MAX_WARNINGS]` with `num_warnings` in use. `iter_warnings()` reads either.
-`TrainingWarning` and `Trained` are `#[non_exhaustive]`; `Trained` is `Copy` only without
-`alloc`. An attempt that ends in a `TrainingError` has no `Trained`: its trace records
-what happened.
+warnings. `warnings()` returns them as a slice and `iter_warnings()` iterates them, in
+every build: the storage is private (a `Vec` with `alloc`, `MAX_WARNINGS` inline slots
+without), so enabling `alloc` anywhere in a dependency graph changes no API, and
+`Trained` has the same traits either way (`Clone`, not `Copy`). `TrainingWarning` and
+`Trained` are `#[non_exhaustive]`. An attempt that ends in a `TrainingError` has no
+`Trained`: its trace records what happened.
 
 ### `TrainingOutcome` vs. `TrainingError`
 
