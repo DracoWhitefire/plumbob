@@ -68,9 +68,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   deadline, a cancel flag or any other reason to stop belongs in the polled reads, which
   already wait the poll interval: fail one of them with an error of your own and let
   every later call through, and `train` stops, returns the link to TMDS through LTS:L and
-  reports `TrainingError::Scdc` with that error. `ScdcClient`'s documentation, the README
-  and architecture.md ("How long one `train` call can take") describe it, and a test
-  covers it. plumbob gets no separate stop hook: the poll interval, the poll limits,
+  reports `TrainingError::Scdc` with that error (unless `exit_to_tmds_on_error` is off, or
+  the sink sets `FLT_no_timeout`). LTS:L's own `read_update_flags` is the same method, so a
+  client never fails a read made after `write_frl_config` with `NotSupported`, LTS:L's
+  first write. `ScdcClient`'s documentation, the README and architecture.md ("How long one
+  `train` call can take") describe it, and tests cover it, including a deadline that
+  lands on LTS:L's read. plumbob gets no separate stop hook: the poll interval, the poll limits,
   `no_timeout_poll_cap` and `max_retrains` already bound a call.
 - **The documentation describes the SCDC types as mirrored**: architecture.md ("Type
   ownership and the culvert boundary") and model.md no longer list differences from

@@ -885,13 +885,24 @@ How a caller keeps a call shorter than the worst case:
   the poll interval, so that is where the caller checks its clock, a cancel flag or
   anything else. To stop, fail **one** polled read with an error of your own, say a
   `Deadline` variant of the client's error type, and pass every later call through:
-  plumbob stops, runs LTS:L (whose `read_update_flags` is a single read, not a poll, and
-  must not fail), and `train` returns `TrainingError::Scdc { error: Deadline, exit:
-  TmdsExit::Exited }`, the link back in TMDS. A client that keeps failing after the
-  deadline fails LTS:L too (`TmdsExit::Failed`). While the sink sets `FLT_no_timeout`, an
-  error leaves the link as it is (`TmdsExit::HeldUnderTest`); `no_timeout_poll_cap` bounds
-  that case. This works the same in sync and async code; plumbob has no separate stop
-  hook, because the poll interval, the limits above and this already cover it.
+  plumbob stops, runs LTS:L, and `train` returns `TrainingError::Scdc { error: Deadline,
+  exit: TmdsExit::Exited }`, the link back in TMDS.
+
+  LTS:L's `read_update_flags` (to clear a pending `FLT_update`) is a single read, not a
+  poll, but the client cannot tell it apart: it is the same method. So **never fail a read
+  made after a `write_frl_config` with `HdmiForumFrl::NotSupported`**: that is LTS:L's
+  first SCDC write, made just before its read, and a later write with an FRL rate means an
+  attempt has started again. If the deadline passes while the attempt is already ending
+  (a timeout, a fallback, `exit_to_tmds`), the client lets it end with its own result. A
+  client that fails LTS:L's read anyway turns the result into `ExitFailed` (after a
+  fallback) or `TmdsExit::Failed`, and leaves a pending `FLT_update` set. A test runs this
+  client with the deadline on LTS:L's read, with and without the rule.
+
+  The exit is not `Exited` in two cases: with `TrainingConfig::exit_to_tmds_on_error` off
+  it is `TmdsExit::Skipped` (LTS:L does not run), and while the sink sets `FLT_no_timeout`
+  an error leaves the link as it is (`TmdsExit::HeldUnderTest`); `no_timeout_poll_cap`
+  bounds that case. This works the same in sync and async code; plumbob has no separate
+  stop hook, because the poll interval, the limits above and this already cover it.
 
 ---
 

@@ -115,7 +115,10 @@ kept apart, and the five distinct warnings an attempt can produce fit without `a
   a change in LTS:3 sent at once with the levels held, before the round's requests are
   acted on; an unchanged re-read not sent again
 - The deadline pattern in architecture.md: one failed polled read in LTS:3 stops training,
-  and LTS:L, whose read is not a poll, still returns the link to TMDS
+  and LTS:L, whose read is not a poll, still returns the link to TMDS; a client following
+  the rule (no failed read after `write_frl_config(NotSupported)`) lets an attempt whose
+  deadline lands on LTS:L's read end with its own result, and one that does not turns it
+  into `ExitFailed`
 - Every new test above was checked against a deliberate bug (a reset of the restrictions
   on a rate drop or a retrain, a trip on LTS:2's read, an extra cleared flag, a late
   re-send): each fails its test

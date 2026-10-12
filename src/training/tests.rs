@@ -1836,6 +1836,126 @@ fn a_one_shot_error_in_a_polled_read_stops_training_and_exits_to_tmds() {
     ));
 }
 
+/// An `ScdcClient` with a deadline, as architecture.md describes it: it fails one polled
+/// read once the deadline has passed, then lets every call through, and never fails a
+/// read made after a `write_frl_config` with `NotSupported` (LTS:L's first write; its
+/// `read_update_flags` follows). The deadline here is the `deadline`-th polled read.
+struct DeadlineClient {
+    sink: SimSink,
+    deadline: u32,
+    polled: u32,
+    tripped: bool,
+    exiting: bool,
+    follow_the_rule: bool,
+}
+
+impl DeadlineClient {
+    fn poll(&mut self) -> Result<(), ()> {
+        self.polled += 1;
+        let ending = self.exiting && self.follow_the_rule;
+        if !self.tripped && !ending && self.polled >= self.deadline {
+            self.tripped = true;
+            return Err(());
+        }
+        Ok(())
+    }
+}
+
+impl crate::ScdcClient for DeadlineClient {
+    type Error = ();
+
+    fn read_flt_ready(&mut self) -> Result<bool, ()> {
+        self.poll()?;
+        self.sink.read_flt_ready()
+    }
+
+    fn read_update_flags(&mut self) -> Result<UpdateFlags, ()> {
+        self.poll()?;
+        self.sink.read_update_flags()
+    }
+
+    fn clear_update_flags(&mut self, flags: ClearableUpdateFlags) -> Result<(), ()> {
+        self.sink.clear_update_flags(flags)
+    }
+
+    fn read_ltp_requests(&mut self) -> Result<LtpRequests, ()> {
+        self.sink.read_ltp_requests()
+    }
+
+    fn read_source_test_config(&mut self) -> Result<SourceTestConfig, ()> {
+        self.sink.read_source_test_config()
+    }
+
+    fn write_config_0_defaults(&mut self) -> Result<(), ()> {
+        self.sink.write_config_0_defaults()
+    }
+
+    fn write_frl_config(&mut self, config: FrlConfig) -> Result<(), ()> {
+        // LTS:L, or an attempt starting again.
+        self.exiting = config.frl_rate == HdmiForumFrl::NotSupported;
+        self.sink.write_frl_config(config)
+    }
+
+    fn read_ced(&mut self) -> Result<crate::CedCounters, ()> {
+        self.sink.read_ced()
+    }
+}
+
+#[test]
+fn a_deadline_on_lts_l_s_read_is_not_failed_by_a_client_that_follows_the_rule() {
+    // LTS:3 times out after 3 polls; the polled reads are LTS:2's `Update_0` read,
+    // `FLT_ready`, the 3 LTS:3 polls, then LTS:L's read: the deadline lands on the 6th.
+    let config = TrainingConfig {
+        ltp_polls: 3,
+        ..TrainingConfig::default()
+    };
+    let run = |follow_the_rule| {
+        let client = DeadlineClient {
+            sink: SimSink::new()
+                .flt_ready_after(0)
+                .round(10, all(LtpReq::Lfsr0)),
+            deadline: 6,
+            polled: 0,
+            tripped: false,
+            exiting: false,
+            follow_the_rule,
+        };
+        let mut trainer = FrlTrainer::new(client, SimPhy::new());
+        let result = trainer.train(&[RATE], &config).map(|t| t.outcome);
+        let (client, phy) = trainer.into_parts();
+        (result, client, phy)
+    };
+
+    // With the rule, the attempt ends as it would have, the link back in TMDS.
+    let (result, client, phy) = run(true);
+    assert!(!client.tripped);
+    assert!(
+        matches!(
+            result,
+            Ok(TrainingOutcome::FallbackRequired {
+                reason: FallbackReason::TrainingTimeout,
+                ..
+            })
+        ),
+        "{result:?}"
+    );
+    assert_in_tmds(&client.sink, &phy);
+
+    // Without it, the failed read is LTS:L's own, and the exit fails.
+    let (result, client, _) = run(false);
+    assert!(client.tripped);
+    assert!(
+        matches!(
+            result,
+            Err(TrainingError::ExitFailed {
+                reason: FallbackReason::TrainingTimeout,
+                ..
+            })
+        ),
+        "{result:?}"
+    );
+}
+
 #[test]
 fn a_failed_lts_l_after_an_error_reports_each_end() {
     // Every `Config_1` write fails, so LTS:L's does too.

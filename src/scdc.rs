@@ -34,8 +34,16 @@ use crate::types::{
 /// - **Stopping early.** The polled methods are also where a wall-clock deadline, a
 ///   cancel flag or any other reason to stop belongs. Return one error of your own from a
 ///   polled read, then let every later call through: training stops, LTS:L returns the
-///   link to TMDS (its single `read_update_flags` must succeed), and `train` returns
-///   [`TrainingError::Scdc`](crate::TrainingError::Scdc) with that error.
+///   link to TMDS, and `train` returns
+///   [`TrainingError::Scdc`](crate::TrainingError::Scdc) with that error and
+///   `TmdsExit::Exited`. LTS:L's own `read_update_flags` is a single read, not a poll, but
+///   it is the same method, so never fail a read made after a
+///   [`write_frl_config`](Self::write_frl_config) with `HdmiForumFrl::NotSupported`
+///   (LTS:L's first SCDC write; a later write with an FRL rate starts training again): a
+///   deadline that passes while the attempt is already ending then lets it end with its
+///   own result. The exit is `TmdsExit::Skipped` with
+///   `TrainingConfig::exit_to_tmds_on_error` off, and `TmdsExit::HeldUnderTest` (the link
+///   left as it is) while the sink sets `FLT_no_timeout`.
 pub trait ScdcClient {
     /// Error type returned by SCDC operations.
     type Error;
