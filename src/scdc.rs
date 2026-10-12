@@ -28,6 +28,12 @@ use crate::types::{CedCounters, FrlConfig, LtpRequests, SourceTestConfig, Update
 ///   how long each call takes and therefore how much wall time a poll represents; the
 ///   default limits assume one poll every 2 ms. Sleeping or yielding inside these
 ///   methods is the correct place to enforce that interval.
+///
+/// - **Stopping early.** The polled methods are also where a wall-clock deadline, a
+///   cancel flag or any other reason to stop belongs. Return one error of your own from a
+///   polled read, then let every later call through: training stops, LTS:L returns the
+///   link to TMDS (its single `read_update_flags` must succeed), and `train` returns
+///   [`TrainingError::Scdc`](crate::TrainingError::Scdc) with that error.
 pub trait ScdcClient {
     /// Error type returned by SCDC operations.
     type Error;

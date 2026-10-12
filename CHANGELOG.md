@@ -16,6 +16,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   an outcome, error or trace with `assert_eq!` against a constructed value match on it
   instead (`matches!`, or a pattern with `..`).
 
+### Changed
+
+- **Stopping training early is documented as the `ScdcClient`'s job.** A wall-clock
+  deadline, a cancel flag or any other reason to stop belongs in the polled reads, which
+  already wait the poll interval: fail one of them with an error of your own and let
+  every later call through, and `train` stops, returns the link to TMDS through LTS:L and
+  reports `TrainingError::Scdc` with that error. `ScdcClient`'s documentation, the README
+  and architecture.md ("How long one `train` call can take") describe it, and a test
+  covers it. plumbob gets no separate stop hook: the poll interval, the poll limits,
+  `no_timeout_poll_cap` and `max_retrains` already bound a call.
+
 ## [0.2.0] - 2026-10-11
 
 ### Breaking changes

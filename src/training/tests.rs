@@ -1517,6 +1517,31 @@ fn phy_errors_are_returned_after_lts_l() {
     }
 }
 
+/// The deadline pattern in architecture.md: an `ScdcClient` stops training by failing one
+/// polled read once its deadline has passed, and then lets every call through, so LTS:L,
+/// whose `read_update_flags` is not a poll, still returns the link to TMDS.
+#[test]
+fn a_one_shot_error_in_a_polled_read_stops_training_and_exits_to_tmds() {
+    // LTS:3 polls `Update_0` 50 times before the sink posts requests; the 20th
+    // `read_update_flags` call is one of those polls.
+    let sink = SimSink::new()
+        .source_test(SourceTestConfig::default())
+        .flt_ready_after(0)
+        .round(50, all(LtpReq::Lfsr0))
+        .round(0, all(LtpReq::None))
+        .frl_start_after(0)
+        .fail_call(SinkOp::ReadUpdateFlags, 20);
+    let (result, sink, phy) = run_with(sink, SimPhy::new());
+    let exit = TmdsExit::Exited;
+    assert_eq!(result, Err(TrainingError::Scdc { error: (), exit }));
+    assert_in_tmds(&sink, &phy);
+    // LTS:L's own read, after the failed one, went through.
+    assert!(matches!(
+        sink.calls.last(),
+        Some(SinkCall::ReadUpdateFlags(_))
+    ));
+}
+
 #[test]
 fn a_failed_lts_l_after_an_error_reports_each_end() {
     // Every `Config_1` write fails, so LTS:L's does too.

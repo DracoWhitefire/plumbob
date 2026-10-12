@@ -321,8 +321,10 @@ Any crate that implements `ScdcClient` is substitutable.
   `set_frl_output`, `adjust_equalization`); the register sequences behind them live in
   platform PHY backends.
 - **Timing** — plumbob is poll-based and has no clock. The inter-poll delay is the
-  `ScdcClient` implementation's; the poll limits in `TrainingConfig` are the only timeout
-  mechanism.
+  `ScdcClient` implementation's; the poll limits in `TrainingConfig` are plumbob's only
+  timeout mechanism. A wall-clock deadline is the caller's: its `ScdcClient` fails one
+  polled read once the deadline has passed (see "How long one `train` call can take" in
+  [`doc/architecture.md`](doc/architecture.md)).
 - **TMDS link setup** — plumbob handles FRL training only.
 
 ## Documentation

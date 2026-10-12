@@ -852,15 +852,20 @@ How a caller keeps a call shorter than the worst case:
 - **Set the poll interval.** It is the `ScdcClient` implementation's, so the wall-clock
   time per poll is the implementer's to choose.
 - **Async: cancel.** Drop the `train` future (after a `select!` or `timeout`) and call
-  `exit_to_tmds()`; see plumbob-async's "Cancellation".
-- **Sync: a wall-clock deadline has no direct support.** The limits are counts, and the
-  `train_with_events` callback observes but cannot stop training. A deadline can be built
-  into the `ScdcClient`: once it has passed, the polled methods return an error, plumbob
-  stops and runs LTS:L, and `train` returns `TrainingError::Scdc { error, exit }`. Two
-  caveats: the client must still let LTS:L's own SCDC calls through (`write_frl_config`,
-  `read_update_flags`, `clear_update_flags`), or the exit fails and `exit` is
-  `TmdsExit::Failed`; and the deadline is reported as an SCDC error, so the caller tells
-  it apart by its own error value. Built-in deadline support is in the stack's ideadump.
+  `exit_to_tmds()`; see plumbob-async's "Cancellation". The `ScdcClient` stop below needs
+  no second call.
+- **A wall-clock deadline (or any other reason to stop) lives in the `ScdcClient`.** The
+  polled reads (`read_flt_ready`, `read_update_flags`) already run on every poll and wait
+  the poll interval, so that is where the caller checks its clock, a cancel flag or
+  anything else. To stop, fail **one** polled read with an error of your own, say a
+  `Deadline` variant of the client's error type, and pass every later call through:
+  plumbob stops, runs LTS:L (whose `read_update_flags` is a single read, not a poll, and
+  must not fail), and `train` returns `TrainingError::Scdc { error: Deadline, exit:
+  TmdsExit::Exited }`, the link back in TMDS. A client that keeps failing after the
+  deadline fails LTS:L too (`TmdsExit::Failed`). While the sink sets `FLT_no_timeout`, an
+  error leaves the link as it is (`TmdsExit::HeldUnderTest`); `no_timeout_poll_cap` bounds
+  that case. This works the same in sync and async code; plumbob has no separate stop
+  hook, because the poll interval, the limits above and this already cover it.
 
 ---
 
