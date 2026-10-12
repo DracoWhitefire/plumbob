@@ -625,31 +625,35 @@ registers and returns typed results, it belongs in the SCDC implementation.
 #### Type ownership and the culvert boundary
 
 plumbob owns the types that form the vocabulary of `ScdcClient`: `LtpReq`, `LtpRequests`,
-`FfeLevels`, `FrlConfig`, `UpdateFlags`, `SourceTestConfig`, `CedCount`, `CedCounters`. These are the types the state
-machine reasons about.
+`FfeLevels`, `FrlConfig`, `UpdateFlags`, `ClearableUpdateFlags`, `SourceTestConfig`,
+`CedCount`, `CedCounters`. These are the types the state machine reasons about.
 
 culvert independently defines its own register-layer types (`culvert::LtpReq`,
 `culvert::FfeLevels`, etc.) for its own purposes — they are the output of SCDC register
 decoding, not the input to a training state machine.
 
-The two sets are not identical today. Two names differ by accident: the 0x4 request is
-`DdeCompliance` in plumbob and `RxDdeCompliance` in culvert, and `FrlConfig`'s rate is
-`rate` in plumbob and `frl_rate` in culvert. And plumbob's types leave out fields
-training does not use: its `UpdateFlags` has 3 of the 7 `Update_0` flags, its
-`SourceTestConfig` only `flt_no_timeout` of the 6 `Source_Test_Configuration` fields.
-
-The plan is to mirror them (see `roadmap.md`): the same names, and every field of the
-registers in plumbob's types as well, with the state machine still acting only on the
-fields it uses. Leaving fields out saves an `ScdcClient` nothing, since it reads the
-whole register anyway, and it hides from plumbob, and so from its trace, the compliance
-tester's other settings (`TxFFE_No_FFE`, `TxFFE_Pre_Shoot_Only`, `TxFFE_De_Emphasis_Only`,
-`FRL_Max`, `DSC_FRL_Max`). The types stay separate, so neither crate depends on the
-other, and the conversions become field-for-field copies.
+The two sets mirror each other: the same names (`DdeCompliance` for the 0x4 request,
+`frl_rate` for `Config_1`'s rate) and every field of the registers, in bit order, with the
+same constructors (`new`, flags in bit order) and `#[non_exhaustive]`. `UpdateFlags` has
+all 7 `Update_0` flags and clears take a `ClearableUpdateFlags` (every flag but
+`RR_Test`); `SourceTestConfig` has all 6 `Source_Test_Configuration` bits. The state
+machine still acts only on the fields it uses, but nothing is hidden from it: leaving
+fields out would save an `ScdcClient` nothing, since it reads the whole register anyway,
+and would keep the compliance tester's other settings out of the trace. The types stay
+separate, so neither crate depends on the other, and culvert's conversions are
+field-for-field copies, tested bit by bit.
 
 When culvert implements `ScdcClient` (via its `plumbob` cargo feature), each trait method
 calls one culvert method and converts culvert's type to plumbob's (`culvert::LtpRequests` →
 `plumbob::LtpRequests`, and so on). `From` impls live in the same feature-gated module;
 culvert's own types are unchanged.
+
+What plumbob does with `Source_Test_Configuration`: it acts on `FLT_no_timeout`, and
+passes the three TxFFE bits to the PHY as hdmi-hal's `TxFfeRestrictions`. `FRL_Max` and
+`DSC_FRL_Max` select the rate, which the caller does before training, through culvert's
+`SourceTestConfig`: the reference drivers read them during rate selection (AMD, Amlogic,
+NVIDIA), and treat both set as neither set (Amlogic, citing the specification, and
+NVIDIA). NVIDIA also turns DSC off under `FRL_Max` and on under `DSC_FRL_Max`.
 
 This approach is intentional. The alternative — making culvert's types re-exports of
 plumbob's when the feature is active — would make `culvert::LtpReq` mean different things

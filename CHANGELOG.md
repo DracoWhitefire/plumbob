@@ -62,6 +62,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   and architecture.md ("How long one `train` call can take") describe it, and a test
   covers it. plumbob gets no separate stop hook: the poll interval, the poll limits,
   `no_timeout_poll_cap` and `max_retrains` already bound a call.
+- **The documentation describes the SCDC types as mirrored**: architecture.md ("Type
+  ownership and the culvert boundary") and model.md no longer list differences from
+  culvert's types, and architecture.md says where `FRL_Max` and `DSC_FRL_Max` are handled
+  (rate selection, before training; both set means neither, as in the reference
+  drivers). `doc/roadmap.md` drops its "Released" section (this changelog is the record)
+  and the finished "Mirrored SCDC types" entry.
 
 ## [0.2.0] - 2026-10-11
 
