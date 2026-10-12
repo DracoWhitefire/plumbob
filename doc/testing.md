@@ -81,11 +81,11 @@ kept apart, and the five distinct warnings an attempt can produce fit without `a
   operation the state machine uses, with LTS:L afterwards leaving both ends in TMDS — at
   every call site, not only an operation's first: three scenarios (a success with a
   source test configuration, a TxFFE raise, a rate drop and a retrain; a fallback through
-  LTS:L; and a `Source_Test_Update` in LTS:3 followed by `FRL_start` and `FLT_update`
-  together in LTS:P) are each run once per call they make, failing that one call, and
-  every failure must be reported. A site no scenario reaches is not checked, so a branch
-  with I/O of its own needs a scenario that takes it; mutation testing (swallowing each
-  error in turn) shows the three reach every one
+  LTS:L; and a `Source_Test_Update` in LTS:3 that changes the TxFFE restrictions, then
+  another change on LTS:P's first poll together with `FRL_start` and `FLT_update`) are each
+  run once per call they make, failing that one call, and every failure must be reported.
+  A site no scenario reaches is not checked, so a branch with I/O of its own needs a
+  scenario that takes it; region coverage shows the three reach every one
 - The step order across sink and PHY in LTS:2 (rate, then TxFFE reset), LTS:3 (the
   requested pattern and level reach the PHY before `FLT_update` is cleared), LTS:P (the
   patterns stopped and gap characters sent before `FLT_update` is cleared) and LTS:4
@@ -127,7 +127,7 @@ synchronously. One more test checks the driver's guard by running `block_on` ove
 future that waits once — impossible over the sync adapter — with the trainer's own output
 type: it panics rather than dropping the attempt.
 
-A size test keeps the training future within a budget (432 bytes without `alloc`, 408
+A size test keeps the training future within a budget (456 bytes without `alloc`, 432
 with it, over the simulator's zero-sized error types), so a change that grows it fails until the budget is raised on purpose. CI runs
 the tests with the `std` feature and again with no features, so both budgets are
 checked.

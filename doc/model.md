@@ -67,8 +67,9 @@ default by setting fields.
 compliance tester sets for the source, in bit order, as in culvert. The trace records all
 of them (`SourceTestConfigRead { config }`). The state machine acts on `flt_no_timeout`,
 and passes the three TxFFE bits to the PHY as `TxFfeRestrictions` with every
-`adjust_equalization`, re-sending them as soon as a `Source_Test_Update` in LTS:3 changes
-them. How the PHY combines them is its own (hdmi-hal documents why: the reference drivers
+`adjust_equalization`, re-sending them as soon as a poll in LTS:3 or LTS:P sees a
+`Source_Test_Update` that changes them (LTS:2's `FLT_ready` wait reads only
+`Status_Flags_0`; a flag set then is handled on the first LTS:3 poll). How the PHY combines them is its own (hdmi-hal documents why: the reference drivers
 disagree).
 `frl_max` and `dsc_frl_max` ask the source to train at its highest rate (with DSC, for the
 latter); the rate list is the caller's, so the layer that builds it reads the register

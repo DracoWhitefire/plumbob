@@ -560,14 +560,15 @@ impl<Io: TrainingIo> Machine<'_, Io> {
             }
             let flags = self.read_update_flags().await?;
             polls += 1;
-            if !flags.flt_update {
-                continue;
-            }
-            // A tester can change the TxFFE restrictions mid-training (the reference
-            // drivers apply them while the sink requests the DDE compliance pattern): the
-            // PHY gets them at once, with the levels it has.
+            // A tester can change the TxFFE restrictions (or FLT_no_timeout) at any point:
+            // re-read on every Source_Test_Update, whether or not the sink also posted
+            // requests, and re-send the equalization at once if the restrictions changed,
+            // with the levels the lanes have.
             if flags.source_test_update && self.read_source_test(attempt, true, record).await? {
                 self.adjust_equalization(attempt.eq_params()).await?;
+            }
+            if !flags.flt_update {
+                continue;
             }
 
             let requests = self.io.read_ltp_requests().await.map_err(Fault::Scdc)?;
@@ -614,6 +615,11 @@ impl<Io: TrainingIo> Machine<'_, Io> {
         let limit = attempt.limit(config, config.frl_start_polls);
         for polls in 1..=limit {
             let flags = self.read_update_flags().await?;
+            // As in LTS:3, and before FRL_start can end training: the PHY must not start
+            // video on restrictions the tester has replaced.
+            if flags.source_test_update && self.read_source_test(attempt, true, record).await? {
+                self.adjust_equalization(attempt.eq_params()).await?;
+            }
             if flags.flt_update {
                 // The sink asks to retrain. If it set FRL_start as well, the retrain wins,
                 // as in the Xilinx driver: starting video on a link the sink wants

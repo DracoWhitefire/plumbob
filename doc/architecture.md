@@ -153,10 +153,11 @@ always what the PHY was last told: LTS:2 leaves every lane with no pattern and T
 0, LTS:P stops the patterns (keeping the levels), and LTS:4 resets both. Repeat, at most
 `TrainingConfig::ltp_polls` times:
 
-1. Read `UpdateFlags`. If `flt_update` is not set, poll again.
-2. If `source_test_update` is set, re-read `SourceTestConfig` and clear the flag. If its
-   TxFFE bits changed, call `adjust_equalization` at once with the levels the lanes have
-   and the new restrictions.
+1. Read `UpdateFlags`. If `source_test_update` is set, re-read `SourceTestConfig` and
+   clear the flag, whether or not `flt_update` is set; if its TxFFE bits changed, call
+   `adjust_equalization` at once with the levels the lanes have and the new restrictions.
+   A change to `flt_no_timeout` takes effect on the next poll's limit.
+2. If `flt_update` is not set, poll again.
 3. Read the per-lane requests (`LtpRequests`) and act on the active lanes:
    - **all 0x0** — training passed: go to LTS:P.
    - **all 0xF** — the sink requests a lower rate: go to LTS:4.
@@ -195,7 +196,9 @@ If training has not passed within the poll limit, go to LTS:L and return
 1. Stop the training patterns (no pattern on any lane) and send gap characters only
    (`set_frl_output(GapOnly)`). Clear `FLT_update`.
 2. Poll `UpdateFlags`, at most `TrainingConfig::frl_start_polls` times:
-   - **`flt_update`** is checked first. If `frl_start` is set as well, the retrain wins,
+   - **`source_test_update`** is handled as in LTS:3, before anything else, so `Success`
+     is never returned with the PHY on restrictions the tester has replaced.
+   - **`flt_update`** is checked next. If `frl_start` is set as well, the retrain wins,
      as in the Xilinx driver: `frl_start` is cleared (so it cannot end the next LTS:P
      early) and `FrlStartWithRetrain` is recorded; then the retrain below.
    - **`frl_start`** — clear it and return `Success`. The caller starts video
@@ -686,7 +689,7 @@ The full training state machine is available. `FrlTrainer<C, P>` is stack-alloca
 (`LtpReq`, `LtpRequests`, `FfeLevels`, `UpdateFlags`, `CedCounters`, …) are stack-allocated. No heap
 use anywhere in the training loop. This tier covers bare-metal and firmware targets.
 
-The training future is 432 bytes in this tier, and 408 with `alloc` (where `Trained`
+The training future is 456 bytes in this tier, and 432 with `alloc` (where `Trained`
 holds its warnings in a `Vec` rather than inline), measured over the sync driver's I/O
 with zero-sized error types and Rust 1.94 (larger error types add their size); an `async` I/O implementation adds the size of its own futures. Where it
 lives depends on the driver: `FrlTrainer` (sync) keeps it on the caller's stack for the

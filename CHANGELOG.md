@@ -47,8 +47,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The tester's TxFFE restrictions reach the PHY.** The three TxFFE bits of
   `Source_Test_Configuration` (pre-shoot only, de-emphasis only, no FFE) go to
   `HdmiPhy::adjust_equalization` as hdmi-hal's `TxFfeRestrictions`, with every
-  equalization of the attempt; when a `Source_Test_Update` in LTS:3 changes them, plumbob
-  re-sends the lanes' levels with the new restrictions at once. How to combine the bits is
+  equalization of the attempt; when a `Source_Test_Update` seen on any LTS:3 or LTS:P
+  poll changes them, plumbob re-sends the lanes' levels with the new restrictions at once.
+  A `Source_Test_Update` is now handled on every such poll, also without `FLT_update` and
+  in LTS:P before `FRL_start` can end training; previously LTS:3 only looked at it
+  together with `FLT_update`, and LTS:P not at all, which also delayed `FLT_no_timeout`
+  changes. How to combine the bits is
   the PHY's (see hdmi-hal 0.5.1). `TxFfeRestrictions` is re-exported. Requires hdmi-hal
   0.5.1.
 

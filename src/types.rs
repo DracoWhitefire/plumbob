@@ -273,11 +273,11 @@ impl ClearableUpdateFlags {
 /// [`TrainingEvent::SourceTestConfigRead`](crate::TrainingEvent::SourceTestConfigRead).
 /// plumbob acts on `flt_no_timeout`, and passes the three TxFFE bits to the PHY with
 /// every equalization (as [`TxFfeRestrictions`](crate::TxFfeRestrictions), re-sent when a
-/// `Source_Test_Update` changes them in LTS:3). `frl_max` and `dsc_frl_max` ask the
-/// source to train at its highest rate; which rates to train at is the caller's choice,
-/// so the layer that builds the rate list reads this register (through its SCDC
-/// implementation) before training and honours them there. Build one with
-/// [`new`](Self::new), or from the default (no bit set) by setting fields.
+/// `Source_Test_Update` seen in LTS:3 or LTS:P changes them). `frl_max` and
+/// `dsc_frl_max` ask the source to train at its highest rate; which rates to train at is
+/// the caller's choice, so the layer that builds the rate list reads this register
+/// (through its SCDC implementation) before training and honours them there. Build one
+/// with [`new`](Self::new), or from the default (no bit set) by setting fields.
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SourceTestConfig {

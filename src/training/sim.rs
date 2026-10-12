@@ -103,6 +103,10 @@ pub struct SimSink {
     update_polls: u32,
     rounds_posted: usize,
     flags: UpdateFlags,
+    /// A `Source_Test_Configuration` change on its own (no round): after this many
+    /// `Update_0` reads since `Config_1`, the sink writes it and sets `Source_Test_Update`.
+    source_test_change: Option<(u32, SourceTestConfig)>,
+    configured_reads: u32,
 
     /// Every call received, in order. Failed calls are not recorded.
     pub calls: Vec<SinkCall>,
@@ -145,6 +149,13 @@ impl SimSink {
     /// (counting from 0) is posted. The sink's final `FRL_start` is not used up by it.
     pub fn frl_start_with_round(mut self, index: usize) -> Self {
         self.frl_start_with_round = Some(index);
+        self
+    }
+
+    /// After `reads` reads of `Update_0` since `Config_1` was written, the sink writes
+    /// `config` and sets `Source_Test_Update` alone, without `FLT_update`.
+    pub fn source_test_after(mut self, reads: u32, config: SourceTestConfig) -> Self {
+        self.source_test_change = Some((reads, config));
         self
     }
 
@@ -208,6 +219,14 @@ impl ScdcClient for SimSink {
     fn read_update_flags(&mut self) -> Result<UpdateFlags, ()> {
         self.check(SinkOp::ReadUpdateFlags)?;
         if self.configured {
+            if let Some((reads, config)) = self.source_test_change {
+                if self.configured_reads >= reads {
+                    self.source_test = config;
+                    self.flags.source_test_update = true;
+                    self.source_test_change = None;
+                }
+            }
+            self.configured_reads += 1;
             match self.rounds.front().copied() {
                 Some(round) if !self.flags.flt_update && self.update_polls >= round.after_polls => {
                     self.flags.flt_update = true;
