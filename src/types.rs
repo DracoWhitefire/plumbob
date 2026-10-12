@@ -154,7 +154,7 @@ impl FfeLevels {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FrlConfig {
     /// The FRL rate.
-    pub rate: HdmiForumFrl,
+    pub frl_rate: HdmiForumFrl,
     /// The highest TxFFE level the source will use at this rate.
     pub ffe_levels: FfeLevels,
 }

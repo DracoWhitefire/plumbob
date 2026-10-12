@@ -111,10 +111,10 @@ impl ScdcClient for SimSink {
     fn write_frl_config(&mut self, config: FrlConfig) -> Result<(), Infallible> {
         println!(
             "SCDC: write Config_1 (rate={:?}, ffe_levels={})",
-            config.rate,
+            config.frl_rate,
             config.ffe_levels.value()
         );
-        self.configured = config.rate != HdmiForumFrl::NotSupported;
+        self.configured = config.frl_rate != HdmiForumFrl::NotSupported;
         Ok(())
     }
 

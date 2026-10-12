@@ -23,6 +23,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   feature for every crate in a build that one of them asks for, so code written against a
   bare `no_std` plumbob used to stop compiling as soon as another dependency enabled
   `alloc`; now both builds have the same API and traits.
+- **`FrlConfig::rate` is renamed `frl_rate`**, after the `Config_1` field (`FRL_Rate`) and
+  culvert's `FrlConfig`, which plumbob's SCDC types now mirror.
 
 ### Changed
 

@@ -320,7 +320,7 @@ pub struct LtpRequests { pub lane0: LtpReq, pub lane1: LtpReq, pub lane2: LtpReq
 pub struct FfeLevels(u8);
 
 /// Written to Config_1.
-pub struct FrlConfig { pub rate: HdmiForumFrl, pub ffe_levels: FfeLevels }
+pub struct FrlConfig { pub frl_rate: HdmiForumFrl, pub ffe_levels: FfeLevels }
 
 /// The Update_0 flags the state machine reads and clears.
 pub struct UpdateFlags { pub source_test_update: bool, pub frl_start: bool, pub flt_update: bool }

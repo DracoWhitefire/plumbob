@@ -670,7 +670,7 @@ impl<Io: TrainingIo> Machine<'_, Io> {
         let config = self
             .io
             .write_frl_config(FrlConfig {
-                rate: HdmiForumFrl::NotSupported,
+                frl_rate: HdmiForumFrl::NotSupported,
                 ffe_levels: FfeLevels::default(),
             })
             .await;
@@ -701,7 +701,10 @@ impl<Io: TrainingIo> Machine<'_, Io> {
     ) -> Result<(), Failure<Io>> {
         let ffe_levels = config.ffe_levels.limited_to(rate);
         self.io
-            .write_frl_config(FrlConfig { rate, ffe_levels })
+            .write_frl_config(FrlConfig {
+                frl_rate: rate,
+                ffe_levels,
+            })
             .await
             .map_err(Fault::Scdc)?;
         record(TrainingEvent::RateConfigured { rate, ffe_levels });

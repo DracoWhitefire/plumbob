@@ -167,7 +167,7 @@ fn trains_through_lts_2_3_and_p() {
             SinkCall::ClearUpdateFlags(flt_update),
             SinkCall::WriteConfig0Defaults,
             SinkCall::WriteFrlConfig(FrlConfig {
-                rate: RATE,
+                frl_rate: RATE,
                 ffe_levels: FfeLevels::new(3).unwrap(),
             }),
             // LTS:3
@@ -327,7 +327,7 @@ fn ffe_levels_written_are_limited_for_the_rate() {
         .frl_start_after(0);
     let (_, sink, _) = run(sink, &[rate], &config);
     assert!(sink.calls.contains(&SinkCall::WriteFrlConfig(FrlConfig {
-        rate,
+        frl_rate: rate,
         ffe_levels: FfeLevels::new(3).unwrap(),
     })));
 }
@@ -771,7 +771,7 @@ fn frl_configs(sink: &SimSink) -> Vec<HdmiForumFrl> {
     sink.calls
         .iter()
         .filter_map(|call| match call {
-            SinkCall::WriteFrlConfig(config) => Some(config.rate),
+            SinkCall::WriteFrlConfig(config) => Some(config.frl_rate),
             _ => None,
         })
         .collect()
@@ -899,7 +899,7 @@ fn a_fallback_returns_both_ends_to_tmds() {
         sink.calls[sink.calls.len() - 2..],
         [
             SinkCall::WriteFrlConfig(FrlConfig {
-                rate: HdmiForumFrl::NotSupported,
+                frl_rate: HdmiForumFrl::NotSupported,
                 ffe_levels: FfeLevels::default(),
             }),
             // FLT_update is not set, so it is not cleared.
@@ -1668,7 +1668,7 @@ fn exit_to_tmds_performs_lts_l() {
         sink.calls,
         [
             SinkCall::WriteFrlConfig(FrlConfig {
-                rate: HdmiForumFrl::NotSupported,
+                frl_rate: HdmiForumFrl::NotSupported,
                 ffe_levels: FfeLevels::default(),
             }),
             SinkCall::ReadUpdateFlags(NO_FLAGS),
@@ -1817,7 +1817,7 @@ fn calls_after(log: &[Call], after: Call, n: usize) -> &[Call] {
 
 fn config_1(rate: HdmiForumFrl) -> Call {
     Call::Sink(SinkCall::WriteFrlConfig(FrlConfig {
-        rate,
+        frl_rate: rate,
         ffe_levels: FfeLevels::new(3).unwrap(),
     }))
 }

@@ -273,7 +273,7 @@ impl ScdcClient for SimSink {
 
     fn write_frl_config(&mut self, config: FrlConfig) -> Result<(), ()> {
         self.check(SinkOp::WriteFrlConfig)?;
-        self.configured = config.rate != HdmiForumFrl::NotSupported;
+        self.configured = config.frl_rate != HdmiForumFrl::NotSupported;
         self.update_polls = 0;
         self.log_call(SinkCall::WriteFrlConfig(config));
         Ok(())
@@ -433,7 +433,7 @@ mod tests {
     /// Writes `Config_1` with an FRL rate, which starts the sink's rounds.
     fn configured(mut sink: SimSink) -> SimSink {
         sink.write_frl_config(FrlConfig {
-            rate: HdmiForumFrl::Rate6Gbps4Lanes,
+            frl_rate: HdmiForumFrl::Rate6Gbps4Lanes,
             ffe_levels: FfeLevels::default(),
         })
         .unwrap();
@@ -525,7 +525,7 @@ mod tests {
             .frl_start_after(0);
         assert!(!sink.read_update_flags().unwrap().flt_update);
         sink.write_frl_config(FrlConfig {
-            rate: HdmiForumFrl::NotSupported,
+            frl_rate: HdmiForumFrl::NotSupported,
             ffe_levels: FfeLevels::default(),
         })
         .unwrap();
@@ -586,7 +586,7 @@ mod tests {
     #[test]
     fn sink_records_calls_in_order() {
         let config = FrlConfig {
-            rate: HdmiForumFrl::Rate6Gbps4Lanes,
+            frl_rate: HdmiForumFrl::Rate6Gbps4Lanes,
             ffe_levels: FfeLevels::default(),
         };
         let mut sink = SimSink::new();
@@ -615,7 +615,7 @@ mod tests {
     #[test]
     fn sink_fails_the_chosen_operation_only() {
         let config = FrlConfig {
-            rate: HdmiForumFrl::Rate6Gbps4Lanes,
+            frl_rate: HdmiForumFrl::Rate6Gbps4Lanes,
             ffe_levels: FfeLevels::default(),
         };
         let ops = [
@@ -705,7 +705,7 @@ mod tests {
     #[test]
     fn frl_start_with_round_raises_both_flags_and_keeps_the_final_start() {
         let config = FrlConfig {
-            rate: HdmiForumFrl::Rate6Gbps4Lanes,
+            frl_rate: HdmiForumFrl::Rate6Gbps4Lanes,
             ffe_levels: FfeLevels::default(),
         };
         let mut sink = SimSink::new()
