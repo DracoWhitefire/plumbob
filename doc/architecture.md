@@ -319,13 +319,13 @@ pub enum LtpReq {
 }
 // `LtpReq::value()` returns the 4-bit value.
 
-/// Requests for all four lanes; lane 3 is ignored in 3-lane FRL.
+/// Requests for all four lanes (`new`); lane 3 is ignored in 3-lane FRL.
 pub struct LtpRequests { pub lane0: LtpReq, pub lane1: LtpReq, pub lane2: LtpReq, pub lane3: LtpReq }
 
 /// Highest TxFFE level index the source supports (0–7; at most 3 up to 12 Gbps).
 pub struct FfeLevels(u8);
 
-/// Written to Config_1.
+/// Written to Config_1 (`new`).
 pub struct FrlConfig { pub frl_rate: HdmiForumFrl, pub ffe_levels: FfeLevels }
 
 /// Update_0, all seven flags in bit order (`new`); `clearable()` drops RR_Test.
@@ -344,7 +344,7 @@ pub struct SourceTestConfig {
     pub flt_no_timeout: bool, pub dsc_frl_max: bool, pub frl_max: bool,
 }
 
-/// Per-lane character error counts (diagnostics).
+/// Per-lane character error counts (diagnostics; `new`).
 pub struct CedCounters { pub lane0: Option<CedCount>, /* … */ pub lane3: Option<CedCount> }
 ```
 

@@ -25,6 +25,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `alloc`; now both builds have the same API and traits.
 - **`FrlConfig::rate` is renamed `frl_rate`**, after the `Config_1` field (`FRL_Rate`) and
   culvert's `FrlConfig`, which plumbob's SCDC types now mirror.
+- **`LtpRequests`, `CedCounters` and `FrlConfig` are `#[non_exhaustive]`**, with `new(…)`
+  constructors (`LtpRequests::new` and `CedCounters::new` take the lanes in order,
+  `FrlConfig::new` the rate and the FFE levels), mirroring culvert's types; `LtpRequests`
+  also gains `all_trained()`, as in culvert. Code outside plumbob builds them with `new`
+  instead of a struct expression (an `ScdcClient` returns `LtpRequests` and
+  `CedCounters`); reading the fields is unchanged.
 - **`UpdateFlags` has all seven `Update_0` flags, and clears take a `ClearableUpdateFlags`**,
   mirroring culvert. `UpdateFlags` gains `status_update`, `ced_update`, `rr_test` and
   `rsed_update`, so an `ScdcClient` reports the whole register; it is `#[non_exhaustive]`

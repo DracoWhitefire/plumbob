@@ -26,25 +26,16 @@ use plumbob::{
 // Each set of requests is posted with FLT_update as soon as the previous one is
 // cleared, once Config_1 holds an FRL rate.
 
-const fn lanes(lane0: LtpReq, lane1: LtpReq, lane2: LtpReq, lane3: LtpReq) -> LtpRequests {
-    LtpRequests {
-        lane0,
-        lane1,
-        lane2,
-        lane3,
-    }
-}
-
 const REQUESTS: [LtpRequests; 4] = [
-    lanes(
+    LtpRequests::new(
         LtpReq::RateChange,
         LtpReq::RateChange,
         LtpReq::RateChange,
         LtpReq::RateChange,
     ),
-    lanes(LtpReq::Lfsr0, LtpReq::Lfsr1, LtpReq::Lfsr2, LtpReq::Lfsr3),
-    lanes(LtpReq::None, LtpReq::FfeChange, LtpReq::None, LtpReq::None),
-    lanes(LtpReq::None, LtpReq::None, LtpReq::None, LtpReq::None),
+    LtpRequests::new(LtpReq::Lfsr0, LtpReq::Lfsr1, LtpReq::Lfsr2, LtpReq::Lfsr3),
+    LtpRequests::new(LtpReq::None, LtpReq::FfeChange, LtpReq::None, LtpReq::None),
+    LtpRequests::new(LtpReq::None, LtpReq::None, LtpReq::None, LtpReq::None),
 ];
 
 #[derive(Default)]
@@ -118,12 +109,7 @@ impl ScdcClient for SimSink {
     }
 
     fn read_ced(&mut self) -> Result<CedCounters, Infallible> {
-        Ok(CedCounters {
-            lane0: None,
-            lane1: None,
-            lane2: None,
-            lane3: None,
-        })
+        Ok(CedCounters::new(None, None, None, None))
     }
 }
 

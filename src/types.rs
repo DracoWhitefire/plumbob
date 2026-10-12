@@ -99,17 +99,44 @@ impl LtpReq {
     }
 }
 
-/// The sink's requests for all four lanes. Lane 3 is ignored in 3-lane FRL.
+/// The sink's requests for all four lanes (`Status_Flags_1`, 0x41, and `Status_Flags_2`,
+/// 0x42). Lane 3 is ignored in 3-lane FRL.
+///
+/// Mirrors culvert's `LtpRequests`. Build one with [`new`](Self::new).
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct LtpRequests {
-    /// Request for lane 0.
+    /// Lane 0 (`Status_Flags_1` bits 3:0).
     pub lane0: LtpReq,
-    /// Request for lane 1.
+    /// Lane 1 (`Status_Flags_1` bits 7:4).
     pub lane1: LtpReq,
-    /// Request for lane 2.
+    /// Lane 2 (`Status_Flags_2` bits 3:0).
     pub lane2: LtpReq,
-    /// Request for lane 3. Ignored in 3-lane FRL.
+    /// Lane 3 (`Status_Flags_2` bits 7:4). Not in use in 3-lane FRL, where it holds
+    /// whatever the sink leaves there (not necessarily `LtpReq::None`); the link training
+    /// layer ignores it.
     pub lane3: LtpReq,
+}
+
+impl LtpRequests {
+    /// Constructs `LtpRequests` from the per-lane requests.
+    pub const fn new(lane0: LtpReq, lane1: LtpReq, lane2: LtpReq, lane3: LtpReq) -> Self {
+        Self {
+            lane0,
+            lane1,
+            lane2,
+            lane3,
+        }
+    }
+
+    /// Returns `true` when none of the four lanes requests a pattern. In 3-lane FRL lane 3
+    /// is not in use and may hold anything, so there only lanes 0–2 decide whether
+    /// training passed (as plumbob checks them).
+    pub fn all_trained(&self) -> bool {
+        [self.lane0, self.lane1, self.lane2, self.lane3]
+            .iter()
+            .all(|r| *r == LtpReq::None)
+    }
 }
 
 /// The highest TxFFE level index the source supports, written to `Config_1` bits 7:4.
@@ -150,13 +177,26 @@ impl FfeLevels {
 
 /// Written to `Config_1`: the FRL rate (bits 3:0) and the FFE levels (bits 7:4).
 ///
-/// `HdmiForumFrl::NotSupported` turns FRL off (LTS:L).
+/// `HdmiForumFrl::NotSupported` turns FRL off (LTS:L). Mirrors culvert's `FrlConfig`;
+/// build one with [`new`](Self::new).
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct FrlConfig {
-    /// The FRL rate.
+    /// FRL rate to request. Use [`HdmiForumFrl::NotSupported`] to clear FRL mode.
     pub frl_rate: HdmiForumFrl,
-    /// The highest TxFFE level the source will use at this rate.
+    /// FFE levels to advertise to the sink: the highest TxFFE level the source will use
+    /// at this rate.
     pub ffe_levels: FfeLevels,
+}
+
+impl FrlConfig {
+    /// Constructs `FrlConfig` from the rate and the FFE levels.
+    pub const fn new(frl_rate: HdmiForumFrl, ffe_levels: FfeLevels) -> Self {
+        Self {
+            frl_rate,
+            ffe_levels,
+        }
+    }
 }
 
 /// `Update_0` (0x10): the flags the sink sets to tell the source that something changed.
@@ -342,7 +382,9 @@ impl CedCount {
 /// consume them.
 ///
 /// A lane's counter is `None` when its validity bit is not set. `lane3` is only
-/// populated in 4-lane FRL mode.
+/// populated in 4-lane FRL mode. Mirrors culvert's `CedCounters`; build one with
+/// [`new`](Self::new).
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct CedCounters {
     /// Character error count for lane 0, or `None` if the validity bit is not set.
@@ -352,8 +394,25 @@ pub struct CedCounters {
     /// Character error count for lane 2, or `None` if the validity bit is not set.
     pub lane2: Option<CedCount>,
     /// Character error count for lane 3, or `None` if the validity bit is not set.
-    /// Always `None` in 3-lane FRL mode.
+    /// Always `None` in TMDS mode or 3-lane FRL mode.
     pub lane3: Option<CedCount>,
+}
+
+impl CedCounters {
+    /// Constructs a `CedCounters`.
+    pub const fn new(
+        lane0: Option<CedCount>,
+        lane1: Option<CedCount>,
+        lane2: Option<CedCount>,
+        lane3: Option<CedCount>,
+    ) -> Self {
+        Self {
+            lane0,
+            lane1,
+            lane2,
+            lane3,
+        }
+    }
 }
 
 #[cfg(test)]
@@ -606,5 +665,46 @@ mod tests {
         let c = ClearableUpdateFlags::new(true, false, true, false, true, false);
         assert!(c.status_update && c.source_test_update && c.flt_update);
         assert!(!c.ced_update && !c.frl_start && !c.rsed_update);
+    }
+
+    // --- LtpRequests, CedCounters, FrlConfig constructors ---
+
+    #[test]
+    fn ltp_requests_new_takes_the_lanes_in_order() {
+        let r = LtpRequests::new(LtpReq::Lfsr0, LtpReq::Lfsr1, LtpReq::Lfsr2, LtpReq::Lfsr3);
+        assert_eq!(
+            [r.lane0, r.lane1, r.lane2, r.lane3],
+            [LtpReq::Lfsr0, LtpReq::Lfsr1, LtpReq::Lfsr2, LtpReq::Lfsr3]
+        );
+    }
+
+    #[test]
+    fn all_trained_checks_all_four_lanes() {
+        let none = LtpReq::None;
+        assert!(LtpRequests::new(none, none, none, none).all_trained());
+        assert!(!LtpRequests::new(LtpReq::Lfsr0, none, none, none).all_trained());
+        // Lane 3 counts, even though it is not in use in 3-lane FRL.
+        assert!(!LtpRequests::new(none, none, none, LtpReq::Reserved(0x9)).all_trained());
+    }
+
+    #[test]
+    fn ced_counters_new_takes_the_lanes_in_order() {
+        let c = CedCounters::new(
+            Some(CedCount::new(0)),
+            Some(CedCount::new(1)),
+            Some(CedCount::new(2)),
+            None,
+        );
+        assert_eq!(c.lane0, Some(CedCount::new(0)));
+        assert_eq!(c.lane1, Some(CedCount::new(1)));
+        assert_eq!(c.lane2, Some(CedCount::new(2)));
+        assert_eq!(c.lane3, None);
+    }
+
+    #[test]
+    fn frl_config_new_takes_the_rate_and_levels() {
+        let c = FrlConfig::new(HdmiForumFrl::Rate6Gbps4Lanes, FfeLevels::new(2).unwrap());
+        assert_eq!(c.frl_rate, HdmiForumFrl::Rate6Gbps4Lanes);
+        assert_eq!(c.ffe_levels, FfeLevels::new(2).unwrap());
     }
 }
