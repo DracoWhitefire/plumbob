@@ -332,8 +332,11 @@ pub struct UpdateFlags {
 /// The Update_0 flags a source may clear: every flag but RR_Test.
 pub struct ClearableUpdateFlags { /* the six flags above other than rr_test */ }
 
-/// The Source_Test_Configuration field the state machine honours.
-pub struct SourceTestConfig { pub flt_no_timeout: bool }
+/// Source_Test_Configuration, all six bits in bit order (`new`).
+pub struct SourceTestConfig {
+    pub txffe_pre_shoot_only: bool, pub txffe_de_emphasis_only: bool, pub txffe_no_ffe: bool,
+    pub flt_no_timeout: bool, pub dsc_frl_max: bool, pub frl_max: bool,
+}
 
 /// Per-lane character error counts (diagnostics).
 pub struct CedCounters { pub lane0: Option<CedCount>, /* … */ pub lane3: Option<CedCount> }
@@ -515,7 +518,7 @@ diagnostic tool can reconstruct the whole attempt without reading internal state
 #[non_exhaustive]
 pub enum TrainingEvent {
     /// The sink's Source_Test_Configuration was read (LTS:2 or LTS:3).
-    SourceTestConfigRead { flt_no_timeout: bool },
+    SourceTestConfigRead { config: SourceTestConfig },  // all six bits, as read
     /// LTS:2: FLT_ready asserted after this many polls.
     FltReady { after_polls: u32 },
     /// LTS:2: FLT_ready did not assert.
@@ -564,7 +567,7 @@ limits), and the ordered `events`. It requires the `alloc` feature.
 ### Interpreting the trace
 
 ```
-SourceTestConfigRead { flt_no_timeout: false }
+SourceTestConfigRead { config: SourceTestConfig { txffe_pre_shoot_only: false, txffe_de_emphasis_only: false, txffe_no_ffe: false, flt_no_timeout: false, dsc_frl_max: false, frl_max: false } }
 FltReady { after_polls: 3 }
 RateConfigured { rate: Rate12Gbps4Lanes, ffe_levels: FfeLevels(3) }
 LtpRequested { requests: LtpRequests { lane0: Lfsr0, lane1: Lfsr1, lane2: Lfsr2, lane3: Lfsr3 } }
@@ -577,7 +580,7 @@ FrlStart { after_polls: 6 }
 A sink that asks for a lower rate, trained over `[Rate12Gbps4Lanes, Rate10Gbps4Lanes]`:
 
 ```
-SourceTestConfigRead { flt_no_timeout: false }
+SourceTestConfigRead { config: SourceTestConfig { txffe_pre_shoot_only: false, txffe_de_emphasis_only: false, txffe_no_ffe: false, flt_no_timeout: false, dsc_frl_max: false, frl_max: false } }
 FltReady { after_polls: 2 }
 RateConfigured { rate: Rate12Gbps4Lanes, ffe_levels: FfeLevels(3) }
 LtpRequested { requests: LtpRequests { lane0: RateChange, lane1: RateChange, lane2: RateChange, lane3: RateChange } }

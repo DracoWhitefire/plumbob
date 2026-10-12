@@ -34,6 +34,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   clears, only `source_test_update`, `frl_start` and `flt_update`. Implementations of
   `ScdcClient` change both signatures and build `UpdateFlags` with `new` or by setting
   fields on the default.
+- **`SourceTestConfig` has all six `Source_Test_Configuration` bits, and the trace records
+  them**, mirroring culvert. It gains `txffe_pre_shoot_only`, `txffe_de_emphasis_only`,
+  `txffe_no_ffe`, `dsc_frl_max` and `frl_max`, is `#[non_exhaustive]`, and has
+  `SourceTestConfig::new` (bits in bit order). `TrainingEvent::SourceTestConfigRead` carries
+  the register as read (`config`) instead of `flt_no_timeout` alone, so the trace shows
+  everything a compliance tester set. plumbob acts on `flt_no_timeout` as before;
+  `frl_max` and `dsc_frl_max` are for the layer that builds the rate list.
 
 ### Changed
 

@@ -63,8 +63,12 @@ flags (`status_update`, `ced_update`, `rsed_update`) are left set for whoever ha
 Both types are `#[non_exhaustive]`; build them with `new` (flags in bit order) or from the
 default by setting fields.
 
-`SourceTestConfig` holds the `Source_Test_Configuration` field the state machine honours
-(`flt_no_timeout`). The other fields of that register stay in the SCDC implementation.
+`SourceTestConfig` is the whole `Source_Test_Configuration` register: the six bits a
+compliance tester sets for the source, in bit order, as in culvert. The trace records all
+of them (`SourceTestConfigRead { config }`). The state machine acts on `flt_no_timeout`.
+`frl_max` and `dsc_frl_max` ask the source to train at its highest rate (with DSC, for the
+latter); the rate list is the caller's, so the layer that builds it reads the register
+before training and honours them there, as the AMD driver does during rate selection.
 
 ### `CedCount` and `CedCounters`
 

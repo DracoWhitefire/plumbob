@@ -266,13 +266,53 @@ impl ClearableUpdateFlags {
     }
 }
 
-/// The `Source_Test_Configuration` field the state machine honours.
+/// `Source_Test_Configuration` (0x35): instructions a compliance tester writes for the
+/// source. Bits 0 and 4 are reserved.
 ///
-/// Other fields are not part of training and stay in the SCDC implementation.
+/// Mirrors culvert's `SourceTestConfig` field for field; plumbob records all six bits in
+/// [`TrainingEvent::SourceTestConfigRead`](crate::TrainingEvent::SourceTestConfigRead).
+/// plumbob acts on `flt_no_timeout`. `frl_max` and `dsc_frl_max` ask the source to train
+/// at its highest rate; which rates to train at is the caller's choice, so the layer that
+/// builds the rate list reads this register (through its SCDC implementation) before
+/// training and honours them there. Build one with [`new`](Self::new), or from the
+/// default (no bit set) by setting fields.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct SourceTestConfig {
-    /// `FLT_no_timeout`: suspend the LTS:2 and LTS:3 poll limits (compliance testing).
+    /// Bit 1: use pre-shoot only for TxFFE.
+    pub txffe_pre_shoot_only: bool,
+    /// Bit 2: use de-emphasis only for TxFFE.
+    pub txffe_de_emphasis_only: bool,
+    /// Bit 3: use no TxFFE.
+    pub txffe_no_ffe: bool,
+    /// Bit 5: the source should not time out link training. plumbob then suspends the
+    /// LTS:2, LTS:3 and LTS:P poll limits (up to `no_timeout_poll_cap`).
     pub flt_no_timeout: bool,
+    /// Bit 6: the source should use the maximum FRL rate with DSC.
+    pub dsc_frl_max: bool,
+    /// Bit 7: the source should use the maximum FRL rate.
+    pub frl_max: bool,
+}
+
+impl SourceTestConfig {
+    /// Constructs `SourceTestConfig` from its flags, in bit order.
+    pub const fn new(
+        txffe_pre_shoot_only: bool,
+        txffe_de_emphasis_only: bool,
+        txffe_no_ffe: bool,
+        flt_no_timeout: bool,
+        dsc_frl_max: bool,
+        frl_max: bool,
+    ) -> Self {
+        Self {
+            txffe_pre_shoot_only,
+            txffe_de_emphasis_only,
+            txffe_no_ffe,
+            flt_no_timeout,
+            dsc_frl_max,
+            frl_max,
+        }
+    }
 }
 
 /// A 15-bit per-lane character error count.
@@ -531,6 +571,30 @@ mod tests {
         );
         let rr_test_only = UpdateFlags::new(false, false, true, false, false, false, false);
         assert_eq!(rr_test_only.clearable(), ClearableUpdateFlags::default());
+    }
+
+    #[test]
+    fn source_test_config_new_takes_the_bits_in_bit_order() {
+        let set = |c: SourceTestConfig| {
+            [
+                c.txffe_pre_shoot_only,
+                c.txffe_de_emphasis_only,
+                c.txffe_no_ffe,
+                c.flt_no_timeout,
+                c.dsc_frl_max,
+                c.frl_max,
+            ]
+        };
+        for n in 0..6 {
+            let b = |i| i == n;
+            let expected: [bool; 6] = core::array::from_fn(|i| i == n);
+            assert_eq!(
+                set(SourceTestConfig::new(b(0), b(1), b(2), b(3), b(4), b(5))),
+                expected,
+                "field {n}"
+            );
+        }
+        assert_eq!(set(SourceTestConfig::default()), [false; 6]);
     }
 
     #[test]

@@ -535,9 +535,7 @@ mod tests {
 
     #[test]
     fn round_with_source_test_changes_the_configuration() {
-        let config = SourceTestConfig {
-            flt_no_timeout: true,
-        };
+        let config = SourceTestConfig::new(false, false, false, true, false, false);
         let mut sink =
             configured(SimSink::new().round_with_source_test(0, all(LtpReq::NyquistClock), config));
         let flags = sink.read_update_flags().unwrap();
@@ -557,9 +555,7 @@ mod tests {
 
     #[test]
     fn source_test_sets_update_until_cleared() {
-        let config = SourceTestConfig {
-            flt_no_timeout: true,
-        };
+        let config = SourceTestConfig::new(false, false, false, true, false, false);
         let mut sink = SimSink::new().source_test(config);
         assert!(sink.read_update_flags().unwrap().source_test_update);
         assert_eq!(sink.read_source_test_config(), Ok(config));

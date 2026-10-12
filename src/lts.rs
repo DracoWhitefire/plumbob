@@ -386,8 +386,8 @@ impl<Io: TrainingIo> Machine<'_, Io> {
         // test does not take the link out of FRL.
         let under_test = Cell::new(false);
         let mut record = |event: TrainingEvent| {
-            if let TrainingEvent::SourceTestConfigRead { flt_no_timeout } = event {
-                under_test.set(flt_no_timeout);
+            if let TrainingEvent::SourceTestConfigRead { config } = event {
+                under_test.set(config.flt_no_timeout);
             }
             trained.observe(&event);
             record(event);
@@ -734,7 +734,7 @@ impl<Io: TrainingIo> Machine<'_, Io> {
             .map_err(Fault::Scdc)?;
         attempt.no_timeout = source_test.flt_no_timeout;
         record(TrainingEvent::SourceTestConfigRead {
-            flt_no_timeout: source_test.flt_no_timeout,
+            config: source_test,
         });
         if update {
             self.clear(SOURCE_TEST_UPDATE).await?;

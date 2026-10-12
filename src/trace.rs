@@ -1,6 +1,6 @@
 use display_types::cea861::hdmi_forum::HdmiForumFrl;
 
-use crate::types::{FfeLevels, LtpRequests};
+use crate::types::{FfeLevels, LtpRequests, SourceTestConfig};
 
 #[cfg(feature = "alloc")]
 use crate::training::TrainingConfig;
@@ -20,8 +20,8 @@ pub enum TrainingEvent {
     /// The sink's `Source_Test_Configuration` was read (LTS:2 or LTS:3).
     #[non_exhaustive]
     SourceTestConfigRead {
-        /// Whether the sink set `FLT_no_timeout`.
-        flt_no_timeout: bool,
+        /// The register as read: all six bits, including those plumbob does not act on.
+        config: SourceTestConfig,
     },
     /// LTS:2: `FLT_ready` asserted.
     #[non_exhaustive]

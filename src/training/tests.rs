@@ -32,9 +32,7 @@ const READ_FLT_UPDATE: UpdateFlags =
 const READ_FRL_START: UpdateFlags =
     UpdateFlags::new(false, false, false, false, true, false, false);
 
-const NO_TIMEOUT: SourceTestConfig = SourceTestConfig {
-    flt_no_timeout: true,
-};
+const NO_TIMEOUT: SourceTestConfig = SourceTestConfig::new(false, false, false, true, false, false);
 
 fn run(
     sink: SimSink,
@@ -307,6 +305,23 @@ fn only_the_flags_training_acts_on_are_cleared() {
             .iter()
             .all(|c| [SOURCE_TEST_UPDATE, FLT_UPDATE, FRL_START].contains(c)),
         "{clears:?}"
+    );
+}
+
+#[test]
+fn the_trace_records_every_source_test_bit() {
+    // TxFFE pre-shoot only, DSC_FRL_Max and FRL_Max: bits plumbob does not act on here.
+    let config = SourceTestConfig::new(true, false, false, false, true, true);
+    let sink = full_sink().source_test(config);
+    let mut trainer = FrlTrainer::new(sink, SimPhy::new());
+    let mut events = Vec::new();
+    let result = trainer.train_with_events(&[RATE], &TrainingConfig::default(), &mut |event| {
+        events.push(event)
+    });
+    assert!(result.is_ok());
+    assert_eq!(
+        events.first(),
+        Some(&TrainingEvent::SourceTestConfigRead { config })
     );
 }
 
@@ -1776,7 +1791,7 @@ fn train_with_events_reports_each_event_as_it_occurs() {
         events[..2],
         [
             TrainingEvent::SourceTestConfigRead {
-                flt_no_timeout: false
+                config: SourceTestConfig::default(),
             },
             TrainingEvent::FltReady { after_polls: 1 },
         ]
@@ -2176,7 +2191,7 @@ mod traced {
             trace.events,
             [
                 TrainingEvent::SourceTestConfigRead {
-                    flt_no_timeout: false,
+                    config: SourceTestConfig::default(),
                 },
                 TrainingEvent::FltReady { after_polls: 3 },
                 TrainingEvent::RateConfigured {
@@ -2212,7 +2227,7 @@ mod traced {
             trace.events,
             [
                 TrainingEvent::SourceTestConfigRead {
-                    flt_no_timeout: false,
+                    config: SourceTestConfig::default(),
                 },
                 TrainingEvent::FltReady { after_polls: 2 },
                 TrainingEvent::RateConfigured {
@@ -2363,12 +2378,10 @@ mod traced {
             notable,
             [
                 &TrainingEvent::SourceTestConfigRead {
-                    flt_no_timeout: false
+                    config: SourceTestConfig::default(),
                 },
                 &TrainingEvent::RetrainRequested,
-                &TrainingEvent::SourceTestConfigRead {
-                    flt_no_timeout: true
-                },
+                &TrainingEvent::SourceTestConfigRead { config: NO_TIMEOUT },
             ]
         );
     }
@@ -2551,7 +2564,7 @@ mod traced {
             trace.events,
             [
                 TrainingEvent::SourceTestConfigRead {
-                    flt_no_timeout: false,
+                    config: SourceTestConfig::default(),
                 },
                 TrainingEvent::FltReady { after_polls: 3 },
                 TrainingEvent::RateConfigured {
