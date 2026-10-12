@@ -22,9 +22,11 @@ Tests for the owned protocol types cover:
   bit 15 masked off)
 - Defaults and equality for `UpdateFlags`, `SourceTestConfig`, `LtpRequests` and
   `CedCount`
-
-Plain data types with no behaviour (`FrlConfig`, `CedCounters`) have no tests of their
-own: building one and reading its fields back would test only the compiler.
+- The constructors that take fields in register or lane order (`UpdateFlags::new`,
+  `ClearableUpdateFlags::new`, `SourceTestConfig::new`, `LtpRequests::new`,
+  `CedCounters::new`, `FrlConfig::new`): each field lands where its bit or lane says, since
+  positional `bool` and lane arguments are easy to swap; `clearable()` drops only
+  `RR_Test`; `LtpRequests::all_trained` counts lane 3.
 
 ### The simulated sink and PHY (`src/training/sim.rs`)
 
@@ -32,7 +34,9 @@ own: building one and reading its fields back would test only the compiler.
   scenario: `FLT_ready` after N polls; a queue of LTS:3 *rounds*, each raising
   `FLT_update` with a set of per-lane requests after some polls (counted from the last
   `Config_1` write with an FRL rate); `FRL_start` after N polls once the rounds are used
-  up; an optional source test configuration. A rate drop is a round of `RateChange`, and
+  up; an optional source test configuration, also changed with a round or on its own
+  (`source_test_after`, setting `Source_Test_Update` without `FLT_update`); the `Update_0`
+  flags training does not act on (`other_flags`). A rate drop is a round of `RateChange`, and
   a retrain during LTS:P is a round after the all-`None` one. It records every call in
   order and can fail any one operation, on every call or only on its N-th call.
 - `SimPhy` — records every PHY call in order and can fail any one operation, on every
@@ -102,6 +106,19 @@ kept apart, and the five distinct warnings an attempt can produce fit without `a
 - `train_with_events` reporting each event as it occurs, without `alloc`
 - `exit_to_tmds` on demand: the LTS:L sequence, taking down a link an error left in FRL,
   each end's error on failure, and `lts::exit_to_tmds` recording its event
+- `Update_0`: plumbob clears only the three flags it acts on, one at a time, and a sink's
+  `Status_Update`, `CED_Update`, `RR_Test` and `RSED_Update` stay set through training
+- `Source_Test_Configuration`: every bit recorded in `SourceTestConfigRead`; a
+  `Source_Test_Update` handled on the poll that sees it, without `FLT_update` in LTS:3 and
+  before `FRL_start` in LTS:P
+- TxFFE restrictions: sent with every equalization; kept across a rate drop and a retrain;
+  a change in LTS:3 sent at once with the levels held, before the round's requests are
+  acted on; an unchanged re-read not sent again
+- The deadline pattern in architecture.md: one failed polled read in LTS:3 stops training,
+  and LTS:L, whose read is not a poll, still returns the link to TMDS
+- Every new test above was checked against a deliberate bug (a reset of the restrictions
+  on a rate drop or a retrain, a trip on LTS:2's read, an extra cleared flag, a late
+  re-send): each fails its test
 
 ### Trace tests (requires `alloc` feature)
 

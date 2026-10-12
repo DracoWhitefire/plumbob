@@ -1298,6 +1298,102 @@ fn a_restriction_changed_in_lts_3_is_sent_at_once_with_the_levels_held() {
 }
 
 #[test]
+fn a_changed_restriction_is_sent_before_the_rounds_requests_are_acted_on() {
+    let sink = SimSink::new()
+        .flt_ready_after(0)
+        .round(0, all(LtpReq::Lfsr0))
+        .round_with_source_test(0, all(LtpReq::Lfsr1), PRE_SHOOT_ONLY)
+        .round(0, all(LtpReq::None))
+        .frl_start_after(0);
+    let (_, log) = logged(sink, &[R12]);
+    let next = calls_after(
+        &log,
+        Call::Sink(SinkCall::ReadSourceTestConfig(PRE_SHOOT_ONLY)),
+        5,
+    );
+    assert!(
+        matches!(
+            next,
+            [
+                Call::Sink(SinkCall::ClearUpdateFlags(SOURCE_TEST_UPDATE)),
+                Call::Phy(PhyCall::AdjustEqualization(eq)),
+                Call::Sink(SinkCall::ReadLtpRequests(_)),
+                Call::Phy(PhyCall::SendLtp(_)),
+                Call::Sink(SinkCall::ClearUpdateFlags(FLT_UPDATE)),
+            ] if eq.tx_ffe_restrictions == TxFfeRestrictions::new(true, false, false)
+        ),
+        "{next:?}"
+    );
+}
+
+#[test]
+fn restrictions_are_kept_across_a_rate_drop() {
+    let sink = SimSink::new()
+        .source_test(DE_EMPHASIS_ONLY)
+        .flt_ready_after(0)
+        .round(0, all(LtpReq::Lfsr0))
+        .round(0, all(LtpReq::RateChange))
+        .round(0, all(LtpReq::Lfsr0))
+        .round(0, all(LtpReq::FfeChange))
+        .round(0, all(LtpReq::None))
+        .frl_start_after(0);
+    let (outcome, _, phy) = run(sink, &[R12, R10], &TrainingConfig::default());
+    assert!(matches!(
+        outcome,
+        TrainingOutcome::Success {
+            achieved_rate: R10,
+            ..
+        }
+    ));
+    // Configured at 12 Gbps, at 10 Gbps after LTS:4, and the raise there.
+    let de_emphasis_only = TxFfeRestrictions::new(false, true, false);
+    assert_eq!(restrictions_sent(&phy), [de_emphasis_only; 3]);
+}
+
+#[test]
+fn restrictions_are_kept_across_a_retrain() {
+    let sink = SimSink::new()
+        .source_test(DE_EMPHASIS_ONLY)
+        .flt_ready_after(0)
+        .round(0, all(LtpReq::Lfsr0))
+        .round(0, all(LtpReq::None))
+        // Posted in LTS:P: the retrain, then a raise in the second LTS:3.
+        .round(0, all(LtpReq::Lfsr1))
+        .round(0, all(LtpReq::FfeChange))
+        .round(0, all(LtpReq::None))
+        .frl_start_after(0);
+    let (outcome, events, _, phy) = train_events(sink);
+    assert!(matches!(outcome, TrainingOutcome::Success { .. }));
+    assert!(events.contains(&TrainingEvent::RetrainRequested));
+    // Configured, and the raise after the retrain.
+    let de_emphasis_only = TxFfeRestrictions::new(false, true, false);
+    assert_eq!(restrictions_sent(&phy), [de_emphasis_only; 2]);
+}
+
+#[test]
+fn flags_training_does_not_act_on_stay_set() {
+    // Status_Update, CED_Update, RR_Test and RSED_Update, set throughout.
+    let others = UpdateFlags::new(true, true, true, false, false, false, true);
+    let (result, sink, _) = run_with(full_sink().other_flags(others), SimPhy::new());
+    assert!(matches!(result, Ok(TrainingOutcome::Success { .. })));
+    for call in &sink.calls {
+        if let SinkCall::ClearUpdateFlags(flags) = call {
+            assert!(
+                !flags.status_update && !flags.ced_update && !flags.rsed_update,
+                "{flags:?}"
+            );
+        }
+    }
+    let last_read = sink.calls.iter().rev().find_map(|call| match call {
+        SinkCall::ReadUpdateFlags(flags) => Some(*flags),
+        _ => None,
+    });
+    let last_read = last_read.unwrap();
+    assert!(last_read.status_update && last_read.ced_update);
+    assert!(last_read.rr_test && last_read.rsed_update);
+}
+
+#[test]
 fn an_unchanged_restriction_is_not_sent_again() {
     let sink = SimSink::new()
         .source_test(PRE_SHOOT_ONLY)
@@ -1730,6 +1826,8 @@ fn a_one_shot_error_in_a_polled_read_stops_training_and_exits_to_tmds() {
     let (result, sink, phy) = run_with(sink, SimPhy::new());
     let exit = TmdsExit::Exited;
     assert_eq!(result, Err(TrainingError::Scdc { error: (), exit }));
+    // The trip came while polling in LTS:3: the rate had been configured.
+    assert_eq!(frl_configs(&sink), [RATE, HdmiForumFrl::NotSupported]);
     assert_in_tmds(&sink, &phy);
     // LTS:L's own read, after the failed one, went through.
     assert!(matches!(

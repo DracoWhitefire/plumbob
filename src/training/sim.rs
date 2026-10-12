@@ -159,6 +159,16 @@ impl SimSink {
         self
     }
 
+    /// The sink also sets the `Update_0` flags training does not act on (`status_update`,
+    /// `ced_update`, `rr_test`, `rsed_update`) that are set in `flags`, from the start.
+    pub fn other_flags(mut self, flags: UpdateFlags) -> Self {
+        self.flags.status_update |= flags.status_update;
+        self.flags.ced_update |= flags.ced_update;
+        self.flags.rr_test |= flags.rr_test;
+        self.flags.rsed_update |= flags.rsed_update;
+        self
+    }
+
     pub fn frl_start_after(mut self, polls: u32) -> Self {
         self.frl_start_after = Some(polls);
         self
