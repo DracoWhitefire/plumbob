@@ -18,7 +18,9 @@ use crate::trace::TrainingEvent;
 use crate::training::{
     ExitError, FallbackReason, TmdsExit, TrainingConfig, TrainingError, TrainingOutcome,
 };
-use crate::types::{FfeLevels, FrlConfig, LtpReq, LtpRequests, SourceTestConfig, UpdateFlags};
+use crate::types::{
+    ClearableUpdateFlags, FfeLevels, FrlConfig, LtpReq, LtpRequests, SourceTestConfig, UpdateFlags,
+};
 use crate::warning::Trained;
 
 /// The SCDC and PHY operations the link training state machine performs.
@@ -41,7 +43,10 @@ pub trait TrainingIo {
     /// Read the `Update_0` training flags.
     async fn read_update_flags(&mut self) -> Result<UpdateFlags, Self::ScdcError>;
     /// Clear the given `Update_0` flags.
-    async fn clear_update_flags(&mut self, flags: UpdateFlags) -> Result<(), Self::ScdcError>;
+    async fn clear_update_flags(
+        &mut self,
+        flags: ClearableUpdateFlags,
+    ) -> Result<(), Self::ScdcError>;
     /// Read the per-lane link training requests.
     async fn read_ltp_requests(&mut self) -> Result<LtpRequests, Self::ScdcError>;
     /// Read `Source_Test_Configuration`.
@@ -108,23 +113,15 @@ pub async fn exit_to_tmds<Io: TrainingIo, F: FnMut(TrainingEvent)>(
     Machine { io }.exit_to_tmds(record).await
 }
 
-pub(crate) const FLT_UPDATE: UpdateFlags = UpdateFlags {
-    source_test_update: false,
-    frl_start: false,
-    flt_update: true,
-};
+// The flags plumbob clears, one at a time: those it acts on, and no others.
+pub(crate) const FLT_UPDATE: ClearableUpdateFlags =
+    ClearableUpdateFlags::new(false, false, false, false, true, false);
 
-pub(crate) const FRL_START: UpdateFlags = UpdateFlags {
-    source_test_update: false,
-    frl_start: true,
-    flt_update: false,
-};
+pub(crate) const FRL_START: ClearableUpdateFlags =
+    ClearableUpdateFlags::new(false, false, false, true, false, false);
 
-pub(crate) const SOURCE_TEST_UPDATE: UpdateFlags = UpdateFlags {
-    source_test_update: true,
-    frl_start: false,
-    flt_update: false,
-};
+pub(crate) const SOURCE_TEST_UPDATE: ClearableUpdateFlags =
+    ClearableUpdateFlags::new(false, false, true, false, false, false);
 
 /// The first rate in `rates` the procedure cannot train at: `NotSupported` (not an FRL
 /// rate), or one that is not strictly lower than the rate before it (LTS:4 steps down).
@@ -749,7 +746,7 @@ impl<Io: TrainingIo> Machine<'_, Io> {
         self.io.read_update_flags().await.map_err(Fault::Scdc)
     }
 
-    async fn clear(&mut self, flags: UpdateFlags) -> Result<(), Failure<Io>> {
+    async fn clear(&mut self, flags: ClearableUpdateFlags) -> Result<(), Failure<Io>> {
         self.io.clear_update_flags(flags).await.map_err(Fault::Scdc)
     }
 

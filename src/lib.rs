@@ -33,7 +33,8 @@ pub use training::{
     ExitError, FallbackReason, FrlTrainer, TmdsExit, TrainingConfig, TrainingError, TrainingOutcome,
 };
 pub use types::{
-    CedCount, CedCounters, FfeLevels, FrlConfig, LtpReq, LtpRequests, SourceTestConfig, UpdateFlags,
+    CedCount, CedCounters, ClearableUpdateFlags, FfeLevels, FrlConfig, LtpReq, LtpRequests,
+    SourceTestConfig, UpdateFlags,
 };
 
 pub use trace::TrainingEvent;

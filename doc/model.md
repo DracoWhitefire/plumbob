@@ -53,12 +53,18 @@ Written to `Config_1` in LTS:2, and again in LTS:4 for each lower rate: the FRL 
 (bits 3:0) and `FfeLevels` (bits 7:4).
 `HdmiForumFrl::NotSupported` turns FRL off (LTS:L).
 
-### `UpdateFlags` and `SourceTestConfig`
+### `UpdateFlags`, `ClearableUpdateFlags` and `SourceTestConfig`
 
-The `Update_0` flags the state machine reads and clears (`source_test_update`, `frl_start`,
-`flt_update`), and the `Source_Test_Configuration` field it honours (`flt_no_timeout`).
-Other `Update_0` and `Source_Test_Configuration` fields are not part of training and stay
-in the SCDC implementation.
+`UpdateFlags` is the whole `Update_0` register: seven flags in bit order, as in culvert.
+The state machine acts on `source_test_update`, `frl_start` and `flt_update`, and clears
+only those, one at a time, with a `ClearableUpdateFlags`: every flag but `RR_Test`, which
+belongs to the sink's read-request test and is never cleared by the source. The other
+flags (`status_update`, `ced_update`, `rsed_update`) are left set for whoever handles them.
+Both types are `#[non_exhaustive]`; build them with `new` (flags in bit order) or from the
+default by setting fields.
+
+`SourceTestConfig` holds the `Source_Test_Configuration` field the state machine honours
+(`flt_no_timeout`). The other fields of that register stay in the SCDC implementation.
 
 ### `CedCount` and `CedCounters`
 

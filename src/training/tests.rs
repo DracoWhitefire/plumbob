@@ -22,11 +22,15 @@ fn uniform(count: usize, pattern: Option<LtpPattern>) -> LanePatterns {
     }
 }
 
-const NO_FLAGS: UpdateFlags = UpdateFlags {
-    source_test_update: false,
-    frl_start: false,
-    flt_update: false,
-};
+const NO_FLAGS: UpdateFlags = UpdateFlags::new(false, false, false, false, false, false, false);
+
+/// `Update_0` as read with only `FLT_update` set.
+const READ_FLT_UPDATE: UpdateFlags =
+    UpdateFlags::new(false, false, false, false, false, true, false);
+
+/// `Update_0` as read with only `FRL_start` set.
+const READ_FRL_START: UpdateFlags =
+    UpdateFlags::new(false, false, false, false, true, false, false);
 
 const NO_TIMEOUT: SourceTestConfig = SourceTestConfig {
     flt_no_timeout: true,
@@ -171,17 +175,17 @@ fn trains_through_lts_2_3_and_p() {
                 ffe_levels: FfeLevels::new(3).unwrap(),
             }),
             // LTS:3
-            SinkCall::ReadUpdateFlags(flt_update),
+            SinkCall::ReadUpdateFlags(READ_FLT_UPDATE),
             SinkCall::ReadLtpRequests(all(LtpReq::Lfsr0)),
             SinkCall::ClearUpdateFlags(flt_update),
             SinkCall::ReadUpdateFlags(NO_FLAGS),
             SinkCall::ReadUpdateFlags(NO_FLAGS),
-            SinkCall::ReadUpdateFlags(flt_update),
+            SinkCall::ReadUpdateFlags(READ_FLT_UPDATE),
             SinkCall::ReadLtpRequests(all(LtpReq::None)),
             // LTS:P
             SinkCall::ClearUpdateFlags(flt_update),
             SinkCall::ReadUpdateFlags(NO_FLAGS),
-            SinkCall::ReadUpdateFlags(frl_start),
+            SinkCall::ReadUpdateFlags(READ_FRL_START),
             SinkCall::ClearUpdateFlags(frl_start),
         ]
     );
@@ -280,6 +284,30 @@ fn an_empty_rate_list_is_rejected_without_io() {
     let (sink, phy) = trainer.into_parts();
     assert!(sink.calls.is_empty());
     assert!(phy.calls.is_empty());
+}
+
+#[test]
+fn only_the_flags_training_acts_on_are_cleared() {
+    // `full_sink` sets `Source_Test_Update` too, so one attempt clears all three.
+    let (result, sink, _) = run_with(full_sink(), SimPhy::new());
+    assert!(result.is_ok());
+    let clears: Vec<ClearableUpdateFlags> = sink
+        .calls
+        .iter()
+        .filter_map(|call| match call {
+            SinkCall::ClearUpdateFlags(flags) => Some(*flags),
+            _ => None,
+        })
+        .collect();
+    for flags in [SOURCE_TEST_UPDATE, FLT_UPDATE, FRL_START] {
+        assert!(clears.contains(&flags), "{flags:?}");
+    }
+    assert!(
+        clears
+            .iter()
+            .all(|c| [SOURCE_TEST_UPDATE, FLT_UPDATE, FRL_START].contains(c)),
+        "{clears:?}"
+    );
 }
 
 // --- LTS:2

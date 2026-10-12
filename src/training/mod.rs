@@ -8,7 +8,9 @@ use hdmi_hal::phy::{EqParams, FrlOutput, HdmiPhy, LanePatterns};
 use crate::lts::{self, TrainingIo};
 use crate::scdc::ScdcClient;
 use crate::trace::TrainingEvent;
-use crate::types::{FfeLevels, FrlConfig, LtpRequests, SourceTestConfig, UpdateFlags};
+use crate::types::{
+    ClearableUpdateFlags, FfeLevels, FrlConfig, LtpRequests, SourceTestConfig, UpdateFlags,
+};
 use crate::warning::Trained;
 
 #[cfg(feature = "alloc")]
@@ -361,7 +363,7 @@ impl<C: ScdcClient, P: HdmiPhy> TrainingIo for SyncIo<'_, C, P> {
         self.scdc.read_update_flags()
     }
 
-    async fn clear_update_flags(&mut self, flags: UpdateFlags) -> Result<(), C::Error> {
+    async fn clear_update_flags(&mut self, flags: ClearableUpdateFlags) -> Result<(), C::Error> {
         self.scdc.clear_update_flags(flags)
     }
 

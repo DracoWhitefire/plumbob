@@ -1,4 +1,6 @@
-use crate::types::{CedCounters, FrlConfig, LtpRequests, SourceTestConfig, UpdateFlags};
+use crate::types::{
+    CedCounters, ClearableUpdateFlags, FrlConfig, LtpRequests, SourceTestConfig, UpdateFlags,
+};
 
 /// Typed SCDC interface required by the link training state machine, one method per
 /// register operation it performs.
@@ -41,12 +43,13 @@ pub trait ScdcClient {
     /// Read `FLT_ready` (`Status_Flags_0` bit 6).
     fn read_flt_ready(&mut self) -> Result<bool, Self::Error>;
 
-    /// Read the `Update_0` flags the state machine uses (bits 3–5).
+    /// Read `Update_0` (0x10): all seven flags, whether or not the state machine acts on
+    /// them.
     fn read_update_flags(&mut self) -> Result<UpdateFlags, Self::Error>;
 
     /// Clear the given `Update_0` flags (write 1 to clear). Flags that are `false` are
-    /// left as they are.
-    fn clear_update_flags(&mut self, flags: UpdateFlags) -> Result<(), Self::Error>;
+    /// left as they are; plumbob passes only the flags it acts on.
+    fn clear_update_flags(&mut self, flags: ClearableUpdateFlags) -> Result<(), Self::Error>;
 
     /// Read the per-lane link training requests from `Status_Flags_1/2`. Undefined values
     /// (0x9–0xD) are [`LtpReq::Reserved`](crate::LtpReq::Reserved), not an error: whether

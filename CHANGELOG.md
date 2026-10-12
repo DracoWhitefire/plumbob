@@ -25,6 +25,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `alloc`; now both builds have the same API and traits.
 - **`FrlConfig::rate` is renamed `frl_rate`**, after the `Config_1` field (`FRL_Rate`) and
   culvert's `FrlConfig`, which plumbob's SCDC types now mirror.
+- **`UpdateFlags` has all seven `Update_0` flags, and clears take a `ClearableUpdateFlags`**,
+  mirroring culvert. `UpdateFlags` gains `status_update`, `ced_update`, `rr_test` and
+  `rsed_update`, so an `ScdcClient` reports the whole register; it is `#[non_exhaustive]`
+  (room for a later flag in bit 7), with `UpdateFlags::new` (flags in bit order) and
+  `clearable()`. `ScdcClient::clear_update_flags` takes the new `ClearableUpdateFlags`:
+  every flag but `RR_Test`, which the source never clears. plumbob still acts on, and
+  clears, only `source_test_update`, `frl_start` and `flt_update`. Implementations of
+  `ScdcClient` change both signatures and build `UpdateFlags` with `new` or by setting
+  fields on the default.
 
 ### Changed
 

@@ -15,7 +15,10 @@ use display_types::cea861::hdmi_forum::HdmiForumFrl;
 use hdmi_hal::phy::{EqParams, FrlOutput, HdmiPhy, LanePatterns};
 
 use crate::scdc::ScdcClient;
-use crate::types::{CedCounters, FrlConfig, LtpReq, LtpRequests, SourceTestConfig, UpdateFlags};
+use crate::types::{
+    CedCounters, ClearableUpdateFlags, FrlConfig, LtpReq, LtpRequests, SourceTestConfig,
+    UpdateFlags,
+};
 
 /// The same request on all four lanes.
 pub fn all(req: LtpReq) -> LtpRequests {
@@ -66,7 +69,7 @@ pub enum SinkOp {
 pub enum SinkCall {
     ReadFltReady(bool),
     ReadUpdateFlags(UpdateFlags),
-    ClearUpdateFlags(UpdateFlags),
+    ClearUpdateFlags(ClearableUpdateFlags),
     ReadLtpRequests(LtpRequests),
     ReadSourceTestConfig(SourceTestConfig),
     WriteConfig0Defaults,
@@ -229,7 +232,7 @@ impl ScdcClient for SimSink {
         Ok(self.flags)
     }
 
-    fn clear_update_flags(&mut self, flags: UpdateFlags) -> Result<(), ()> {
+    fn clear_update_flags(&mut self, flags: ClearableUpdateFlags) -> Result<(), ()> {
         self.check(SinkOp::ClearUpdateFlags)?;
         if flags.flt_update && self.flags.flt_update {
             self.flags.flt_update = false;
@@ -245,6 +248,10 @@ impl ScdcClient for SimSink {
             }
         }
         self.flags.source_test_update &= !flags.source_test_update;
+        // Flags training does not act on clear like any other.
+        self.flags.status_update &= !flags.status_update;
+        self.flags.ced_update &= !flags.ced_update;
+        self.flags.rsed_update &= !flags.rsed_update;
         self.log_call(SinkCall::ClearUpdateFlags(flags));
         Ok(())
     }
@@ -424,11 +431,7 @@ mod tests {
     use super::*;
     use crate::types::FfeLevels;
 
-    const FLT_UPDATE: UpdateFlags = UpdateFlags {
-        source_test_update: false,
-        frl_start: false,
-        flt_update: true,
-    };
+    use crate::lts::FLT_UPDATE;
 
     /// Writes `Config_1` with an FRL rate, which starts the sink's rounds.
     fn configured(mut sink: SimSink) -> SimSink {
@@ -510,11 +513,7 @@ mod tests {
         sink.clear_update_flags(FLT_UPDATE).unwrap();
         assert!(!sink.read_update_flags().unwrap().frl_start);
         assert!(sink.read_update_flags().unwrap().frl_start);
-        sink.clear_update_flags(UpdateFlags {
-            frl_start: true,
-            ..UpdateFlags::default()
-        })
-        .unwrap();
+        sink.clear_update_flags(crate::lts::FRL_START).unwrap();
         assert!(!sink.read_update_flags().unwrap().frl_start);
     }
 
@@ -564,11 +563,8 @@ mod tests {
         let mut sink = SimSink::new().source_test(config);
         assert!(sink.read_update_flags().unwrap().source_test_update);
         assert_eq!(sink.read_source_test_config(), Ok(config));
-        sink.clear_update_flags(UpdateFlags {
-            source_test_update: true,
-            ..UpdateFlags::default()
-        })
-        .unwrap();
+        sink.clear_update_flags(crate::lts::SOURCE_TEST_UPDATE)
+            .unwrap();
         assert!(!sink.read_update_flags().unwrap().source_test_update);
     }
 
@@ -633,7 +629,7 @@ mod tests {
             let results = [
                 sink.read_flt_ready().map(drop),
                 sink.read_update_flags().map(drop),
-                sink.clear_update_flags(UpdateFlags::default()),
+                sink.clear_update_flags(ClearableUpdateFlags::default()),
                 sink.read_ltp_requests().map(drop),
                 sink.read_source_test_config().map(drop),
                 sink.write_config_0_defaults(),

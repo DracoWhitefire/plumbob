@@ -9,8 +9,8 @@ use core::convert::Infallible;
 use display_types::cea861::hdmi_forum::HdmiForumFrl;
 use hdmi_hal::phy::{EqParams, FrlOutput, HdmiPhy, LaneEqParams, LanePatterns};
 use plumbob::{
-    CedCounters, FrlConfig, FrlTrainer, LtpReq, LtpRequests, ScdcClient, SourceTestConfig,
-    TrainingConfig, UpdateFlags,
+    CedCounters, ClearableUpdateFlags, FrlConfig, FrlTrainer, LtpReq, LtpRequests, ScdcClient,
+    SourceTestConfig, TrainingConfig, UpdateFlags,
 };
 
 // --- SimSink ---------------------------------------------------------------------
@@ -74,14 +74,13 @@ impl ScdcClient for SimSink {
                 self.frl_start = self.frl_start_polls >= 3;
             }
         }
-        Ok(UpdateFlags {
-            source_test_update: false,
-            frl_start: self.frl_start,
-            flt_update: self.flt_update,
-        })
+        let mut flags = UpdateFlags::default();
+        flags.frl_start = self.frl_start;
+        flags.flt_update = self.flt_update;
+        Ok(flags)
     }
 
-    fn clear_update_flags(&mut self, flags: UpdateFlags) -> Result<(), Infallible> {
+    fn clear_update_flags(&mut self, flags: ClearableUpdateFlags) -> Result<(), Infallible> {
         if flags.flt_update && self.flt_update {
             self.flt_update = false;
             self.next_request += 1;

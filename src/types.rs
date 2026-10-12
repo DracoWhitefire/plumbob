@@ -159,17 +159,111 @@ pub struct FrlConfig {
     pub ffe_levels: FfeLevels,
 }
 
-/// The `Update_0` flags the state machine reads and clears.
+/// `Update_0` (0x10): the flags the sink sets to tell the source that something changed.
 ///
-/// Other `Update_0` flags are not part of training and stay in the SCDC implementation.
+/// Mirrors culvert's `UpdateFlags` field for field. plumbob acts on `source_test_update`,
+/// `frl_start` and `flt_update`, and clears only those (see [`ClearableUpdateFlags`]); the
+/// other flags are read so that an `ScdcClient` reports the whole register, and are left
+/// to whoever handles them. Build one with [`new`](Self::new), or from the default (no flag
+/// set) by setting fields.
+#[non_exhaustive]
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct UpdateFlags {
-    /// `Source_Test_Update`: the sink changed `Source_Test_Configuration`.
+    /// Bit 0: general status has changed.
+    pub status_update: bool,
+    /// Bit 1: CED counters have been updated; re-read the `ERR_DET` registers.
+    pub ced_update: bool,
+    /// Bit 2: read request test, owned by the sink. The source does not clear it, so
+    /// [`ClearableUpdateFlags`] has no field for it.
+    pub rr_test: bool,
+    /// Bit 3: the sink has written `Source_Test_Configuration` (0x35).
     pub source_test_update: bool,
-    /// `FRL_start`: the sink is ready for the source to start FRL transmission.
+    /// Bit 4: link training passed; the source may start FRL transmission.
     pub frl_start: bool,
-    /// `FLT_update`: the sink has posted new link training requests.
+    /// Bit 5: the per-lane link training pattern requests have changed.
     pub flt_update: bool,
+    /// Bit 6: the Reed-Solomon correction count has been updated.
+    pub rsed_update: bool,
+}
+
+impl UpdateFlags {
+    /// Constructs `UpdateFlags` from the `Update_0` flags, in bit order.
+    pub const fn new(
+        status_update: bool,
+        ced_update: bool,
+        rr_test: bool,
+        source_test_update: bool,
+        frl_start: bool,
+        flt_update: bool,
+        rsed_update: bool,
+    ) -> Self {
+        Self {
+            status_update,
+            ced_update,
+            rr_test,
+            source_test_update,
+            frl_start,
+            flt_update,
+            rsed_update,
+        }
+    }
+
+    /// These flags as a clear: every flag but `RR_Test`, which the source does not clear.
+    pub const fn clearable(self) -> ClearableUpdateFlags {
+        ClearableUpdateFlags {
+            status_update: self.status_update,
+            ced_update: self.ced_update,
+            source_test_update: self.source_test_update,
+            frl_start: self.frl_start,
+            flt_update: self.flt_update,
+            rsed_update: self.rsed_update,
+        }
+    }
+}
+
+/// The `Update_0` flags a source may clear: every flag but `RR_Test` (bit 2).
+///
+/// Taken by [`ScdcClient::clear_update_flags`](crate::ScdcClient::clear_update_flags);
+/// mirrors culvert's `ClearableUpdateFlags` field for field. plumbob clears only the flags
+/// it acts on (`source_test_update`, `frl_start`, `flt_update`). `RR_Test` has no field
+/// because it belongs to the sink's read-request test; culvert's architecture document
+/// ("RR_Test is not cleared") gives the sources for that rule. The default clears nothing.
+#[non_exhaustive]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct ClearableUpdateFlags {
+    /// Bit 0: general status has changed.
+    pub status_update: bool,
+    /// Bit 1: CED counters have been updated.
+    pub ced_update: bool,
+    /// Bit 3: the sink has written `Source_Test_Configuration` (0x35).
+    pub source_test_update: bool,
+    /// Bit 4: link training passed.
+    pub frl_start: bool,
+    /// Bit 5: the per-lane link training pattern requests have changed.
+    pub flt_update: bool,
+    /// Bit 6: the Reed-Solomon correction count has been updated.
+    pub rsed_update: bool,
+}
+
+impl ClearableUpdateFlags {
+    /// Constructs `ClearableUpdateFlags` from the flags to clear, in bit order.
+    pub const fn new(
+        status_update: bool,
+        ced_update: bool,
+        source_test_update: bool,
+        frl_start: bool,
+        flt_update: bool,
+        rsed_update: bool,
+    ) -> Self {
+        Self {
+            status_update,
+            ced_update,
+            source_test_update,
+            frl_start,
+            flt_update,
+            rsed_update,
+        }
+    }
 }
 
 /// The `Source_Test_Configuration` field the state machine honours.
@@ -400,5 +494,49 @@ mod tests {
         let a = CedCount::new(42);
         assert_eq!(a, a.clone());
         assert_ne!(CedCount::new(1), CedCount::new(2));
+    }
+
+    // --- UpdateFlags, ClearableUpdateFlags ---
+
+    #[test]
+    fn update_flags_new_takes_the_flags_in_bit_order() {
+        let bit = |n: usize| {
+            let b = |i| i == n;
+            UpdateFlags::new(b(0), b(1), b(2), b(3), b(4), b(5), b(6))
+        };
+        let set = |f: UpdateFlags| {
+            [
+                f.status_update,
+                f.ced_update,
+                f.rr_test,
+                f.source_test_update,
+                f.frl_start,
+                f.flt_update,
+                f.rsed_update,
+            ]
+        };
+        for n in 0..7 {
+            let expected: [bool; 7] = core::array::from_fn(|i| i == n);
+            assert_eq!(set(bit(n)), expected, "bit {n}");
+        }
+        assert_eq!(UpdateFlags::default(), bit(7));
+    }
+
+    #[test]
+    fn clearable_keeps_every_flag_but_rr_test() {
+        let all = UpdateFlags::new(true, true, true, true, true, true, true);
+        assert_eq!(
+            all.clearable(),
+            ClearableUpdateFlags::new(true, true, true, true, true, true)
+        );
+        let rr_test_only = UpdateFlags::new(false, false, true, false, false, false, false);
+        assert_eq!(rr_test_only.clearable(), ClearableUpdateFlags::default());
+    }
+
+    #[test]
+    fn clearable_update_flags_new_takes_the_flags_in_bit_order() {
+        let c = ClearableUpdateFlags::new(true, false, true, false, true, false);
+        assert!(c.status_update && c.source_test_update && c.flt_update);
+        assert!(!c.ced_update && !c.frl_start && !c.rsed_update);
     }
 }

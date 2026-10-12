@@ -30,7 +30,8 @@ Implement `ScdcClient` against your SCDC transport, one method per register oper
 
 ```rust
 use plumbob::{
-    CedCounters, FrlConfig, LtpRequests, ScdcClient, SourceTestConfig, UpdateFlags,
+    CedCounters, ClearableUpdateFlags, FrlConfig, LtpRequests, ScdcClient, SourceTestConfig,
+    UpdateFlags,
 };
 
 struct MyScdcClient { /* I²C / DDC transport */ }
@@ -40,10 +41,10 @@ impl ScdcClient for MyScdcClient {
 
     // Status_Flags_0 bit 6. Polled in LTS:2: wait the poll interval here.
     fn read_flt_ready(&mut self) -> Result<bool, MyError> { todo!() }
-    // Update_0 Source_Test_Update, FRL_start, FLT_update. Polled in LTS:3 and LTS:P.
+    // Update_0, all seven flags. Polled in LTS:3 and LTS:P.
     fn read_update_flags(&mut self) -> Result<UpdateFlags, MyError> { todo!() }
-    // Write 1 to clear the given Update_0 flags.
-    fn clear_update_flags(&mut self, flags: UpdateFlags) -> Result<(), MyError> { todo!() }
+    // Write 1 to clear the given Update_0 flags (never RR_Test).
+    fn clear_update_flags(&mut self, flags: ClearableUpdateFlags) -> Result<(), MyError> { todo!() }
     // Status_Flags_1/2: the per-lane requests (0x9–0xD as LtpReq::Reserved).
     fn read_ltp_requests(&mut self) -> Result<LtpRequests, MyError> { todo!() }
     // Source_Test_Configuration: FLT_no_timeout.

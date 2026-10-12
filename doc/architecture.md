@@ -322,8 +322,15 @@ pub struct FfeLevels(u8);
 /// Written to Config_1.
 pub struct FrlConfig { pub frl_rate: HdmiForumFrl, pub ffe_levels: FfeLevels }
 
-/// The Update_0 flags the state machine reads and clears.
-pub struct UpdateFlags { pub source_test_update: bool, pub frl_start: bool, pub flt_update: bool }
+/// Update_0, all seven flags in bit order (`new`); `clearable()` drops RR_Test.
+pub struct UpdateFlags {
+    pub status_update: bool, pub ced_update: bool, pub rr_test: bool,
+    pub source_test_update: bool, pub frl_start: bool, pub flt_update: bool,
+    pub rsed_update: bool,
+}
+
+/// The Update_0 flags a source may clear: every flag but RR_Test.
+pub struct ClearableUpdateFlags { /* the six flags above other than rr_test */ }
 
 /// The Source_Test_Configuration field the state machine honours.
 pub struct SourceTestConfig { pub flt_no_timeout: bool }
@@ -344,10 +351,10 @@ pub trait ScdcClient {
 
     /// Status_Flags_0 bit 6.
     fn read_flt_ready(&mut self) -> Result<bool, Self::Error>;
-    /// Update_0 bits 3–5.
+    /// Update_0, all seven flags.
     fn read_update_flags(&mut self) -> Result<UpdateFlags, Self::Error>;
-    /// Write-1-to-clear the given Update_0 flags.
-    fn clear_update_flags(&mut self, flags: UpdateFlags) -> Result<(), Self::Error>;
+    /// Write-1-to-clear the given Update_0 flags; plumbob passes only those it acts on.
+    fn clear_update_flags(&mut self, flags: ClearableUpdateFlags) -> Result<(), Self::Error>;
     /// Status_Flags_1/2: the per-lane requests.
     fn read_ltp_requests(&mut self) -> Result<LtpRequests, Self::Error>;
     /// Source_Test_Configuration (0x35).
