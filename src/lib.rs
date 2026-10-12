@@ -45,6 +45,7 @@ pub use trace::TrainingEvent;
 pub use display_types::cea861::hdmi_forum::HdmiForumFrl;
 pub use hdmi_hal::phy::{
     EqParams, FrlOutput, HdmiPhy, LaneEqParams, LanePatterns, LtpPattern, TxFfeLevel,
+    TxFfeRestrictions,
 };
 #[cfg(feature = "alloc")]
 pub use trace::TrainingTrace;

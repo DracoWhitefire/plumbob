@@ -42,6 +42,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   everything a compliance tester set. plumbob acts on `flt_no_timeout` as before;
   `frl_max` and `dsc_frl_max` are for the layer that builds the rate list.
 
+### Added
+
+- **The tester's TxFFE restrictions reach the PHY.** The three TxFFE bits of
+  `Source_Test_Configuration` (pre-shoot only, de-emphasis only, no FFE) go to
+  `HdmiPhy::adjust_equalization` as hdmi-hal's `TxFfeRestrictions`, with every
+  equalization of the attempt; when a `Source_Test_Update` in LTS:3 changes them, plumbob
+  re-sends the lanes' levels with the new restrictions at once. How to combine the bits is
+  the PHY's (see hdmi-hal 0.5.1). `TxFfeRestrictions` is re-exported. Requires hdmi-hal
+  0.5.1.
+
 ### Changed
 
 - **Stopping training early is documented as the `ScdcClient`'s job.** A wall-clock

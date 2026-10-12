@@ -7,7 +7,7 @@ use crate::lts::{FLT_UPDATE, FRL_START, Lanes, SOURCE_TEST_UPDATE};
 use crate::types::LtpReq;
 use crate::types::SourceTestConfig;
 use crate::warning::{Trained, TrainingWarning};
-use hdmi_hal::phy::LtpPattern;
+use hdmi_hal::phy::{LtpPattern, TxFfeRestrictions};
 
 const RATE: HdmiForumFrl = HdmiForumFrl::Rate6Gbps4Lanes;
 
@@ -81,6 +81,17 @@ fn ltp_sent(phy: &SimPhy) -> Vec<LanePatterns> {
             _ => None,
         })
         .skip(1)
+        .collect()
+}
+
+/// The TxFFE restrictions of each `adjust_equalization` call.
+fn restrictions_sent(phy: &SimPhy) -> Vec<TxFfeRestrictions> {
+    phy.calls
+        .iter()
+        .filter_map(|call| match call {
+            PhyCall::AdjustEqualization(eq) => Some(eq.tx_ffe_restrictions),
+            _ => None,
+        })
         .collect()
 }
 
@@ -1239,6 +1250,71 @@ fn flt_no_timeout_set_during_lts_3_suspends_its_limit() {
     assert_eq!(
         count(&sink, |c| matches!(c, SinkCall::ReadSourceTestConfig(_))),
         2
+    );
+}
+
+// --- TxFFE restrictions
+
+const DE_EMPHASIS_ONLY: SourceTestConfig =
+    SourceTestConfig::new(false, true, false, false, false, false);
+const PRE_SHOOT_ONLY: SourceTestConfig =
+    SourceTestConfig::new(true, false, false, false, false, false);
+
+#[test]
+fn restrictions_read_in_lts_2_go_with_every_equalization() {
+    let sink = SimSink::new()
+        .source_test(DE_EMPHASIS_ONLY)
+        .flt_ready_after(0)
+        .round(0, all(LtpReq::Lfsr0))
+        .round(0, all(LtpReq::FfeChange))
+        .round(0, all(LtpReq::None))
+        .frl_start_after(0);
+    let (outcome, _, phy) = run(sink, &[RATE], &TrainingConfig::default());
+    assert!(matches!(outcome, TrainingOutcome::Success { .. }));
+    let de_emphasis_only = TxFfeRestrictions::new(false, true, false);
+    // The first equalization after the rate is configured, and the TxFFE raise.
+    assert_eq!(
+        restrictions_sent(&phy),
+        [de_emphasis_only, de_emphasis_only]
+    );
+}
+
+#[test]
+fn a_restriction_changed_in_lts_3_is_sent_at_once_with_the_levels_held() {
+    let sink = SimSink::new()
+        .flt_ready_after(0)
+        .round(0, all(LtpReq::Lfsr0))
+        .round(0, all(LtpReq::FfeChange))
+        .round_with_source_test(0, all(LtpReq::Lfsr1), PRE_SHOOT_ONLY)
+        .round(0, all(LtpReq::None))
+        .frl_start_after(0);
+    let (outcome, _, phy) = run(sink, &[RATE], &TrainingConfig::default());
+    assert!(matches!(outcome, TrainingOutcome::Success { .. }));
+    let none = TxFfeRestrictions::default();
+    let pre_shoot_only = TxFfeRestrictions::new(true, false, false);
+    assert_eq!(restrictions_sent(&phy), [none, none, pre_shoot_only]);
+    // The raise to level 1, then the same levels again with the new restriction.
+    assert_eq!(levels_sent(&phy), [[1; 4], [1; 4]]);
+}
+
+#[test]
+fn an_unchanged_restriction_is_not_sent_again() {
+    let sink = SimSink::new()
+        .source_test(PRE_SHOOT_ONLY)
+        .flt_ready_after(0)
+        .round_with_source_test(0, all(LtpReq::Lfsr0), PRE_SHOOT_ONLY)
+        .round(0, all(LtpReq::None))
+        .frl_start_after(0);
+    let (outcome, sink, phy) = run(sink, &[RATE], &TrainingConfig::default());
+    assert!(matches!(outcome, TrainingOutcome::Success { .. }));
+    assert_eq!(
+        count(&sink, |c| matches!(c, SinkCall::ReadSourceTestConfig(_))),
+        2
+    );
+    // Only the equalization after the rate is configured.
+    assert_eq!(
+        restrictions_sent(&phy),
+        [TxFfeRestrictions::new(true, false, false)]
     );
 }
 
@@ -2596,11 +2672,12 @@ mod traced {
 fn the_training_future_stays_within_its_size_budget() {
     // Without `alloc`, `Trained` carries its warnings inline (`MAX_WARNINGS` slots).
     // Raised by 8 for the `FLT_no_timeout` tracking that holds the link after an error
-    // under test.
+    // under test, and by 16 for the tester's TxFFE restrictions (held for the attempt and
+    // re-sent to the PHY when a `Source_Test_Update` changes them in LTS:3).
     #[cfg(feature = "alloc")]
-    const BUDGET: usize = 392;
+    const BUDGET: usize = 408;
     #[cfg(not(feature = "alloc"))]
-    const BUDGET: usize = 416;
+    const BUDGET: usize = 432;
     let (mut scdc, mut phy) = (SimSink::new(), SimPhy::new());
     let mut io = SyncIo {
         scdc: &mut scdc,

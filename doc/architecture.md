@@ -121,7 +121,8 @@ The number of active lanes follows from the rate: 3 for `Rate3Gbps3Lanes` and
 
 1. Read `SourceTestConfig`, and clear `UpdateFlags::source_test_update` if it is set.
    `flt_no_timeout` (compliance testing) replaces the poll limits of LTS:2, LTS:3 and LTS:P
-   with `TrainingConfig::no_timeout_poll_cap` (see below). The configuration is read on
+   with `TrainingConfig::no_timeout_poll_cap` (see below). The TxFFE bits become the
+   `TxFfeRestrictions` sent with every `adjust_equalization` of the attempt. The configuration is read on
    every attempt, not only when the update flag is set: a tester sets `FLT_no_timeout`
    and leaves it, while the flag is cleared by the first attempt that sees it. The Xilinx
    and AMD drivers read it unconditionally too. In LTS:3 it is re-read when the flag is
@@ -153,7 +154,9 @@ always what the PHY was last told: LTS:2 leaves every lane with no pattern and T
 `TrainingConfig::ltp_polls` times:
 
 1. Read `UpdateFlags`. If `flt_update` is not set, poll again.
-2. If `source_test_update` is set, re-read `SourceTestConfig` and clear the flag.
+2. If `source_test_update` is set, re-read `SourceTestConfig` and clear the flag. If its
+   TxFFE bits changed, call `adjust_equalization` at once with the levels the lanes have
+   and the new restrictions.
 3. Read the per-lane requests (`LtpRequests`) and act on the active lanes:
    - **all 0x0** — training passed: go to LTS:P.
    - **all 0xF** — the sink requests a lower rate: go to LTS:4.
@@ -679,7 +682,7 @@ The full training state machine is available. `FrlTrainer<C, P>` is stack-alloca
 (`LtpReq`, `LtpRequests`, `FfeLevels`, `UpdateFlags`, `CedCounters`, …) are stack-allocated. No heap
 use anywhere in the training loop. This tier covers bare-metal and firmware targets.
 
-The training future is 416 bytes in this tier, and 392 with `alloc` (where `Trained`
+The training future is 432 bytes in this tier, and 408 with `alloc` (where `Trained`
 holds its warnings in a `Vec` rather than inline), measured over the sync driver's I/O
 with zero-sized error types and Rust 1.94 (larger error types add their size); an `async` I/O implementation adds the size of its own futures. Where it
 lives depends on the driver: `FrlTrainer` (sync) keeps it on the caller's stack for the

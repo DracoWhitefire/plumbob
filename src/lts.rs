@@ -12,7 +12,9 @@
 use core::cell::Cell;
 
 use display_types::cea861::hdmi_forum::HdmiForumFrl;
-use hdmi_hal::phy::{EqParams, FrlOutput, LaneEqParams, LanePatterns, LtpPattern, TxFfeLevel};
+use hdmi_hal::phy::{
+    EqParams, FrlOutput, LaneEqParams, LanePatterns, LtpPattern, TxFfeLevel, TxFfeRestrictions,
+};
 
 use crate::trace::TrainingEvent;
 use crate::training::{
@@ -321,11 +323,21 @@ struct Attempt {
     lanes: Lanes,
     /// The sink's `FLT_no_timeout`, as last read.
     no_timeout: bool,
+    /// The TxFFE restrictions in `Source_Test_Configuration`, as last read. Sent to the PHY
+    /// with every equalization.
+    restrictions: TxFfeRestrictions,
     /// Returns from LTS:P to LTS:3 so far.
     retrains: u32,
 }
 
 impl Attempt {
+    /// The equalization for the PHY: each lane's TxFFE level, within the restrictions.
+    fn eq_params(&self) -> EqParams {
+        let mut params = self.lanes.eq_params();
+        params.tx_ffe_restrictions = self.restrictions;
+        params
+    }
+
     /// The poll limit for LTS:2, LTS:3 and LTS:P: `normal`, or the cap while the sink
     /// sets `FLT_no_timeout`.
     fn limit(&self, config: &TrainingConfig, normal: u32) -> u32 {
@@ -436,6 +448,7 @@ impl<Io: TrainingIo> Machine<'_, Io> {
             rate,
             lanes: Lanes::new(rate),
             no_timeout: false,
+            restrictions: TxFfeRestrictions::default(),
             retrains: 0,
         };
         let mut state = State::Prepare;
@@ -474,6 +487,7 @@ impl<Io: TrainingIo> Machine<'_, Io> {
         // earlier attempt. The Xilinx and AMD drivers read it unconditionally too (Xilinx
         // also re-reads it while waiting for FLT_ready; plumbob does not).
         let update = self.read_update_flags().await?.source_test_update;
+        // The PHY gets the restrictions with its first equalization, in `configure_rate`.
         self.read_source_test(attempt, update, record).await?;
 
         let limit = attempt.limit(config, config.flt_ready_polls);
@@ -511,7 +525,7 @@ impl<Io: TrainingIo> Machine<'_, Io> {
             .map_err(Fault::Phy)?;
         // After the rate change, so a PHY that resets its lanes or leaves a bring-up
         // pattern running still ends up with what the lane model holds.
-        self.adjust_equalization(attempt.lanes.eq_params()).await?;
+        self.adjust_equalization(attempt.eq_params()).await?;
         self.send_ltp(attempt.lanes.patterns()).await?;
         self.set_frl_output(FrlOutput::GapOnly).await?;
 
@@ -549,8 +563,11 @@ impl<Io: TrainingIo> Machine<'_, Io> {
             if !flags.flt_update {
                 continue;
             }
-            if flags.source_test_update {
-                self.read_source_test(attempt, true, record).await?;
+            // A tester can change the TxFFE restrictions mid-training (the reference
+            // drivers apply them while the sink requests the DDE compliance pattern): the
+            // PHY gets them at once, with the levels it has.
+            if flags.source_test_update && self.read_source_test(attempt, true, record).await? {
+                self.adjust_equalization(attempt.eq_params()).await?;
             }
 
             let requests = self.io.read_ltp_requests().await.map_err(Fault::Scdc)?;
@@ -572,7 +589,7 @@ impl<Io: TrainingIo> Machine<'_, Io> {
                 .apply(requests, attempt.no_timeout, max_level, record);
             self.send_ltp(attempt.lanes.patterns()).await?;
             if ffe_changed {
-                self.adjust_equalization(attempt.lanes.eq_params()).await?;
+                self.adjust_equalization(attempt.eq_params()).await?;
             }
             self.clear(FLT_UPDATE).await?;
         }
@@ -720,26 +737,33 @@ impl<Io: TrainingIo> Machine<'_, Io> {
     }
 
     /// Reads `Source_Test_Configuration` into the attempt, and clears `Source_Test_Update`
-    /// if `update` says it is set.
+    /// if `update` says it is set. Returns whether the TxFFE restrictions changed.
     async fn read_source_test<F: FnMut(TrainingEvent)>(
         &mut self,
         attempt: &mut Attempt,
         update: bool,
         record: &mut F,
-    ) -> Result<(), Failure<Io>> {
+    ) -> Result<bool, Failure<Io>> {
         let source_test = self
             .io
             .read_source_test_config()
             .await
             .map_err(Fault::Scdc)?;
         attempt.no_timeout = source_test.flt_no_timeout;
+        let restrictions = TxFfeRestrictions::new(
+            source_test.txffe_pre_shoot_only,
+            source_test.txffe_de_emphasis_only,
+            source_test.txffe_no_ffe,
+        );
+        let changed = restrictions != attempt.restrictions;
+        attempt.restrictions = restrictions;
         record(TrainingEvent::SourceTestConfigRead {
             config: source_test,
         });
         if update {
             self.clear(SOURCE_TEST_UPDATE).await?;
         }
-        Ok(())
+        Ok(changed)
     }
 
     async fn read_update_flags(&mut self) -> Result<UpdateFlags, Failure<Io>> {

@@ -65,7 +65,11 @@ default by setting fields.
 
 `SourceTestConfig` is the whole `Source_Test_Configuration` register: the six bits a
 compliance tester sets for the source, in bit order, as in culvert. The trace records all
-of them (`SourceTestConfigRead { config }`). The state machine acts on `flt_no_timeout`.
+of them (`SourceTestConfigRead { config }`). The state machine acts on `flt_no_timeout`,
+and passes the three TxFFE bits to the PHY as `TxFfeRestrictions` with every
+`adjust_equalization`, re-sending them as soon as a `Source_Test_Update` in LTS:3 changes
+them. How the PHY combines them is its own (hdmi-hal documents why: the reference drivers
+disagree).
 `frl_max` and `dsc_frl_max` ask the source to train at its highest rate (with DSC, for the
 latter); the rate list is the caller's, so the layer that builds it reads the register
 before training and honours them there, as the AMD driver does during rate selection.

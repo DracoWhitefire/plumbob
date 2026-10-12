@@ -127,7 +127,7 @@ synchronously. One more test checks the driver's guard by running `block_on` ove
 future that waits once — impossible over the sync adapter — with the trainer's own output
 type: it panics rather than dropping the attempt.
 
-A size test keeps the training future within a budget (416 bytes without `alloc`, 392
+A size test keeps the training future within a budget (432 bytes without `alloc`, 408
 with it, over the simulator's zero-sized error types), so a change that grows it fails until the budget is raised on purpose. CI runs
 the tests with the `std` feature and again with no features, so both budgets are
 checked.
