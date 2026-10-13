@@ -1,4 +1,6 @@
-use crate::types::{CedCounters, FrlConfig, LtpRequests, SourceTestConfig, UpdateFlags};
+use crate::types::{
+    CedCounters, ClearableUpdateFlags, FrlConfig, LtpRequests, SourceTestConfig, UpdateFlags,
+};
 
 /// Typed SCDC interface required by the link training state machine, one method per
 /// register operation it performs.
@@ -28,6 +30,20 @@ use crate::types::{CedCounters, FrlConfig, LtpRequests, SourceTestConfig, Update
 ///   how long each call takes and therefore how much wall time a poll represents; the
 ///   default limits assume one poll every 2 ms. Sleeping or yielding inside these
 ///   methods is the correct place to enforce that interval.
+///
+/// - **Stopping early.** The polled methods are also where a wall-clock deadline, a
+///   cancel flag or any other reason to stop belongs. Return one error of your own from a
+///   polled read, then let every later call through: training stops, LTS:L returns the
+///   link to TMDS, and `train` returns
+///   [`TrainingError::Scdc`](crate::TrainingError::Scdc) with that error and
+///   `TmdsExit::Exited`. LTS:L's own `read_update_flags` is a single read, not a poll, but
+///   it is the same method, so never fail a read made after a
+///   [`write_frl_config`](Self::write_frl_config) with `HdmiForumFrl::NotSupported`
+///   (LTS:L's first SCDC write; a later write with an FRL rate starts training again): a
+///   deadline that passes while the attempt is already ending then lets it end with its
+///   own result. The exit is `TmdsExit::Skipped` with
+///   `TrainingConfig::exit_to_tmds_on_error` off, and `TmdsExit::HeldUnderTest` (the link
+///   left as it is) while the sink sets `FLT_no_timeout`.
 pub trait ScdcClient {
     /// Error type returned by SCDC operations.
     type Error;
@@ -35,12 +51,13 @@ pub trait ScdcClient {
     /// Read `FLT_ready` (`Status_Flags_0` bit 6).
     fn read_flt_ready(&mut self) -> Result<bool, Self::Error>;
 
-    /// Read the `Update_0` flags the state machine uses (bits 3–5).
+    /// Read `Update_0` (0x10): all seven flags, whether or not the state machine acts on
+    /// them.
     fn read_update_flags(&mut self) -> Result<UpdateFlags, Self::Error>;
 
     /// Clear the given `Update_0` flags (write 1 to clear). Flags that are `false` are
-    /// left as they are.
-    fn clear_update_flags(&mut self, flags: UpdateFlags) -> Result<(), Self::Error>;
+    /// left as they are; plumbob passes only the flags it acts on.
+    fn clear_update_flags(&mut self, flags: ClearableUpdateFlags) -> Result<(), Self::Error>;
 
     /// Read the per-lane link training requests from `Status_Flags_1/2`. Undefined values
     /// (0x9–0xD) are [`LtpReq::Reserved`](crate::LtpReq::Reserved), not an error: whether

@@ -15,7 +15,10 @@ use display_types::cea861::hdmi_forum::HdmiForumFrl;
 use hdmi_hal::phy::{EqParams, FrlOutput, HdmiPhy, LanePatterns};
 
 use crate::scdc::ScdcClient;
-use crate::types::{CedCounters, FrlConfig, LtpReq, LtpRequests, SourceTestConfig, UpdateFlags};
+use crate::types::{
+    CedCounters, ClearableUpdateFlags, FrlConfig, LtpReq, LtpRequests, SourceTestConfig,
+    UpdateFlags,
+};
 
 /// The same request on all four lanes.
 pub fn all(req: LtpReq) -> LtpRequests {
@@ -66,7 +69,7 @@ pub enum SinkOp {
 pub enum SinkCall {
     ReadFltReady(bool),
     ReadUpdateFlags(UpdateFlags),
-    ClearUpdateFlags(UpdateFlags),
+    ClearUpdateFlags(ClearableUpdateFlags),
     ReadLtpRequests(LtpRequests),
     ReadSourceTestConfig(SourceTestConfig),
     WriteConfig0Defaults,
@@ -100,6 +103,10 @@ pub struct SimSink {
     update_polls: u32,
     rounds_posted: usize,
     flags: UpdateFlags,
+    /// A `Source_Test_Configuration` change on its own (no round): after this many
+    /// `Update_0` reads since `Config_1`, the sink writes it and sets `Source_Test_Update`.
+    source_test_change: Option<(u32, SourceTestConfig)>,
+    configured_reads: u32,
 
     /// Every call received, in order. Failed calls are not recorded.
     pub calls: Vec<SinkCall>,
@@ -142,6 +149,23 @@ impl SimSink {
     /// (counting from 0) is posted. The sink's final `FRL_start` is not used up by it.
     pub fn frl_start_with_round(mut self, index: usize) -> Self {
         self.frl_start_with_round = Some(index);
+        self
+    }
+
+    /// After `reads` reads of `Update_0` since `Config_1` was written, the sink writes
+    /// `config` and sets `Source_Test_Update` alone, without `FLT_update`.
+    pub fn source_test_after(mut self, reads: u32, config: SourceTestConfig) -> Self {
+        self.source_test_change = Some((reads, config));
+        self
+    }
+
+    /// The sink also sets the `Update_0` flags training does not act on (`status_update`,
+    /// `ced_update`, `rr_test`, `rsed_update`) that are set in `flags`, from the start.
+    pub fn other_flags(mut self, flags: UpdateFlags) -> Self {
+        self.flags.status_update |= flags.status_update;
+        self.flags.ced_update |= flags.ced_update;
+        self.flags.rr_test |= flags.rr_test;
+        self.flags.rsed_update |= flags.rsed_update;
         self
     }
 
@@ -205,6 +229,14 @@ impl ScdcClient for SimSink {
     fn read_update_flags(&mut self) -> Result<UpdateFlags, ()> {
         self.check(SinkOp::ReadUpdateFlags)?;
         if self.configured {
+            if let Some((reads, config)) = self.source_test_change {
+                if self.configured_reads >= reads {
+                    self.source_test = config;
+                    self.flags.source_test_update = true;
+                    self.source_test_change = None;
+                }
+            }
+            self.configured_reads += 1;
             match self.rounds.front().copied() {
                 Some(round) if !self.flags.flt_update && self.update_polls >= round.after_polls => {
                     self.flags.flt_update = true;
@@ -229,7 +261,7 @@ impl ScdcClient for SimSink {
         Ok(self.flags)
     }
 
-    fn clear_update_flags(&mut self, flags: UpdateFlags) -> Result<(), ()> {
+    fn clear_update_flags(&mut self, flags: ClearableUpdateFlags) -> Result<(), ()> {
         self.check(SinkOp::ClearUpdateFlags)?;
         if flags.flt_update && self.flags.flt_update {
             self.flags.flt_update = false;
@@ -245,6 +277,10 @@ impl ScdcClient for SimSink {
             }
         }
         self.flags.source_test_update &= !flags.source_test_update;
+        // Flags training does not act on clear like any other.
+        self.flags.status_update &= !flags.status_update;
+        self.flags.ced_update &= !flags.ced_update;
+        self.flags.rsed_update &= !flags.rsed_update;
         self.log_call(SinkCall::ClearUpdateFlags(flags));
         Ok(())
     }
@@ -273,7 +309,7 @@ impl ScdcClient for SimSink {
 
     fn write_frl_config(&mut self, config: FrlConfig) -> Result<(), ()> {
         self.check(SinkOp::WriteFrlConfig)?;
-        self.configured = config.rate != HdmiForumFrl::NotSupported;
+        self.configured = config.frl_rate != HdmiForumFrl::NotSupported;
         self.update_polls = 0;
         self.log_call(SinkCall::WriteFrlConfig(config));
         Ok(())
@@ -424,16 +460,12 @@ mod tests {
     use super::*;
     use crate::types::FfeLevels;
 
-    const FLT_UPDATE: UpdateFlags = UpdateFlags {
-        source_test_update: false,
-        frl_start: false,
-        flt_update: true,
-    };
+    use crate::lts::FLT_UPDATE;
 
     /// Writes `Config_1` with an FRL rate, which starts the sink's rounds.
     fn configured(mut sink: SimSink) -> SimSink {
         sink.write_frl_config(FrlConfig {
-            rate: HdmiForumFrl::Rate6Gbps4Lanes,
+            frl_rate: HdmiForumFrl::Rate6Gbps4Lanes,
             ffe_levels: FfeLevels::default(),
         })
         .unwrap();
@@ -510,11 +542,7 @@ mod tests {
         sink.clear_update_flags(FLT_UPDATE).unwrap();
         assert!(!sink.read_update_flags().unwrap().frl_start);
         assert!(sink.read_update_flags().unwrap().frl_start);
-        sink.clear_update_flags(UpdateFlags {
-            frl_start: true,
-            ..UpdateFlags::default()
-        })
-        .unwrap();
+        sink.clear_update_flags(crate::lts::FRL_START).unwrap();
         assert!(!sink.read_update_flags().unwrap().frl_start);
     }
 
@@ -525,7 +553,7 @@ mod tests {
             .frl_start_after(0);
         assert!(!sink.read_update_flags().unwrap().flt_update);
         sink.write_frl_config(FrlConfig {
-            rate: HdmiForumFrl::NotSupported,
+            frl_rate: HdmiForumFrl::NotSupported,
             ffe_levels: FfeLevels::default(),
         })
         .unwrap();
@@ -536,9 +564,7 @@ mod tests {
 
     #[test]
     fn round_with_source_test_changes_the_configuration() {
-        let config = SourceTestConfig {
-            flt_no_timeout: true,
-        };
+        let config = SourceTestConfig::new(false, false, false, true, false, false);
         let mut sink =
             configured(SimSink::new().round_with_source_test(0, all(LtpReq::NyquistClock), config));
         let flags = sink.read_update_flags().unwrap();
@@ -558,17 +584,12 @@ mod tests {
 
     #[test]
     fn source_test_sets_update_until_cleared() {
-        let config = SourceTestConfig {
-            flt_no_timeout: true,
-        };
+        let config = SourceTestConfig::new(false, false, false, true, false, false);
         let mut sink = SimSink::new().source_test(config);
         assert!(sink.read_update_flags().unwrap().source_test_update);
         assert_eq!(sink.read_source_test_config(), Ok(config));
-        sink.clear_update_flags(UpdateFlags {
-            source_test_update: true,
-            ..UpdateFlags::default()
-        })
-        .unwrap();
+        sink.clear_update_flags(crate::lts::SOURCE_TEST_UPDATE)
+            .unwrap();
         assert!(!sink.read_update_flags().unwrap().source_test_update);
     }
 
@@ -586,7 +607,7 @@ mod tests {
     #[test]
     fn sink_records_calls_in_order() {
         let config = FrlConfig {
-            rate: HdmiForumFrl::Rate6Gbps4Lanes,
+            frl_rate: HdmiForumFrl::Rate6Gbps4Lanes,
             ffe_levels: FfeLevels::default(),
         };
         let mut sink = SimSink::new();
@@ -615,7 +636,7 @@ mod tests {
     #[test]
     fn sink_fails_the_chosen_operation_only() {
         let config = FrlConfig {
-            rate: HdmiForumFrl::Rate6Gbps4Lanes,
+            frl_rate: HdmiForumFrl::Rate6Gbps4Lanes,
             ffe_levels: FfeLevels::default(),
         };
         let ops = [
@@ -633,7 +654,7 @@ mod tests {
             let results = [
                 sink.read_flt_ready().map(drop),
                 sink.read_update_flags().map(drop),
-                sink.clear_update_flags(UpdateFlags::default()),
+                sink.clear_update_flags(ClearableUpdateFlags::default()),
                 sink.read_ltp_requests().map(drop),
                 sink.read_source_test_config().map(drop),
                 sink.write_config_0_defaults(),
@@ -705,7 +726,7 @@ mod tests {
     #[test]
     fn frl_start_with_round_raises_both_flags_and_keeps_the_final_start() {
         let config = FrlConfig {
-            rate: HdmiForumFrl::Rate6Gbps4Lanes,
+            frl_rate: HdmiForumFrl::Rate6Gbps4Lanes,
             ffe_levels: FfeLevels::default(),
         };
         let mut sink = SimSink::new()

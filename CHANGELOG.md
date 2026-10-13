@@ -7,6 +7,83 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking changes
+
+- **Every struct variant of `TrainingOutcome`, `TrainingError`, `TrainingWarning` and
+  `TrainingEvent` is `#[non_exhaustive]`**, so a later release can add a field to one
+  without breaking callers. Patterns need `..` (`TrainingOutcome::Success { achieved_rate,
+  .. }`), and code outside plumbob can no longer build these variants: tests that compare
+  an outcome, error or trace with `assert_eq!` against a constructed value match on it
+  instead (`matches!`, or a pattern with `..`).
+- **`Trained`'s warnings are private, and its API no longer depends on the `alloc`
+  feature.** The public `warnings` field (a `Vec` with `alloc`, an
+  `[Option<TrainingWarning>; MAX_WARNINGS]` without) and `num_warnings` (without `alloc`)
+  are gone; read the warnings with the new `warnings()` (a slice, in every build) or
+  `iter_warnings()`. `Trained` is no longer `Copy` without `alloc`. Cargo enables a
+  feature for every crate in a build that one of them asks for, so code written against a
+  bare `no_std` plumbob used to stop compiling as soon as another dependency enabled
+  `alloc`; now both builds have the same API and traits.
+- **`FrlConfig::rate` is renamed `frl_rate`**, after the `Config_1` field (`FRL_Rate`) and
+  culvert's `FrlConfig`, which plumbob's SCDC types now mirror.
+- **`LtpRequests`, `CedCounters` and `FrlConfig` are `#[non_exhaustive]`**, with `new(…)`
+  constructors (`LtpRequests::new` and `CedCounters::new` take the lanes in order,
+  `FrlConfig::new` the rate and the FFE levels), mirroring culvert's types; `LtpRequests`
+  also gains `all_trained()`, as in culvert. Code outside plumbob builds them with `new`
+  instead of a struct expression (an `ScdcClient` returns `LtpRequests` and
+  `CedCounters`); reading the fields is unchanged.
+- **`UpdateFlags` has all seven `Update_0` flags, and clears take a `ClearableUpdateFlags`**,
+  mirroring culvert. `UpdateFlags` gains `status_update`, `ced_update`, `rr_test` and
+  `rsed_update`, so an `ScdcClient` reports the whole register; it is `#[non_exhaustive]`
+  (room for a later flag in bit 7), with `UpdateFlags::new` (flags in bit order) and
+  `clearable()`. `ScdcClient::clear_update_flags` takes the new `ClearableUpdateFlags`:
+  every flag but `RR_Test`, which the source never clears. plumbob still acts on, and
+  clears, only `source_test_update`, `frl_start` and `flt_update`. Implementations of
+  `ScdcClient` change `clear_update_flags`'s signature, and fill every `UpdateFlags` field
+  in `read_update_flags` (with `new`, or by setting fields on the default). The public
+  `lts::TrainingIo` changes the same way: `clear_update_flags` takes a
+  `ClearableUpdateFlags`.
+- **`SourceTestConfig` has all six `Source_Test_Configuration` bits, and the trace records
+  them**, mirroring culvert. It gains `txffe_pre_shoot_only`, `txffe_de_emphasis_only`,
+  `txffe_no_ffe`, `dsc_frl_max` and `frl_max`, is `#[non_exhaustive]`, and has
+  `SourceTestConfig::new` (bits in bit order). `TrainingEvent::SourceTestConfigRead` carries
+  the register as read (`config`) instead of `flt_no_timeout` alone, so the trace shows
+  everything a compliance tester set. plumbob acts on `flt_no_timeout` as before;
+  `frl_max` and `dsc_frl_max` are for the layer that builds the rate list.
+
+### Added
+
+- **The tester's TxFFE restrictions reach the PHY.** The three TxFFE bits of
+  `Source_Test_Configuration` (pre-shoot only, de-emphasis only, no FFE) go to
+  `HdmiPhy::adjust_equalization` as hdmi-hal's `TxFfeRestrictions`, with every
+  equalization of the attempt; when a `Source_Test_Update` seen on any LTS:3 or LTS:P
+  poll changes them, plumbob re-sends the lanes' levels with the new restrictions at once.
+  A `Source_Test_Update` is now handled on every such poll, also without `FLT_update` and
+  in LTS:P before `FRL_start` can end training; previously LTS:3 only looked at it
+  together with `FLT_update`, and LTS:P not at all, which also delayed `FLT_no_timeout`
+  changes. How to combine the bits is
+  the PHY's (see hdmi-hal 0.5.1). `TxFfeRestrictions` is re-exported. Requires hdmi-hal
+  0.5.1.
+
+### Changed
+
+- **Stopping training early is documented as the `ScdcClient`'s job.** A wall-clock
+  deadline, a cancel flag or any other reason to stop belongs in the polled reads, which
+  already wait the poll interval: fail one of them with an error of your own and let
+  every later call through, and `train` stops, returns the link to TMDS through LTS:L and
+  reports `TrainingError::Scdc` with that error (unless `exit_to_tmds_on_error` is off, or
+  the sink sets `FLT_no_timeout`). LTS:L's own `read_update_flags` is the same method, so a
+  client never fails a read made after `write_frl_config` with `NotSupported`, LTS:L's
+  first write. `ScdcClient`'s documentation, the README and architecture.md ("How long one
+  `train` call can take") describe it, and tests cover it, including a deadline that
+  lands on LTS:L's read. plumbob gets no separate stop hook: the poll interval, the poll limits,
+  `no_timeout_poll_cap` and `max_retrains` already bound a call.
+- **The documentation describes the SCDC types as mirrored**: architecture.md ("Type
+  ownership and the culvert boundary") and model.md no longer list differences from
+  culvert's types, and architecture.md says where `FRL_Max` and `DSC_FRL_Max` are handled
+  (rate selection, before training; with both set, Amlogic and NVIDIA act on neither and
+  AMD trains at the maximum rate). `doc/roadmap.md` drops its "Released" section (this changelog is the record)
+  and the finished "Mirrored SCDC types" entry.
+
 ## [0.2.0] - 2026-10-11
 
 ### Breaking changes

@@ -7,7 +7,7 @@ use crate::lts::{FLT_UPDATE, FRL_START, Lanes, SOURCE_TEST_UPDATE};
 use crate::types::LtpReq;
 use crate::types::SourceTestConfig;
 use crate::warning::{Trained, TrainingWarning};
-use hdmi_hal::phy::LtpPattern;
+use hdmi_hal::phy::{LtpPattern, TxFfeRestrictions};
 
 const RATE: HdmiForumFrl = HdmiForumFrl::Rate6Gbps4Lanes;
 
@@ -22,15 +22,17 @@ fn uniform(count: usize, pattern: Option<LtpPattern>) -> LanePatterns {
     }
 }
 
-const NO_FLAGS: UpdateFlags = UpdateFlags {
-    source_test_update: false,
-    frl_start: false,
-    flt_update: false,
-};
+const NO_FLAGS: UpdateFlags = UpdateFlags::new(false, false, false, false, false, false, false);
 
-const NO_TIMEOUT: SourceTestConfig = SourceTestConfig {
-    flt_no_timeout: true,
-};
+/// `Update_0` as read with only `FLT_update` set.
+const READ_FLT_UPDATE: UpdateFlags =
+    UpdateFlags::new(false, false, false, false, false, true, false);
+
+/// `Update_0` as read with only `FRL_start` set.
+const READ_FRL_START: UpdateFlags =
+    UpdateFlags::new(false, false, false, false, true, false, false);
+
+const NO_TIMEOUT: SourceTestConfig = SourceTestConfig::new(false, false, false, true, false, false);
 
 fn run(
     sink: SimSink,
@@ -79,6 +81,17 @@ fn ltp_sent(phy: &SimPhy) -> Vec<LanePatterns> {
             _ => None,
         })
         .skip(1)
+        .collect()
+}
+
+/// The TxFFE restrictions of each `adjust_equalization` call.
+fn restrictions_sent(phy: &SimPhy) -> Vec<TxFfeRestrictions> {
+    phy.calls
+        .iter()
+        .filter_map(|call| match call {
+            PhyCall::AdjustEqualization(eq) => Some(eq.tx_ffe_restrictions),
+            _ => None,
+        })
         .collect()
 }
 
@@ -167,21 +180,21 @@ fn trains_through_lts_2_3_and_p() {
             SinkCall::ClearUpdateFlags(flt_update),
             SinkCall::WriteConfig0Defaults,
             SinkCall::WriteFrlConfig(FrlConfig {
-                rate: RATE,
+                frl_rate: RATE,
                 ffe_levels: FfeLevels::new(3).unwrap(),
             }),
             // LTS:3
-            SinkCall::ReadUpdateFlags(flt_update),
+            SinkCall::ReadUpdateFlags(READ_FLT_UPDATE),
             SinkCall::ReadLtpRequests(all(LtpReq::Lfsr0)),
             SinkCall::ClearUpdateFlags(flt_update),
             SinkCall::ReadUpdateFlags(NO_FLAGS),
             SinkCall::ReadUpdateFlags(NO_FLAGS),
-            SinkCall::ReadUpdateFlags(flt_update),
+            SinkCall::ReadUpdateFlags(READ_FLT_UPDATE),
             SinkCall::ReadLtpRequests(all(LtpReq::None)),
             // LTS:P
             SinkCall::ClearUpdateFlags(flt_update),
             SinkCall::ReadUpdateFlags(NO_FLAGS),
-            SinkCall::ReadUpdateFlags(frl_start),
+            SinkCall::ReadUpdateFlags(READ_FRL_START),
             SinkCall::ClearUpdateFlags(frl_start),
         ]
     );
@@ -282,6 +295,47 @@ fn an_empty_rate_list_is_rejected_without_io() {
     assert!(phy.calls.is_empty());
 }
 
+#[test]
+fn only_the_flags_training_acts_on_are_cleared() {
+    // `full_sink` sets `Source_Test_Update` too, so one attempt clears all three.
+    let (result, sink, _) = run_with(full_sink(), SimPhy::new());
+    assert!(result.is_ok());
+    let clears: Vec<ClearableUpdateFlags> = sink
+        .calls
+        .iter()
+        .filter_map(|call| match call {
+            SinkCall::ClearUpdateFlags(flags) => Some(*flags),
+            _ => None,
+        })
+        .collect();
+    for flags in [SOURCE_TEST_UPDATE, FLT_UPDATE, FRL_START] {
+        assert!(clears.contains(&flags), "{flags:?}");
+    }
+    assert!(
+        clears
+            .iter()
+            .all(|c| [SOURCE_TEST_UPDATE, FLT_UPDATE, FRL_START].contains(c)),
+        "{clears:?}"
+    );
+}
+
+#[test]
+fn the_trace_records_every_source_test_bit() {
+    // TxFFE pre-shoot only (passed to the PHY), DSC_FRL_Max and FRL_Max (the caller's).
+    let config = SourceTestConfig::new(true, false, false, false, true, true);
+    let sink = full_sink().source_test(config);
+    let mut trainer = FrlTrainer::new(sink, SimPhy::new());
+    let mut events = Vec::new();
+    let result = trainer.train_with_events(&[RATE], &TrainingConfig::default(), &mut |event| {
+        events.push(event)
+    });
+    assert!(result.is_ok());
+    assert_eq!(
+        events.first(),
+        Some(&TrainingEvent::SourceTestConfigRead { config })
+    );
+}
+
 // --- LTS:2
 
 #[test]
@@ -327,7 +381,7 @@ fn ffe_levels_written_are_limited_for_the_rate() {
         .frl_start_after(0);
     let (_, sink, _) = run(sink, &[rate], &config);
     assert!(sink.calls.contains(&SinkCall::WriteFrlConfig(FrlConfig {
-        rate,
+        frl_rate: rate,
         ffe_levels: FfeLevels::new(3).unwrap(),
     })));
 }
@@ -771,7 +825,7 @@ fn frl_configs(sink: &SimSink) -> Vec<HdmiForumFrl> {
     sink.calls
         .iter()
         .filter_map(|call| match call {
-            SinkCall::WriteFrlConfig(config) => Some(config.rate),
+            SinkCall::WriteFrlConfig(config) => Some(config.frl_rate),
             _ => None,
         })
         .collect()
@@ -899,7 +953,7 @@ fn a_fallback_returns_both_ends_to_tmds() {
         sink.calls[sink.calls.len() - 2..],
         [
             SinkCall::WriteFrlConfig(FrlConfig {
-                rate: HdmiForumFrl::NotSupported,
+                frl_rate: HdmiForumFrl::NotSupported,
                 ffe_levels: FfeLevels::default(),
             }),
             // FLT_update is not set, so it is not cleared.
@@ -1196,6 +1250,244 @@ fn flt_no_timeout_set_during_lts_3_suspends_its_limit() {
     assert_eq!(
         count(&sink, |c| matches!(c, SinkCall::ReadSourceTestConfig(_))),
         2
+    );
+}
+
+// --- TxFFE restrictions
+
+const DE_EMPHASIS_ONLY: SourceTestConfig =
+    SourceTestConfig::new(false, true, false, false, false, false);
+const PRE_SHOOT_ONLY: SourceTestConfig =
+    SourceTestConfig::new(true, false, false, false, false, false);
+
+#[test]
+fn restrictions_read_in_lts_2_go_with_every_equalization() {
+    let sink = SimSink::new()
+        .source_test(DE_EMPHASIS_ONLY)
+        .flt_ready_after(0)
+        .round(0, all(LtpReq::Lfsr0))
+        .round(0, all(LtpReq::FfeChange))
+        .round(0, all(LtpReq::None))
+        .frl_start_after(0);
+    let (outcome, _, phy) = run(sink, &[RATE], &TrainingConfig::default());
+    assert!(matches!(outcome, TrainingOutcome::Success { .. }));
+    let de_emphasis_only = TxFfeRestrictions::new(false, true, false);
+    // The first equalization after the rate is configured, and the TxFFE raise.
+    assert_eq!(
+        restrictions_sent(&phy),
+        [de_emphasis_only, de_emphasis_only]
+    );
+}
+
+#[test]
+fn a_restriction_changed_in_lts_3_is_sent_at_once_with_the_levels_held() {
+    let sink = SimSink::new()
+        .flt_ready_after(0)
+        .round(0, all(LtpReq::Lfsr0))
+        .round(0, all(LtpReq::FfeChange))
+        .round_with_source_test(0, all(LtpReq::Lfsr1), PRE_SHOOT_ONLY)
+        .round(0, all(LtpReq::None))
+        .frl_start_after(0);
+    let (outcome, _, phy) = run(sink, &[RATE], &TrainingConfig::default());
+    assert!(matches!(outcome, TrainingOutcome::Success { .. }));
+    let none = TxFfeRestrictions::default();
+    let pre_shoot_only = TxFfeRestrictions::new(true, false, false);
+    assert_eq!(restrictions_sent(&phy), [none, none, pre_shoot_only]);
+    // The raise to level 1, then the same levels again with the new restriction.
+    assert_eq!(levels_sent(&phy), [[1; 4], [1; 4]]);
+}
+
+#[test]
+fn a_changed_restriction_is_sent_before_the_rounds_requests_are_acted_on() {
+    let sink = SimSink::new()
+        .flt_ready_after(0)
+        .round(0, all(LtpReq::Lfsr0))
+        .round_with_source_test(0, all(LtpReq::Lfsr1), PRE_SHOOT_ONLY)
+        .round(0, all(LtpReq::None))
+        .frl_start_after(0);
+    let (_, log) = logged(sink, &[R12]);
+    let next = calls_after(
+        &log,
+        Call::Sink(SinkCall::ReadSourceTestConfig(PRE_SHOOT_ONLY)),
+        5,
+    );
+    assert!(
+        matches!(
+            next,
+            [
+                Call::Sink(SinkCall::ClearUpdateFlags(SOURCE_TEST_UPDATE)),
+                Call::Phy(PhyCall::AdjustEqualization(eq)),
+                Call::Sink(SinkCall::ReadLtpRequests(_)),
+                Call::Phy(PhyCall::SendLtp(_)),
+                Call::Sink(SinkCall::ClearUpdateFlags(FLT_UPDATE)),
+            ] if eq.tx_ffe_restrictions == TxFfeRestrictions::new(true, false, false)
+        ),
+        "{next:?}"
+    );
+}
+
+#[test]
+fn restrictions_are_kept_across_a_rate_drop() {
+    let sink = SimSink::new()
+        .source_test(DE_EMPHASIS_ONLY)
+        .flt_ready_after(0)
+        .round(0, all(LtpReq::Lfsr0))
+        .round(0, all(LtpReq::RateChange))
+        .round(0, all(LtpReq::Lfsr0))
+        .round(0, all(LtpReq::FfeChange))
+        .round(0, all(LtpReq::None))
+        .frl_start_after(0);
+    let (outcome, _, phy) = run(sink, &[R12, R10], &TrainingConfig::default());
+    assert!(matches!(
+        outcome,
+        TrainingOutcome::Success {
+            achieved_rate: R10,
+            ..
+        }
+    ));
+    // Configured at 12 Gbps, at 10 Gbps after LTS:4, and the raise there.
+    let de_emphasis_only = TxFfeRestrictions::new(false, true, false);
+    assert_eq!(restrictions_sent(&phy), [de_emphasis_only; 3]);
+}
+
+#[test]
+fn restrictions_are_kept_across_a_retrain() {
+    let sink = SimSink::new()
+        .source_test(DE_EMPHASIS_ONLY)
+        .flt_ready_after(0)
+        .round(0, all(LtpReq::Lfsr0))
+        .round(0, all(LtpReq::None))
+        // Posted in LTS:P: the retrain, then a raise in the second LTS:3.
+        .round(0, all(LtpReq::Lfsr1))
+        .round(0, all(LtpReq::FfeChange))
+        .round(0, all(LtpReq::None))
+        .frl_start_after(0);
+    let (outcome, events, _, phy) = train_events(sink);
+    assert!(matches!(outcome, TrainingOutcome::Success { .. }));
+    assert!(events.contains(&TrainingEvent::RetrainRequested));
+    // Configured, and the raise after the retrain.
+    let de_emphasis_only = TxFfeRestrictions::new(false, true, false);
+    assert_eq!(restrictions_sent(&phy), [de_emphasis_only; 2]);
+}
+
+#[test]
+fn flags_training_does_not_act_on_stay_set() {
+    // Status_Update, CED_Update, RR_Test and RSED_Update, set throughout.
+    let others = UpdateFlags::new(true, true, true, false, false, false, true);
+    let (result, sink, _) = run_with(full_sink().other_flags(others), SimPhy::new());
+    assert!(matches!(result, Ok(TrainingOutcome::Success { .. })));
+    for call in &sink.calls {
+        if let SinkCall::ClearUpdateFlags(flags) = call {
+            assert!(
+                !flags.status_update && !flags.ced_update && !flags.rsed_update,
+                "{flags:?}"
+            );
+        }
+    }
+    let last_read = sink.calls.iter().rev().find_map(|call| match call {
+        SinkCall::ReadUpdateFlags(flags) => Some(*flags),
+        _ => None,
+    });
+    let last_read = last_read.unwrap();
+    assert!(last_read.status_update && last_read.ced_update);
+    assert!(last_read.rr_test && last_read.rsed_update);
+}
+
+#[test]
+fn an_unchanged_restriction_is_not_sent_again() {
+    let sink = SimSink::new()
+        .source_test(PRE_SHOOT_ONLY)
+        .flt_ready_after(0)
+        .round_with_source_test(0, all(LtpReq::Lfsr0), PRE_SHOOT_ONLY)
+        .round(0, all(LtpReq::None))
+        .frl_start_after(0);
+    let (outcome, sink, phy) = run(sink, &[RATE], &TrainingConfig::default());
+    assert!(matches!(outcome, TrainingOutcome::Success { .. }));
+    assert_eq!(
+        count(&sink, |c| matches!(c, SinkCall::ReadSourceTestConfig(_))),
+        2
+    );
+    // Only the equalization after the rate is configured.
+    assert_eq!(
+        restrictions_sent(&phy),
+        [TxFfeRestrictions::new(true, false, false)]
+    );
+}
+
+/// The events of one attempt, with the PHY's calls.
+fn train_events(sink: SimSink) -> (TrainingOutcome, Vec<TrainingEvent>, SimSink, SimPhy) {
+    let mut trainer = FrlTrainer::new(sink, SimPhy::new());
+    let mut events = Vec::new();
+    let outcome = trainer
+        .train_with_events(&[RATE], &TrainingConfig::default(), &mut |e| events.push(e))
+        .unwrap()
+        .outcome;
+    let (sink, phy) = trainer.into_parts();
+    (outcome, events, sink, phy)
+}
+
+#[test]
+fn a_source_test_update_without_flt_update_is_handled_in_lts_3() {
+    // The sink takes 5 polls to post its first requests; the tester changes the
+    // configuration on the third read, without FLT_update.
+    let sink = SimSink::new()
+        .flt_ready_after(0)
+        .source_test_after(2, PRE_SHOOT_ONLY)
+        .round(5, all(LtpReq::Lfsr0))
+        .round(0, all(LtpReq::None))
+        .frl_start_after(0);
+    let (outcome, _, sink, phy) = train_events(sink);
+    assert!(matches!(outcome, TrainingOutcome::Success { .. }));
+    // Re-read on the poll that saw the flag, which had no FLT_update.
+    let reread = sink
+        .calls
+        .iter()
+        .position(|c| *c == SinkCall::ReadSourceTestConfig(PRE_SHOOT_ONLY))
+        .unwrap();
+    assert!(
+        matches!(
+            sink.calls[reread - 1],
+            SinkCall::ReadUpdateFlags(flags) if flags.source_test_update && !flags.flt_update
+        ),
+        "{:?}",
+        sink.calls
+    );
+    let none = TxFfeRestrictions::default();
+    let pre_shoot_only = TxFfeRestrictions::new(true, false, false);
+    assert_eq!(restrictions_sent(&phy), [none, pre_shoot_only]);
+    assert!(
+        sink.calls
+            .contains(&SinkCall::ClearUpdateFlags(SOURCE_TEST_UPDATE))
+    );
+}
+
+#[test]
+fn a_source_test_update_in_lts_p_is_handled_before_frl_start() {
+    // Two LTS:3 reads post the two rounds; the change arrives on the first LTS:P read,
+    // and FRL_start on a later one.
+    let sink = SimSink::new()
+        .flt_ready_after(0)
+        .round(0, all(LtpReq::Lfsr0))
+        .round(0, all(LtpReq::None))
+        .source_test_after(2, PRE_SHOOT_ONLY)
+        .frl_start_after(2);
+    let (outcome, events, _, phy) = train_events(sink);
+    assert!(matches!(outcome, TrainingOutcome::Success { .. }));
+    let passed = events
+        .iter()
+        .position(|e| matches!(e, TrainingEvent::TrainingPassed { .. }));
+    let read = events.iter().position(|e| {
+        *e == TrainingEvent::SourceTestConfigRead {
+            config: PRE_SHOOT_ONLY,
+        }
+    });
+    let start = events
+        .iter()
+        .position(|e| matches!(e, TrainingEvent::FrlStart { .. }));
+    assert!(passed < read && read < start, "{events:?}");
+    assert_eq!(
+        restrictions_sent(&phy).last(),
+        Some(&TxFfeRestrictions::new(true, false, false))
     );
 }
 
@@ -1517,6 +1809,153 @@ fn phy_errors_are_returned_after_lts_l() {
     }
 }
 
+/// The deadline pattern in architecture.md: an `ScdcClient` stops training by failing one
+/// polled read once its deadline has passed, and then lets every call through, so LTS:L,
+/// whose `read_update_flags` is not a poll, still returns the link to TMDS.
+#[test]
+fn a_one_shot_error_in_a_polled_read_stops_training_and_exits_to_tmds() {
+    // LTS:3 polls `Update_0` 50 times before the sink posts requests; the 20th
+    // `read_update_flags` call is one of those polls.
+    let sink = SimSink::new()
+        .source_test(SourceTestConfig::default())
+        .flt_ready_after(0)
+        .round(50, all(LtpReq::Lfsr0))
+        .round(0, all(LtpReq::None))
+        .frl_start_after(0)
+        .fail_call(SinkOp::ReadUpdateFlags, 20);
+    let (result, sink, phy) = run_with(sink, SimPhy::new());
+    let exit = TmdsExit::Exited;
+    assert_eq!(result, Err(TrainingError::Scdc { error: (), exit }));
+    // The trip came while polling in LTS:3: the rate had been configured.
+    assert_eq!(frl_configs(&sink), [RATE, HdmiForumFrl::NotSupported]);
+    assert_in_tmds(&sink, &phy);
+    // LTS:L's own read, after the failed one, went through.
+    assert!(matches!(
+        sink.calls.last(),
+        Some(SinkCall::ReadUpdateFlags(_))
+    ));
+}
+
+/// An `ScdcClient` with a deadline, as architecture.md describes it: it fails one polled
+/// read once the deadline has passed, then lets every call through, and never fails a
+/// read made after a `write_frl_config` with `NotSupported` (LTS:L's first write; its
+/// `read_update_flags` follows). The deadline here is the `deadline`-th polled read.
+struct DeadlineClient {
+    sink: SimSink,
+    deadline: u32,
+    polled: u32,
+    tripped: bool,
+    exiting: bool,
+    follow_the_rule: bool,
+}
+
+impl DeadlineClient {
+    fn poll(&mut self) -> Result<(), ()> {
+        self.polled += 1;
+        let ending = self.exiting && self.follow_the_rule;
+        if !self.tripped && !ending && self.polled >= self.deadline {
+            self.tripped = true;
+            return Err(());
+        }
+        Ok(())
+    }
+}
+
+impl crate::ScdcClient for DeadlineClient {
+    type Error = ();
+
+    fn read_flt_ready(&mut self) -> Result<bool, ()> {
+        self.poll()?;
+        self.sink.read_flt_ready()
+    }
+
+    fn read_update_flags(&mut self) -> Result<UpdateFlags, ()> {
+        self.poll()?;
+        self.sink.read_update_flags()
+    }
+
+    fn clear_update_flags(&mut self, flags: ClearableUpdateFlags) -> Result<(), ()> {
+        self.sink.clear_update_flags(flags)
+    }
+
+    fn read_ltp_requests(&mut self) -> Result<LtpRequests, ()> {
+        self.sink.read_ltp_requests()
+    }
+
+    fn read_source_test_config(&mut self) -> Result<SourceTestConfig, ()> {
+        self.sink.read_source_test_config()
+    }
+
+    fn write_config_0_defaults(&mut self) -> Result<(), ()> {
+        self.sink.write_config_0_defaults()
+    }
+
+    fn write_frl_config(&mut self, config: FrlConfig) -> Result<(), ()> {
+        // LTS:L, or an attempt starting again.
+        self.exiting = config.frl_rate == HdmiForumFrl::NotSupported;
+        self.sink.write_frl_config(config)
+    }
+
+    fn read_ced(&mut self) -> Result<crate::CedCounters, ()> {
+        self.sink.read_ced()
+    }
+}
+
+#[test]
+fn a_deadline_on_lts_l_s_read_is_not_failed_by_a_client_that_follows_the_rule() {
+    // LTS:3 times out after 3 polls; the polled reads are LTS:2's `Update_0` read,
+    // `FLT_ready`, the 3 LTS:3 polls, then LTS:L's read: the deadline lands on the 6th.
+    let config = TrainingConfig {
+        ltp_polls: 3,
+        ..TrainingConfig::default()
+    };
+    let run = |follow_the_rule| {
+        let client = DeadlineClient {
+            sink: SimSink::new()
+                .flt_ready_after(0)
+                .round(10, all(LtpReq::Lfsr0)),
+            deadline: 6,
+            polled: 0,
+            tripped: false,
+            exiting: false,
+            follow_the_rule,
+        };
+        let mut trainer = FrlTrainer::new(client, SimPhy::new());
+        let result = trainer.train(&[RATE], &config).map(|t| t.outcome);
+        let (client, phy) = trainer.into_parts();
+        (result, client, phy)
+    };
+
+    // With the rule, the attempt ends as it would have, the link back in TMDS.
+    let (result, client, phy) = run(true);
+    assert!(!client.tripped);
+    assert!(
+        matches!(
+            result,
+            Ok(TrainingOutcome::FallbackRequired {
+                reason: FallbackReason::TrainingTimeout,
+                ..
+            })
+        ),
+        "{result:?}"
+    );
+    assert_in_tmds(&client.sink, &phy);
+
+    // Without it, the failed read is LTS:L's own, and the exit fails.
+    let (result, client, _) = run(false);
+    assert!(client.tripped);
+    assert!(
+        matches!(
+            result,
+            Err(TrainingError::ExitFailed {
+                reason: FallbackReason::TrainingTimeout,
+                ..
+            })
+        ),
+        "{result:?}"
+    );
+}
+
 #[test]
 fn a_failed_lts_l_after_an_error_reports_each_end() {
     // Every `Config_1` write fails, so LTS:L's does too.
@@ -1643,7 +2082,7 @@ fn exit_to_tmds_performs_lts_l() {
         sink.calls,
         [
             SinkCall::WriteFrlConfig(FrlConfig {
-                rate: HdmiForumFrl::NotSupported,
+                frl_rate: HdmiForumFrl::NotSupported,
                 ffe_levels: FfeLevels::default(),
             }),
             SinkCall::ReadUpdateFlags(NO_FLAGS),
@@ -1723,7 +2162,7 @@ fn train_with_events_reports_each_event_as_it_occurs() {
         events[..2],
         [
             TrainingEvent::SourceTestConfigRead {
-                flt_no_timeout: false
+                config: SourceTestConfig::default(),
             },
             TrainingEvent::FltReady { after_polls: 1 },
         ]
@@ -1792,7 +2231,7 @@ fn calls_after(log: &[Call], after: Call, n: usize) -> &[Call] {
 
 fn config_1(rate: HdmiForumFrl) -> Call {
     Call::Sink(SinkCall::WriteFrlConfig(FrlConfig {
-        rate,
+        frl_rate: rate,
         ffe_levels: FfeLevels::new(3).unwrap(),
     }))
 }
@@ -2070,14 +2509,17 @@ fn errors_are_reported_at_every_call_site_of_a_fallback() {
 
 #[test]
 fn errors_are_reported_at_every_call_site_of_a_source_test_update_and_both_flags() {
-    // `Source_Test_Update` posted in LTS:3 (re-read and cleared there), then `FRL_start`
-    // and `FLT_update` together in LTS:P (`FRL_start` cleared before the retrain).
+    // A `Source_Test_Update` in LTS:3 that changes the TxFFE restrictions (re-read,
+    // cleared, equalization re-sent), then, on LTS:P's first poll, another change together
+    // with `FRL_start` and `FLT_update` (re-read and re-sent in LTS:P; `FRL_start` cleared
+    // before the retrain).
     fn sink() -> SimSink {
         SimSink::new()
             .source_test(SourceTestConfig::default())
             .flt_ready_after(0)
-            .round_with_source_test(0, all(LtpReq::Lfsr0), SourceTestConfig::default())
+            .round_with_source_test(0, all(LtpReq::Lfsr0), PRE_SHOOT_ONLY)
             .round(0, all(LtpReq::None))
+            .source_test_after(2, DE_EMPHASIS_ONLY)
             .round(0, all(LtpReq::Lfsr1))
             .frl_start_with_round(2)
             .round(0, all(LtpReq::None))
@@ -2123,7 +2565,7 @@ mod traced {
             trace.events,
             [
                 TrainingEvent::SourceTestConfigRead {
-                    flt_no_timeout: false,
+                    config: SourceTestConfig::default(),
                 },
                 TrainingEvent::FltReady { after_polls: 3 },
                 TrainingEvent::RateConfigured {
@@ -2159,7 +2601,7 @@ mod traced {
             trace.events,
             [
                 TrainingEvent::SourceTestConfigRead {
-                    flt_no_timeout: false,
+                    config: SourceTestConfig::default(),
                 },
                 TrainingEvent::FltReady { after_polls: 2 },
                 TrainingEvent::RateConfigured {
@@ -2306,16 +2748,16 @@ mod traced {
                 )
             })
             .collect();
+        // The retrain round carries the source-test change: LTS:P reads it before it
+        // acts on the retrain request, and LTS:3 does not read it again.
         assert_eq!(
             notable,
             [
                 &TrainingEvent::SourceTestConfigRead {
-                    flt_no_timeout: false
+                    config: SourceTestConfig::default(),
                 },
+                &TrainingEvent::SourceTestConfigRead { config: NO_TIMEOUT },
                 &TrainingEvent::RetrainRequested,
-                &TrainingEvent::SourceTestConfigRead {
-                    flt_no_timeout: true
-                },
             ]
         );
     }
@@ -2498,7 +2940,7 @@ mod traced {
             trace.events,
             [
                 TrainingEvent::SourceTestConfigRead {
-                    flt_no_timeout: false,
+                    config: SourceTestConfig::default(),
                 },
                 TrainingEvent::FltReady { after_polls: 3 },
                 TrainingEvent::RateConfigured {
@@ -2530,11 +2972,13 @@ mod traced {
 fn the_training_future_stays_within_its_size_budget() {
     // Without `alloc`, `Trained` carries its warnings inline (`MAX_WARNINGS` slots).
     // Raised by 8 for the `FLT_no_timeout` tracking that holds the link after an error
-    // under test.
+    // under test, and by 16 for the tester's TxFFE restrictions (held for the attempt and
+    // re-sent to the PHY when a `Source_Test_Update` changes them in LTS:3), and by 24 for
+    // handling `Source_Test_Update` in LTS:P as well (and in LTS:3 without `FLT_update`).
     #[cfg(feature = "alloc")]
-    const BUDGET: usize = 392;
+    const BUDGET: usize = 432;
     #[cfg(not(feature = "alloc"))]
-    const BUDGET: usize = 416;
+    const BUDGET: usize = 456;
     let (mut scdc, mut phy) = (SimSink::new(), SimPhy::new());
     let mut io = SyncIo {
         scdc: &mut scdc,

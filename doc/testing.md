@@ -22,9 +22,11 @@ Tests for the owned protocol types cover:
   bit 15 masked off)
 - Defaults and equality for `UpdateFlags`, `SourceTestConfig`, `LtpRequests` and
   `CedCount`
-
-Plain data types with no behaviour (`FrlConfig`, `CedCounters`) have no tests of their
-own: building one and reading its fields back would test only the compiler.
+- The constructors that take fields in register or lane order (`UpdateFlags::new`,
+  `ClearableUpdateFlags::new`, `SourceTestConfig::new`, `LtpRequests::new`,
+  `CedCounters::new`, `FrlConfig::new`): each field lands where its bit or lane says, since
+  positional `bool` and lane arguments are easy to swap; `clearable()` drops only
+  `RR_Test`; `LtpRequests::all_trained` counts lane 3.
 
 ### The simulated sink and PHY (`src/training/sim.rs`)
 
@@ -32,7 +34,9 @@ own: building one and reading its fields back would test only the compiler.
   scenario: `FLT_ready` after N polls; a queue of LTS:3 *rounds*, each raising
   `FLT_update` with a set of per-lane requests after some polls (counted from the last
   `Config_1` write with an FRL rate); `FRL_start` after N polls once the rounds are used
-  up; an optional source test configuration. A rate drop is a round of `RateChange`, and
+  up; an optional source test configuration, also changed with a round or on its own
+  (`source_test_after`, setting `Source_Test_Update` without `FLT_update`); the `Update_0`
+  flags training does not act on (`other_flags`). A rate drop is a round of `RateChange`, and
   a retrain during LTS:P is a round after the all-`None` one. It records every call in
   order and can fail any one operation, on every call or only on its N-th call.
 - `SimPhy` — records every PHY call in order and can fail any one operation, on every
@@ -81,11 +85,11 @@ kept apart, and the five distinct warnings an attempt can produce fit without `a
   operation the state machine uses, with LTS:L afterwards leaving both ends in TMDS — at
   every call site, not only an operation's first: three scenarios (a success with a
   source test configuration, a TxFFE raise, a rate drop and a retrain; a fallback through
-  LTS:L; and a `Source_Test_Update` in LTS:3 followed by `FRL_start` and `FLT_update`
-  together in LTS:P) are each run once per call they make, failing that one call, and
-  every failure must be reported. A site no scenario reaches is not checked, so a branch
-  with I/O of its own needs a scenario that takes it; mutation testing (swallowing each
-  error in turn) shows the three reach every one
+  LTS:L; and a `Source_Test_Update` in LTS:3 that changes the TxFFE restrictions, then
+  another change on LTS:P's first poll together with `FRL_start` and `FLT_update`) are each
+  run once per call they make, failing that one call, and every failure must be reported.
+  A site no scenario reaches is not checked, so a branch with I/O of its own needs a
+  scenario that takes it; region coverage shows the three reach every one
 - The step order across sink and PHY in LTS:2 (rate, then TxFFE reset), LTS:3 (the
   requested pattern and level reach the PHY before `FLT_update` is cleared), LTS:P (the
   patterns stopped and gap characters sent before `FLT_update` is cleared) and LTS:4
@@ -102,6 +106,22 @@ kept apart, and the five distinct warnings an attempt can produce fit without `a
 - `train_with_events` reporting each event as it occurs, without `alloc`
 - `exit_to_tmds` on demand: the LTS:L sequence, taking down a link an error left in FRL,
   each end's error on failure, and `lts::exit_to_tmds` recording its event
+- `Update_0`: plumbob clears only the three flags it acts on, one at a time, and a sink's
+  `Status_Update`, `CED_Update`, `RR_Test` and `RSED_Update` stay set through training
+- `Source_Test_Configuration`: every bit recorded in `SourceTestConfigRead`; a
+  `Source_Test_Update` handled on the poll that sees it, without `FLT_update` in LTS:3 and
+  before `FRL_start` in LTS:P
+- TxFFE restrictions: sent with every equalization; kept across a rate drop and a retrain;
+  a change in LTS:3 sent at once with the levels held, before the round's requests are
+  acted on; an unchanged re-read not sent again
+- The deadline pattern in architecture.md: one failed polled read in LTS:3 stops training,
+  and LTS:L, whose read is not a poll, still returns the link to TMDS; a client following
+  the rule (no failed read after `write_frl_config(NotSupported)`) lets an attempt whose
+  deadline lands on LTS:L's read end with its own result, and one that does not turns it
+  into `ExitFailed`
+- Every new test above was checked against a deliberate bug (a reset of the restrictions
+  on a rate drop or a retrain, a trip on LTS:2's read, an extra cleared flag, a late
+  re-send): each fails its test
 
 ### Trace tests (requires `alloc` feature)
 
@@ -127,7 +147,7 @@ synchronously. One more test checks the driver's guard by running `block_on` ove
 future that waits once — impossible over the sync adapter — with the trainer's own output
 type: it panics rather than dropping the attempt.
 
-A size test keeps the training future within a budget (416 bytes without `alloc`, 392
+A size test keeps the training future within a budget (456 bytes without `alloc`, 432
 with it, over the simulator's zero-sized error types), so a change that grows it fails until the budget is raised on purpose. CI runs
 the tests with the `std` feature and again with no features, so both budgets are
 checked.
