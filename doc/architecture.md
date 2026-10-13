@@ -503,9 +503,11 @@ pub struct ExitError<ScdcErr, PhyErr> { pub scdc: Option<ScdcErr>, pub phy: Opti
 `Trained` follows the stack's convention for non-fatal findings (piaf's `ParsedEdid`,
 cartouche's `Decoded`, concordance's `NegotiatedConfig`): the accepted result carries
 typed warnings next to the value, read through `iter_warnings`; failures carry errors,
-not warnings. The storage is private, a `Vec` with `alloc` and a fixed array without, so
-every build has the same API: features are additive, and code written against a bare
-`no_std` build must keep compiling when another crate enables `alloc`. One difference fits a
+not warnings. Unlike piaf and cartouche today, the storage is private, a `Vec` with
+`alloc` and a fixed array without, so every build has the same API: features are
+additive, and code written against a bare `no_std` build must keep compiling when another
+crate enables `alloc` (the stack's design principles now ask this of every crate; the
+others follow at their next breaking release). Another difference fits a
 procedure that polls: a sink may repeat an anomaly on every round, so repeats are merged
 into one warning per kind and lane, with a count. An attempt then produces at most five
 warnings — lanes 0–2, and lane 3 in and out of use — so the `MAX_WARNINGS` (5) slots
@@ -637,7 +639,10 @@ decoding, not the input to a training state machine.
 
 The two sets mirror each other: the same names (`DdeCompliance` for the 0x4 request,
 `frl_rate` for `Config_1`'s rate) and every field of the registers, in bit order, with the
-same constructors (`new`, flags in bit order) and `#[non_exhaustive]`. `UpdateFlags` has
+same constructors (`new`, fields in bit or lane order) and `#[non_exhaustive]` on every
+struct. Each crate adds what its own work needs: plumbob `LtpReq::pattern` and
+`FfeLevels::MAX`, `limited_to` and ordering; culvert `FfeLevels::max_for` and the
+register encoding. `UpdateFlags` has
 all 7 `Update_0` flags and clears take a `ClearableUpdateFlags` (every flag but
 `RR_Test`); `SourceTestConfig` has all 6 `Source_Test_Configuration` bits. The state
 machine still acts only on the fields it uses, but nothing is hidden from it: leaving
@@ -655,8 +660,9 @@ What plumbob does with `Source_Test_Configuration`: it acts on `FLT_no_timeout`,
 passes the three TxFFE bits to the PHY as hdmi-hal's `TxFfeRestrictions`. `FRL_Max` and
 `DSC_FRL_Max` select the rate, which the caller does before training, through culvert's
 `SourceTestConfig`: the reference drivers read them during rate selection (AMD, Amlogic,
-NVIDIA), and treat both set as neither set (Amlogic, citing the specification, and
-NVIDIA). NVIDIA also turns DSC off under `FRL_Max` and on under `DSC_FRL_Max`.
+NVIDIA). With both set, Amlogic (citing the specification) and NVIDIA act on neither,
+while AMD trains at the maximum rate. NVIDIA also turns DSC off under `FRL_Max` and on
+under `DSC_FRL_Max`.
 
 This approach is intentional. The alternative — making culvert's types re-exports of
 plumbob's when the feature is active — would make `culvert::LtpReq` mean different things

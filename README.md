@@ -47,7 +47,7 @@ impl ScdcClient for MyScdcClient {
     fn clear_update_flags(&mut self, flags: ClearableUpdateFlags) -> Result<(), MyError> { todo!() }
     // Status_Flags_1/2: the per-lane requests (0x9–0xD as LtpReq::Reserved).
     fn read_ltp_requests(&mut self) -> Result<LtpRequests, MyError> { todo!() }
-    // Source_Test_Configuration: FLT_no_timeout.
+    // Source_Test_Configuration: all six bits (FLT_no_timeout acted on, TxFFE passed on).
     fn read_source_test_config(&mut self) -> Result<SourceTestConfig, MyError> { todo!() }
     // Config_0: read requests disabled, FLT_no_retrain clear.
     fn write_config_0_defaults(&mut self) -> Result<(), MyError> { todo!() }
@@ -319,7 +319,8 @@ Any crate that implements `ScdcClient` is substitutable.
 - **SCDC register decoding** — plumbob reads typed values from `ScdcClient` and does not
   decode raw register bytes or know SCDC register addresses.
 - **PHY vendor sequences** — plumbob calls `HdmiPhy` methods (`set_frl_rate`, `send_ltp`,
-  `set_frl_output`, `adjust_equalization`); the register sequences behind them live in
+  `set_frl_output`, `adjust_equalization`, which carries each lane's TxFFE level and the
+  tester's `TxFfeRestrictions`); the register sequences behind them live in
   platform PHY backends.
 - **Timing** — plumbob is poll-based and has no clock. The inter-poll delay is the
   `ScdcClient` implementation's; the poll limits in `TrainingConfig` are plumbob's only

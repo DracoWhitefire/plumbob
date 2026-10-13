@@ -321,7 +321,7 @@ fn only_the_flags_training_acts_on_are_cleared() {
 
 #[test]
 fn the_trace_records_every_source_test_bit() {
-    // TxFFE pre-shoot only, DSC_FRL_Max and FRL_Max: bits plumbob does not act on here.
+    // TxFFE pre-shoot only (passed to the PHY), DSC_FRL_Max and FRL_Max (the caller's).
     let config = SourceTestConfig::new(true, false, false, false, true, true);
     let sink = full_sink().source_test(config);
     let mut trainer = FrlTrainer::new(sink, SimPhy::new());

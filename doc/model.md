@@ -178,7 +178,8 @@ diagnostics: an outcome chain ending in TMDS is expected on marginal hardware; a
 plumbob owns the types that form the vocabulary of `ScdcClient`. `culvert` independently
 defines its own register-layer types (`culvert::LtpReq`, `culvert::FfeLevels`, etc.) as
 the output of SCDC register decoding. The two sets mirror each other field for field:
-the same names, every field of each register, the same constructors.
+the same names, every field of each register, the same constructors and attributes; each
+crate adds methods of its own (plumbob `LtpReq::pattern`, `FfeLevels::limited_to`).
 `doc/architecture.md` ("Type ownership and the culvert boundary") has the details.
 
 When `culvert` implements `plumbob::ScdcClient` (via its `plumbob` cargo feature), each

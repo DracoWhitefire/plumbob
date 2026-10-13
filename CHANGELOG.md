@@ -38,8 +38,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `clearable()`. `ScdcClient::clear_update_flags` takes the new `ClearableUpdateFlags`:
   every flag but `RR_Test`, which the source never clears. plumbob still acts on, and
   clears, only `source_test_update`, `frl_start` and `flt_update`. Implementations of
-  `ScdcClient` change both signatures and build `UpdateFlags` with `new` or by setting
-  fields on the default.
+  `ScdcClient` change `clear_update_flags`'s signature, and fill every `UpdateFlags` field
+  in `read_update_flags` (with `new`, or by setting fields on the default). The public
+  `lts::TrainingIo` changes the same way: `clear_update_flags` takes a
+  `ClearableUpdateFlags`.
 - **`SourceTestConfig` has all six `Source_Test_Configuration` bits, and the trace records
   them**, mirroring culvert. It gains `txffe_pre_shoot_only`, `txffe_de_emphasis_only`,
   `txffe_no_ffe`, `dsc_frl_max` and `frl_max`, is `#[non_exhaustive]`, and has
@@ -78,8 +80,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **The documentation describes the SCDC types as mirrored**: architecture.md ("Type
   ownership and the culvert boundary") and model.md no longer list differences from
   culvert's types, and architecture.md says where `FRL_Max` and `DSC_FRL_Max` are handled
-  (rate selection, before training; both set means neither, as in the reference
-  drivers). `doc/roadmap.md` drops its "Released" section (this changelog is the record)
+  (rate selection, before training; with both set, Amlogic and NVIDIA act on neither and
+  AMD trains at the maximum rate). `doc/roadmap.md` drops its "Released" section (this changelog is the record)
   and the finished "Mirrored SCDC types" entry.
 
 ## [0.2.0] - 2026-10-11
