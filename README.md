@@ -30,7 +30,8 @@ Implement `ScdcClient` against your SCDC transport, one method per register oper
 
 ```rust
 use plumbob::{
-    CedCounters, FrlConfig, LtpRequests, ScdcClient, SourceTestConfig, UpdateFlags,
+    CedCounters, ClearableUpdateFlags, FrlConfig, LtpRequests, ScdcClient, SourceTestConfig,
+    UpdateFlags,
 };
 
 struct MyScdcClient { /* I²C / DDC transport */ }
@@ -40,13 +41,13 @@ impl ScdcClient for MyScdcClient {
 
     // Status_Flags_0 bit 6. Polled in LTS:2: wait the poll interval here.
     fn read_flt_ready(&mut self) -> Result<bool, MyError> { todo!() }
-    // Update_0 Source_Test_Update, FRL_start, FLT_update. Polled in LTS:3 and LTS:P.
+    // Update_0, all seven flags. Polled in LTS:3 and LTS:P.
     fn read_update_flags(&mut self) -> Result<UpdateFlags, MyError> { todo!() }
-    // Write 1 to clear the given Update_0 flags.
-    fn clear_update_flags(&mut self, flags: UpdateFlags) -> Result<(), MyError> { todo!() }
+    // Write 1 to clear the given Update_0 flags (never RR_Test).
+    fn clear_update_flags(&mut self, flags: ClearableUpdateFlags) -> Result<(), MyError> { todo!() }
     // Status_Flags_1/2: the per-lane requests (0x9–0xD as LtpReq::Reserved).
     fn read_ltp_requests(&mut self) -> Result<LtpRequests, MyError> { todo!() }
-    // Source_Test_Configuration: FLT_no_timeout.
+    // Source_Test_Configuration: all six bits (FLT_no_timeout acted on, TxFFE passed on).
     fn read_source_test_config(&mut self) -> Result<SourceTestConfig, MyError> { todo!() }
     // Config_0: read requests disabled, FLT_no_retrain clear.
     fn write_config_0_defaults(&mut self) -> Result<(), MyError> { todo!() }
@@ -74,11 +75,11 @@ let rates = [
 
 let trained = trainer.train(&rates, &config)?;
 match trained.outcome {
-    TrainingOutcome::Success { achieved_rate } => {
+    TrainingOutcome::Success { achieved_rate, .. } => {
         println!("Trained at {achieved_rate:?}");
         trainer.phy_mut().set_frl_output(FrlOutput::Active)?; // start video
     }
-    TrainingOutcome::FallbackRequired { reason } => {
+    TrainingOutcome::FallbackRequired { reason, .. } => {
         println!("No FRL link ({reason:?}); the sink is back in TMDS");
     }
     _ => {}
@@ -91,9 +92,9 @@ for warning in trained.iter_warnings() {
 `train` returns a `Trained`: the outcome, and the `TrainingWarning`s the attempt
 produced — non-fatal anomalies such as a sink requesting an undefined pattern value,
 which plumbob ignores. They do not change the outcome; they are there so that what the
-sink did is visible without a trace. As elsewhere in the stack, they are a `Vec` with
-the `alloc` feature and a fixed array (`MAX_WARNINGS`) without it; `iter_warnings` reads
-either.
+sink did is visible without a trace. Read them with `warnings()` (a slice) or
+`iter_warnings()`; the API is the same with and without the `alloc` feature, which only
+changes the private storage (a `Vec`, or `MAX_WARNINGS` inline slots).
 
 To take a trained link down again — the display is disabled or unplugged, or a mode
 change is coming — call `trainer.exit_to_tmds()`, which runs LTS:L on its own.
@@ -213,7 +214,7 @@ let trained = trainer.train_with_events(&rates, &config, &mut |event| {
 A successful attempt, where the sink asks for one TxFFE raise on lane 1:
 
 ```
-SourceTestConfigRead { flt_no_timeout: false }
+SourceTestConfigRead { config: SourceTestConfig { txffe_pre_shoot_only: false, txffe_de_emphasis_only: false, txffe_no_ffe: false, flt_no_timeout: false, dsc_frl_max: false, frl_max: false } }
 FltReady { after_polls: 3 }
 RateConfigured { rate: Rate12Gbps4Lanes, ffe_levels: FfeLevels(3) }
 LtpRequested { requests: LtpRequests { lane0: Lfsr0, lane1: Lfsr1, lane2: Lfsr2, lane3: Lfsr3 } }
@@ -226,7 +227,7 @@ FrlStart { after_polls: 6 }
 A sink that asks for a lower rate, trained over `[Rate12Gbps4Lanes, Rate10Gbps4Lanes]`:
 
 ```
-SourceTestConfigRead { flt_no_timeout: false }
+SourceTestConfigRead { config: SourceTestConfig { txffe_pre_shoot_only: false, txffe_de_emphasis_only: false, txffe_no_ffe: false, flt_no_timeout: false, dsc_frl_max: false, frl_max: false } }
 FltReady { after_polls: 2 }
 RateConfigured { rate: Rate12Gbps4Lanes, ffe_levels: FfeLevels(3) }
 LtpRequested { requests: LtpRequests { lane0: RateChange, lane1: RateChange, lane2: RateChange, lane3: RateChange } }
@@ -318,11 +319,14 @@ Any crate that implements `ScdcClient` is substitutable.
 - **SCDC register decoding** — plumbob reads typed values from `ScdcClient` and does not
   decode raw register bytes or know SCDC register addresses.
 - **PHY vendor sequences** — plumbob calls `HdmiPhy` methods (`set_frl_rate`, `send_ltp`,
-  `set_frl_output`, `adjust_equalization`); the register sequences behind them live in
+  `set_frl_output`, `adjust_equalization`, which carries each lane's TxFFE level and the
+  tester's `TxFfeRestrictions`); the register sequences behind them live in
   platform PHY backends.
 - **Timing** — plumbob is poll-based and has no clock. The inter-poll delay is the
-  `ScdcClient` implementation's; the poll limits in `TrainingConfig` are the only timeout
-  mechanism.
+  `ScdcClient` implementation's; the poll limits in `TrainingConfig` are plumbob's only
+  timeout mechanism. A wall-clock deadline is the caller's: its `ScdcClient` fails one
+  polled read once the deadline has passed, but none after LTS:L has begun (see "How long
+  one `train` call can take" in [`doc/architecture.md`](doc/architecture.md)).
 - **TMDS link setup** — plumbob handles FRL training only.
 
 ## Documentation

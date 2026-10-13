@@ -53,12 +53,27 @@ Written to `Config_1` in LTS:2, and again in LTS:4 for each lower rate: the FRL 
 (bits 3:0) and `FfeLevels` (bits 7:4).
 `HdmiForumFrl::NotSupported` turns FRL off (LTS:L).
 
-### `UpdateFlags` and `SourceTestConfig`
+### `UpdateFlags`, `ClearableUpdateFlags` and `SourceTestConfig`
 
-The `Update_0` flags the state machine reads and clears (`source_test_update`, `frl_start`,
-`flt_update`), and the `Source_Test_Configuration` field it honours (`flt_no_timeout`).
-Other `Update_0` and `Source_Test_Configuration` fields are not part of training and stay
-in the SCDC implementation.
+`UpdateFlags` is the whole `Update_0` register: seven flags in bit order, as in culvert.
+The state machine acts on `source_test_update`, `frl_start` and `flt_update`, and clears
+only those, one at a time, with a `ClearableUpdateFlags`: every flag but `RR_Test`, which
+belongs to the sink's read-request test and is never cleared by the source. The other
+flags (`status_update`, `ced_update`, `rsed_update`) are left set for whoever handles them.
+Both types are `#[non_exhaustive]`; build them with `new` (flags in bit order) or from the
+default by setting fields.
+
+`SourceTestConfig` is the whole `Source_Test_Configuration` register: the six bits a
+compliance tester sets for the source, in bit order, as in culvert. The trace records all
+of them (`SourceTestConfigRead { config }`). The state machine acts on `flt_no_timeout`,
+and passes the three TxFFE bits to the PHY as `TxFfeRestrictions` with every
+`adjust_equalization`, re-sending them as soon as a poll in LTS:3 or LTS:P sees a
+`Source_Test_Update` that changes them (LTS:2's `FLT_ready` wait reads only
+`Status_Flags_0`; a flag set then is handled on the first LTS:3 poll). How the PHY combines them is its own (hdmi-hal documents why: the reference drivers
+disagree).
+`frl_max` and `dsc_frl_max` ask the source to train at its highest rate (with DSC, for the
+latter); the rate list is the caller's, so the layer that builds it reads the register
+before training and honours them there, as the AMD driver does during rate selection.
 
 ### `CedCount` and `CedCounters`
 
@@ -109,11 +124,12 @@ produced. A warning is a non-fatal anomaly that did not change the outcome:
 | `UndefinedLtpRequest { lane, value, count, in_use }` | The lane requested an undefined value (0x9–0xD) `count` times, the last being `value`; plumbob left the lane as it was. `in_use` is false for lane 3 at a 3-lane rate. |
 
 Repeats are merged per kind and lane (and `in_use`), so an attempt has at most five
-warnings. With `alloc`, `warnings` is a `Vec`; without it, a `[Option<TrainingWarning>;
-MAX_WARNINGS]` with `num_warnings` in use. `iter_warnings()` reads either.
-`TrainingWarning` and `Trained` are `#[non_exhaustive]`; `Trained` is `Copy` only without
-`alloc`. An attempt that ends in a `TrainingError` has no `Trained`: its trace records
-what happened.
+warnings. `warnings()` returns them as a slice and `iter_warnings()` iterates them, in
+every build: the storage is private (a `Vec` with `alloc`, `MAX_WARNINGS` inline slots
+without), so enabling `alloc` anywhere in a dependency graph changes no API, and
+`Trained` has the same traits either way (`Clone`, not `Copy`). `TrainingWarning` and
+`Trained` are `#[non_exhaustive]`. An attempt that ends in a `TrainingError` has no
+`Trained`: its trace records what happened.
 
 ### `TrainingOutcome` vs. `TrainingError`
 
@@ -161,10 +177,10 @@ diagnostics: an outcome chain ending in TMDS is expected on marginal hardware; a
 
 plumbob owns the types that form the vocabulary of `ScdcClient`. `culvert` independently
 defines its own register-layer types (`culvert::LtpReq`, `culvert::FfeLevels`, etc.) as
-the output of SCDC register decoding. The two sets are not identical today:
-plumbob's leave out the `Update_0` flags and `Source_Test_Configuration` fields training
-does not use, and two names differ. Mirroring them field for field is planned;
-`doc/architecture.md` lists the differences and `doc/roadmap.md` has the plan.
+the output of SCDC register decoding. The two sets mirror each other field for field:
+the same names, every field of each register, the same constructors and attributes; each
+crate adds methods of its own (plumbob `LtpReq::pattern`, `FfeLevels::limited_to`).
+`doc/architecture.md` ("Type ownership and the culvert boundary") has the details.
 
 When `culvert` implements `plumbob::ScdcClient` (via its `plumbob` cargo feature), each
 trait method calls one culvert method and converts culvert's type to plumbob's at the impl

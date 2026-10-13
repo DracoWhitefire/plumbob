@@ -121,7 +121,8 @@ The number of active lanes follows from the rate: 3 for `Rate3Gbps3Lanes` and
 
 1. Read `SourceTestConfig`, and clear `UpdateFlags::source_test_update` if it is set.
    `flt_no_timeout` (compliance testing) replaces the poll limits of LTS:2, LTS:3 and LTS:P
-   with `TrainingConfig::no_timeout_poll_cap` (see below). The configuration is read on
+   with `TrainingConfig::no_timeout_poll_cap` (see below). The TxFFE bits become the
+   `TxFfeRestrictions` sent with every `adjust_equalization` of the attempt. The configuration is read on
    every attempt, not only when the update flag is set: a tester sets `FLT_no_timeout`
    and leaves it, while the flag is cleared by the first attempt that sees it. The Xilinx
    and AMD drivers read it unconditionally too. In LTS:3 it is re-read when the flag is
@@ -152,8 +153,11 @@ always what the PHY was last told: LTS:2 leaves every lane with no pattern and T
 0, LTS:P stops the patterns (keeping the levels), and LTS:4 resets both. Repeat, at most
 `TrainingConfig::ltp_polls` times:
 
-1. Read `UpdateFlags`. If `flt_update` is not set, poll again.
-2. If `source_test_update` is set, re-read `SourceTestConfig` and clear the flag.
+1. Read `UpdateFlags`. If `source_test_update` is set, re-read `SourceTestConfig` and
+   clear the flag, whether or not `flt_update` is set; if its TxFFE bits changed, call
+   `adjust_equalization` at once with the levels the lanes have and the new restrictions.
+   A change to `flt_no_timeout` takes effect on the next poll's limit.
+2. If `flt_update` is not set, poll again.
 3. Read the per-lane requests (`LtpRequests`) and act on the active lanes:
    - **all 0x0** — training passed: go to LTS:P.
    - **all 0xF** — the sink requests a lower rate: go to LTS:4.
@@ -192,7 +196,9 @@ If training has not passed within the poll limit, go to LTS:L and return
 1. Stop the training patterns (no pattern on any lane) and send gap characters only
    (`set_frl_output(GapOnly)`). Clear `FLT_update`.
 2. Poll `UpdateFlags`, at most `TrainingConfig::frl_start_polls` times:
-   - **`flt_update`** is checked first. If `frl_start` is set as well, the retrain wins,
+   - **`source_test_update`** is handled as in LTS:3, before anything else, so `Success`
+     is never returned with the PHY on restrictions the tester has replaced.
+   - **`flt_update`** is checked next. If `frl_start` is set as well, the retrain wins,
      as in the Xilinx driver: `frl_start` is cleared (so it cannot end the next LTS:P
      early) and `FrlStartWithRetrain` is recorded; then the retrain below.
    - **`frl_start`** — clear it and return `Success`. The caller starts video
@@ -313,22 +319,32 @@ pub enum LtpReq {
 }
 // `LtpReq::value()` returns the 4-bit value.
 
-/// Requests for all four lanes; lane 3 is ignored in 3-lane FRL.
+/// Requests for all four lanes (`new`); lane 3 is ignored in 3-lane FRL.
 pub struct LtpRequests { pub lane0: LtpReq, pub lane1: LtpReq, pub lane2: LtpReq, pub lane3: LtpReq }
 
 /// Highest TxFFE level index the source supports (0–7; at most 3 up to 12 Gbps).
 pub struct FfeLevels(u8);
 
-/// Written to Config_1.
-pub struct FrlConfig { pub rate: HdmiForumFrl, pub ffe_levels: FfeLevels }
+/// Written to Config_1 (`new`).
+pub struct FrlConfig { pub frl_rate: HdmiForumFrl, pub ffe_levels: FfeLevels }
 
-/// The Update_0 flags the state machine reads and clears.
-pub struct UpdateFlags { pub source_test_update: bool, pub frl_start: bool, pub flt_update: bool }
+/// Update_0, all seven flags in bit order (`new`); `clearable()` drops RR_Test.
+pub struct UpdateFlags {
+    pub status_update: bool, pub ced_update: bool, pub rr_test: bool,
+    pub source_test_update: bool, pub frl_start: bool, pub flt_update: bool,
+    pub rsed_update: bool,
+}
 
-/// The Source_Test_Configuration field the state machine honours.
-pub struct SourceTestConfig { pub flt_no_timeout: bool }
+/// The Update_0 flags a source may clear: every flag but RR_Test.
+pub struct ClearableUpdateFlags { /* the six flags above other than rr_test */ }
 
-/// Per-lane character error counts (diagnostics).
+/// Source_Test_Configuration, all six bits in bit order (`new`).
+pub struct SourceTestConfig {
+    pub txffe_pre_shoot_only: bool, pub txffe_de_emphasis_only: bool, pub txffe_no_ffe: bool,
+    pub flt_no_timeout: bool, pub dsc_frl_max: bool, pub frl_max: bool,
+}
+
+/// Per-lane character error counts (diagnostics; `new`).
 pub struct CedCounters { pub lane0: Option<CedCount>, /* … */ pub lane3: Option<CedCount> }
 ```
 
@@ -344,10 +360,10 @@ pub trait ScdcClient {
 
     /// Status_Flags_0 bit 6.
     fn read_flt_ready(&mut self) -> Result<bool, Self::Error>;
-    /// Update_0 bits 3–5.
+    /// Update_0, all seven flags.
     fn read_update_flags(&mut self) -> Result<UpdateFlags, Self::Error>;
-    /// Write-1-to-clear the given Update_0 flags.
-    fn clear_update_flags(&mut self, flags: UpdateFlags) -> Result<(), Self::Error>;
+    /// Write-1-to-clear the given Update_0 flags; plumbob passes only those it acts on.
+    fn clear_update_flags(&mut self, flags: ClearableUpdateFlags) -> Result<(), Self::Error>;
     /// Status_Flags_1/2: the per-lane requests.
     fn read_ltp_requests(&mut self) -> Result<LtpRequests, Self::Error>;
     /// Source_Test_Configuration (0x35).
@@ -371,8 +387,12 @@ one culvert method. A simulated implementation for testing needs only a register
 #[non_exhaustive]
 pub struct Trained {
     pub outcome: TrainingOutcome,
-    pub warnings: Vec<TrainingWarning>,  // `[Option<TrainingWarning>; MAX_WARNINGS]`
-                                         // and `num_warnings` without alloc
+    // private: a `Vec` with alloc, `MAX_WARNINGS` inline slots without
+}
+
+impl Trained {
+    pub fn warnings(&self) -> &[TrainingWarning];
+    pub fn iter_warnings(&self) -> impl Iterator<Item = &TrainingWarning>;
 }
 
 /// A non-fatal anomaly; repeats are merged.
@@ -482,8 +502,12 @@ pub struct ExitError<ScdcErr, PhyErr> { pub scdc: Option<ScdcErr>, pub phy: Opti
 
 `Trained` follows the stack's convention for non-fatal findings (piaf's `ParsedEdid`,
 cartouche's `Decoded`, concordance's `NegotiatedConfig`): the accepted result carries
-typed warnings next to the value, in a `Vec` with `alloc` and a fixed array without, read
-through `iter_warnings`; failures carry errors, not warnings. One difference fits a
+typed warnings next to the value, read through `iter_warnings`; failures carry errors,
+not warnings. Unlike piaf and cartouche today, the storage is private, a `Vec` with
+`alloc` and a fixed array without, so every build has the same API: features are
+additive, and code written against a bare `no_std` build must keep compiling when another
+crate enables `alloc` (the stack's design principles now ask this of every crate; the
+others follow at their next breaking release). Another difference fits a
 procedure that polls: a sink may repeat an anomaly on every round, so repeats are merged
 into one warning per kind and lane, with a count. An attempt then produces at most five
 warnings — lanes 0–2, and lane 3 in and out of use — so the `MAX_WARNINGS` (5) slots
@@ -502,7 +526,7 @@ diagnostic tool can reconstruct the whole attempt without reading internal state
 #[non_exhaustive]
 pub enum TrainingEvent {
     /// The sink's Source_Test_Configuration was read (LTS:2 or LTS:3).
-    SourceTestConfigRead { flt_no_timeout: bool },
+    SourceTestConfigRead { config: SourceTestConfig },  // all six bits, as read
     /// LTS:2: FLT_ready asserted after this many polls.
     FltReady { after_polls: u32 },
     /// LTS:2: FLT_ready did not assert.
@@ -551,7 +575,7 @@ limits), and the ordered `events`. It requires the `alloc` feature.
 ### Interpreting the trace
 
 ```
-SourceTestConfigRead { flt_no_timeout: false }
+SourceTestConfigRead { config: SourceTestConfig { txffe_pre_shoot_only: false, txffe_de_emphasis_only: false, txffe_no_ffe: false, flt_no_timeout: false, dsc_frl_max: false, frl_max: false } }
 FltReady { after_polls: 3 }
 RateConfigured { rate: Rate12Gbps4Lanes, ffe_levels: FfeLevels(3) }
 LtpRequested { requests: LtpRequests { lane0: Lfsr0, lane1: Lfsr1, lane2: Lfsr2, lane3: Lfsr3 } }
@@ -564,7 +588,7 @@ FrlStart { after_polls: 6 }
 A sink that asks for a lower rate, trained over `[Rate12Gbps4Lanes, Rate10Gbps4Lanes]`:
 
 ```
-SourceTestConfigRead { flt_no_timeout: false }
+SourceTestConfigRead { config: SourceTestConfig { txffe_pre_shoot_only: false, txffe_de_emphasis_only: false, txffe_no_ffe: false, flt_no_timeout: false, dsc_frl_max: false, frl_max: false } }
 FltReady { after_polls: 2 }
 RateConfigured { rate: Rate12Gbps4Lanes, ffe_levels: FfeLevels(3) }
 LtpRequested { requests: LtpRequests { lane0: RateChange, lane1: RateChange, lane2: RateChange, lane3: RateChange } }
@@ -606,31 +630,39 @@ registers and returns typed results, it belongs in the SCDC implementation.
 #### Type ownership and the culvert boundary
 
 plumbob owns the types that form the vocabulary of `ScdcClient`: `LtpReq`, `LtpRequests`,
-`FfeLevels`, `FrlConfig`, `UpdateFlags`, `SourceTestConfig`, `CedCount`, `CedCounters`. These are the types the state
-machine reasons about.
+`FfeLevels`, `FrlConfig`, `UpdateFlags`, `ClearableUpdateFlags`, `SourceTestConfig`,
+`CedCount`, `CedCounters`. These are the types the state machine reasons about.
 
 culvert independently defines its own register-layer types (`culvert::LtpReq`,
 `culvert::FfeLevels`, etc.) for its own purposes — they are the output of SCDC register
 decoding, not the input to a training state machine.
 
-The two sets are not identical today. Two names differ by accident: the 0x4 request is
-`DdeCompliance` in plumbob and `RxDdeCompliance` in culvert, and `FrlConfig`'s rate is
-`rate` in plumbob and `frl_rate` in culvert. And plumbob's types leave out fields
-training does not use: its `UpdateFlags` has 3 of the 7 `Update_0` flags, its
-`SourceTestConfig` only `flt_no_timeout` of the 6 `Source_Test_Configuration` fields.
-
-The plan is to mirror them (see `roadmap.md`): the same names, and every field of the
-registers in plumbob's types as well, with the state machine still acting only on the
-fields it uses. Leaving fields out saves an `ScdcClient` nothing, since it reads the
-whole register anyway, and it hides from plumbob, and so from its trace, the compliance
-tester's other settings (`TxFFE_No_FFE`, `TxFFE_Pre_Shoot_Only`, `TxFFE_De_Emphasis_Only`,
-`FRL_Max`, `DSC_FRL_Max`). The types stay separate, so neither crate depends on the
-other, and the conversions become field-for-field copies.
+The two sets mirror each other: the same names (`DdeCompliance` for the 0x4 request,
+`frl_rate` for `Config_1`'s rate) and every field of the registers, in bit order, with the
+same constructors (`new`, fields in bit or lane order) and `#[non_exhaustive]` on every
+struct. Each crate adds what its own work needs: plumbob `LtpReq::pattern` and
+`FfeLevels::MAX`, `limited_to` and ordering; culvert `FfeLevels::max_for` and the
+register encoding. `UpdateFlags` has
+all 7 `Update_0` flags and clears take a `ClearableUpdateFlags` (every flag but
+`RR_Test`); `SourceTestConfig` has all 6 `Source_Test_Configuration` bits. The state
+machine still acts only on the fields it uses, but nothing is hidden from it: leaving
+fields out would save an `ScdcClient` nothing, since it reads the whole register anyway,
+and would keep the compliance tester's other settings out of the trace. The types stay
+separate, so neither crate depends on the other, and culvert's conversions are
+field-for-field copies, tested bit by bit.
 
 When culvert implements `ScdcClient` (via its `plumbob` cargo feature), each trait method
 calls one culvert method and converts culvert's type to plumbob's (`culvert::LtpRequests` →
 `plumbob::LtpRequests`, and so on). `From` impls live in the same feature-gated module;
 culvert's own types are unchanged.
+
+What plumbob does with `Source_Test_Configuration`: it acts on `FLT_no_timeout`, and
+passes the three TxFFE bits to the PHY as hdmi-hal's `TxFfeRestrictions`. `FRL_Max` and
+`DSC_FRL_Max` select the rate, which the caller does before training, through culvert's
+`SourceTestConfig`: the reference drivers read them during rate selection (AMD, Amlogic,
+NVIDIA). With both set, Amlogic (citing the specification) and NVIDIA act on neither,
+while AMD trains at the maximum rate. NVIDIA also turns DSC off under `FRL_Max` and on
+under `DSC_FRL_Max`.
 
 This approach is intentional. The alternative — making culvert's types re-exports of
 plumbob's when the feature is active — would make `culvert::LtpReq` mean different things
@@ -663,7 +695,7 @@ The full training state machine is available. `FrlTrainer<C, P>` is stack-alloca
 (`LtpReq`, `LtpRequests`, `FfeLevels`, `UpdateFlags`, `CedCounters`, …) are stack-allocated. No heap
 use anywhere in the training loop. This tier covers bare-metal and firmware targets.
 
-The training future is 416 bytes in this tier, and 392 with `alloc` (where `Trained`
+The training future is 456 bytes in this tier, and 432 with `alloc` (where `Trained`
 holds its warnings in a `Vec` rather than inline), measured over the sync driver's I/O
 with zero-sized error types and Rust 1.94 (larger error types add their size); an `async` I/O implementation adds the size of its own futures. Where it
 lives depends on the driver: `FrlTrainer` (sync) keeps it on the caller's stack for the
@@ -852,15 +884,31 @@ How a caller keeps a call shorter than the worst case:
 - **Set the poll interval.** It is the `ScdcClient` implementation's, so the wall-clock
   time per poll is the implementer's to choose.
 - **Async: cancel.** Drop the `train` future (after a `select!` or `timeout`) and call
-  `exit_to_tmds()`; see plumbob-async's "Cancellation".
-- **Sync: a wall-clock deadline has no direct support.** The limits are counts, and the
-  `train_with_events` callback observes but cannot stop training. A deadline can be built
-  into the `ScdcClient`: once it has passed, the polled methods return an error, plumbob
-  stops and runs LTS:L, and `train` returns `TrainingError::Scdc { error, exit }`. Two
-  caveats: the client must still let LTS:L's own SCDC calls through (`write_frl_config`,
-  `read_update_flags`, `clear_update_flags`), or the exit fails and `exit` is
-  `TmdsExit::Failed`; and the deadline is reported as an SCDC error, so the caller tells
-  it apart by its own error value. Built-in deadline support is in the stack's ideadump.
+  `exit_to_tmds()`; see plumbob-async's "Cancellation". The `ScdcClient` stop below needs
+  no second call.
+- **A wall-clock deadline (or any other reason to stop) lives in the `ScdcClient`.** The
+  polled reads (`read_flt_ready`, `read_update_flags`) already run on every poll and wait
+  the poll interval, so that is where the caller checks its clock, a cancel flag or
+  anything else. To stop, fail **one** polled read with an error of your own, say a
+  `Deadline` variant of the client's error type, and pass every later call through:
+  plumbob stops, runs LTS:L, and `train` returns `TrainingError::Scdc { error: Deadline,
+  exit: TmdsExit::Exited }`, the link back in TMDS.
+
+  LTS:L's `read_update_flags` (to clear a pending `FLT_update`) is a single read, not a
+  poll, but the client cannot tell it apart: it is the same method. So **never fail a read
+  made after a `write_frl_config` with `HdmiForumFrl::NotSupported`**: that is LTS:L's
+  first SCDC write, made just before its read, and a later write with an FRL rate means an
+  attempt has started again. If the deadline passes while the attempt is already ending
+  (a timeout, a fallback, `exit_to_tmds`), the client lets it end with its own result. A
+  client that fails LTS:L's read anyway turns the result into `ExitFailed` (after a
+  fallback) or `TmdsExit::Failed`, and leaves a pending `FLT_update` set. A test runs this
+  client with the deadline on LTS:L's read, with and without the rule.
+
+  The exit is not `Exited` in two cases: with `TrainingConfig::exit_to_tmds_on_error` off
+  it is `TmdsExit::Skipped` (LTS:L does not run), and while the sink sets `FLT_no_timeout`
+  an error leaves the link as it is (`TmdsExit::HeldUnderTest`); `no_timeout_poll_cap`
+  bounds that case. This works the same in sync and async code; plumbob has no separate
+  stop hook, because the poll interval, the limits above and this already cover it.
 
 ---
 
