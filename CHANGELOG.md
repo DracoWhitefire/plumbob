@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-10-17
+
+### Fixed
+
+- **`lts::run`'s future is `Send` when its I/O is.** Since 0.2.0 it kept the sink's
+  `FLT_no_timeout` in a `Cell` shared with the closure that records events, across
+  `.await`s, so the future was never `Send`, whatever the `TrainingIo`: an async driver
+  built on it, such as plumbob-async's `FrlTrainer`, could not be spawned on a
+  multi-threaded executor. The flag is now a field read between the attempt's steps.
+  Nothing else changes; a test checks at compile time that `lts::run` and
+  `lts::exit_to_tmds` give `Send` futures over a `Send` I/O.
+
 ## [0.3.0] - 2026-10-13
 
 ### Breaking changes
