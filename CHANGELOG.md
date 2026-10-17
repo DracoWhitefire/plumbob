@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The documentation describes the `Send` futures as they are since 0.3.1.**
+  architecture.md no longer calls the `Send` twins deferred: `run`'s future is `Send` over
+  a concrete I/O whose futures and errors are, and code generic over the I/O gets `Send`
+  futures from hdmi-hal-async's `SendHdmiPhy` and plumbob-async's `SendScdcClient`. The
+  `TrainingIo` comment no longer says the state machine targets single-threaded executors
+  only.
+
 ## [0.3.1] - 2026-10-17
 
 ### Fixed

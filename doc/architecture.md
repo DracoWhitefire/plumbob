@@ -768,12 +768,21 @@ with no I/O of its own. Drivers supply the I/O:
 - **`plumbob-async`.** An adapter over async `ScdcClient` and `HdmiPhy` implementations,
   `.await`ing `run`.
 
-`TrainingIo`'s futures are not required to be `Send`, as in `hdmi-hal-async`: the targets
-are single-threaded executors and the sync driver. Over concrete I/O types the `run`
-future is `Send` when their futures are; a caller generic over the I/O traits cannot spawn
-it on a multi-threaded executor. The fix — `Send` variants of the leaf traits in
-`hdmi-hal-async` and `plumbob-async`; `TrainingIo` itself needs none — is recorded, and
-deferred, in the stack design document ("Sync and Async Companions", "`Send` futures for multi-threaded executors").
+`TrainingIo`'s futures are not required to be `Send`, as in `hdmi-hal-async`'s plain
+traits: the sync driver and single-threaded executors need no more. `run` itself holds
+nothing that is not `Send` across an `.await` (the `Observer` that collects the warnings
+is a plain struct, read between the attempt's steps), so over a concrete I/O whose futures
+and error types are `Send`, the `run` future is `Send` too; a test checks this at compile
+time. Up to 0.3.0 a `Cell` shared with the recording closure made it not `Send` over any
+I/O; 0.3.1 fixed that.
+
+Code generic over the I/O traits cannot spawn `run` on a multi-threaded executor through
+`TrainingIo`: an `async fn` in a trait promises nothing about its future. The `Send` twins
+of the leaf traits do it instead — hdmi-hal-async's `SendHdmiPhy` and plumbob-async's
+`SendScdcClient`, each a `Send` variant of the plain trait with a blanket implementation
+of it. Over them plumbob-async's adapter, and so the `run` future, is `Send` in generic
+code; `TrainingIo` itself needs no twin. The stack design document ("Sync and Async
+Companions", "`Send` futures for multi-threaded executors") records the decision.
 
 ---
 
