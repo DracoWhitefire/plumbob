@@ -9,8 +9,6 @@
 //! completes immediately, so `run` never waits. `plumbob-async` drives the same `run` over
 //! async I/O. Most users want `FrlTrainer`; this module is for writing such a driver.
 
-use core::cell::Cell;
-
 use display_types::cea861::hdmi_forum::HdmiForumFrl;
 use hdmi_hal::phy::{
     EqParams, FrlOutput, LaneEqParams, LanePatterns, LtpPattern, TxFfeLevel, TxFfeRestrictions,
@@ -369,6 +367,30 @@ impl Attempt {
     }
 }
 
+/// What one attempt's events pass through on their way to the caller's `record`.
+///
+/// A plain struct read between the attempt's steps, not state shared with a long-lived
+/// closure: a `Cell` shared that way would make the attempt's future not `Send`, so it
+/// could not run on a multi-threaded executor.
+struct Observer<'a, F> {
+    /// Collects the warnings while the attempt runs; the outcome is set at the end.
+    trained: Trained,
+    /// The sink's `FLT_no_timeout` as last read, as the states hold it: an error under
+    /// test does not take the link out of FRL.
+    under_test: bool,
+    record: &'a mut F,
+}
+
+impl<F: FnMut(TrainingEvent)> Observer<'_, F> {
+    fn observe(&mut self, event: TrainingEvent) {
+        if let TrainingEvent::SourceTestConfigRead { config } = event {
+            self.under_test = config.flt_no_timeout;
+        }
+        self.trained.observe(&event);
+        (self.record)(event);
+    }
+}
+
 /// The state machine, borrowing the I/O for one attempt.
 struct Machine<'a, Io> {
     io: &'a mut Io,
@@ -390,36 +412,41 @@ impl<Io: TrainingIo> Machine<'_, Io> {
         let Some((&rate, lower)) = rates.split_first() else {
             return Err(TrainingError::NoRates);
         };
-        // Collects the warnings while the attempt runs; the outcome is set at the end.
-        let mut trained = Trained::new(TrainingOutcome::FallbackRequired {
-            reason: FallbackReason::RatesExhausted,
-        });
-        // The sink's `FLT_no_timeout` as last read, as the states hold it: an error under
-        // test does not take the link out of FRL.
-        let under_test = Cell::new(false);
-        let mut record = |event: TrainingEvent| {
-            if let TrainingEvent::SourceTestConfigRead { config } = event {
-                under_test.set(config.flt_no_timeout);
-            }
-            trained.observe(&event);
-            record(event);
+        let mut observer = Observer {
+            trained: Trained::new(TrainingOutcome::FallbackRequired {
+                reason: FallbackReason::RatesExhausted,
+            }),
+            under_test: false,
+            record,
         };
-        let outcome = match self.states(rate, lower, config, &mut record).await {
+        // Each call gets a closure of its own, so `observer` can be read between them.
+        let end = self
+            .states(rate, lower, config, &mut |event| observer.observe(event))
+            .await;
+        let outcome = match end {
             Ok(End::Success(achieved_rate)) => TrainingOutcome::Success { achieved_rate },
             // Under FLT_no_timeout the test equipment is in control: no LTS:L.
             Ok(End::Hold(rate)) => TrainingOutcome::NoTimeoutHold { rate },
-            Ok(End::Fallback(reason)) => match self.exit_to_tmds(&mut record).await {
-                Ok(()) => TrainingOutcome::FallbackRequired { reason },
-                Err(error) => return Err(TrainingError::ExitFailed { reason, error }),
-            },
+            Ok(End::Fallback(reason)) => {
+                match self
+                    .exit_to_tmds(&mut |event| observer.observe(event))
+                    .await
+                {
+                    Ok(()) => TrainingOutcome::FallbackRequired { reason },
+                    Err(error) => return Err(TrainingError::ExitFailed { reason, error }),
+                }
+            }
             Err(fault) => {
                 let exit = if !config.exit_to_tmds_on_error {
                     TmdsExit::Skipped
-                } else if under_test.get() {
+                } else if observer.under_test {
                     // Under FLT_no_timeout the test equipment is in control, as with a hold.
                     TmdsExit::HeldUnderTest
                 } else {
-                    match self.exit_to_tmds(&mut record).await {
+                    match self
+                        .exit_to_tmds(&mut |event| observer.observe(event))
+                        .await
+                    {
                         Ok(()) => TmdsExit::Exited,
                         Err(error) => TmdsExit::Failed(error),
                     }
@@ -430,8 +457,8 @@ impl<Io: TrainingIo> Machine<'_, Io> {
                 });
             }
         };
-        trained.outcome = outcome;
-        Ok(trained)
+        observer.trained.outcome = outcome;
+        Ok(observer.trained)
     }
 
     /// LTS:2 → LTS:3 → LTS:P, with LTS:4, from `rate` down through `lower`. Returns the

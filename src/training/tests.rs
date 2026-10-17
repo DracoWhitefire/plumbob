@@ -3020,3 +3020,94 @@ fn the_sync_driver_rejects_a_future_that_waits() {
     };
     let _ = block_on(waits);
 }
+
+/// A `Send` I/O whose sink is ready at once: `FLT_ready`, every lane passing and
+/// `FRL_start` on the first poll, so an attempt succeeds and calls every operation.
+struct ReadyIo {
+    frl_started: bool,
+}
+
+impl TrainingIo for ReadyIo {
+    type ScdcError = ();
+    type PhyError = ();
+
+    async fn read_flt_ready(&mut self) -> Result<bool, ()> {
+        Ok(true)
+    }
+
+    async fn read_update_flags(&mut self) -> Result<UpdateFlags, ()> {
+        Ok(UpdateFlags {
+            flt_update: !self.frl_started,
+            frl_start: self.frl_started,
+            ..UpdateFlags::default()
+        })
+    }
+
+    async fn clear_update_flags(&mut self, _flags: ClearableUpdateFlags) -> Result<(), ()> {
+        Ok(())
+    }
+
+    async fn read_ltp_requests(&mut self) -> Result<LtpRequests, ()> {
+        // The lanes pass; LTS:P sees `FRL_start` next.
+        self.frl_started = true;
+        Ok(all(LtpReq::None))
+    }
+
+    async fn read_source_test_config(&mut self) -> Result<SourceTestConfig, ()> {
+        Ok(SourceTestConfig::default())
+    }
+
+    async fn write_config_0_defaults(&mut self) -> Result<(), ()> {
+        Ok(())
+    }
+
+    async fn write_frl_config(&mut self, _config: FrlConfig) -> Result<(), ()> {
+        Ok(())
+    }
+
+    async fn set_frl_rate(&mut self, _rate: HdmiForumFrl) -> Result<(), ()> {
+        Ok(())
+    }
+
+    async fn send_ltp(&mut self, _patterns: LanePatterns) -> Result<(), ()> {
+        Ok(())
+    }
+
+    async fn set_frl_output(&mut self, _output: FrlOutput) -> Result<(), ()> {
+        Ok(())
+    }
+
+    async fn adjust_equalization(&mut self, _params: EqParams) -> Result<(), ()> {
+        Ok(())
+    }
+}
+
+/// Passes `future` through, requiring it to be `Send`: a future that compiles here can be
+/// spawned on a multi-threaded executor.
+fn spawnable<T: Send>(future: T) -> T {
+    future
+}
+
+#[test]
+fn the_training_futures_are_send_over_send_io() {
+    // Compile-time first: neither future may hold anything that is not `Send` across an
+    // `.await`. Then run them, so the check is of futures that work.
+    let mut io = ReadyIo { frl_started: false };
+    let mut record = |_| {};
+    let config = TrainingConfig::default();
+    let trained = block_on(spawnable(crate::lts::run(
+        &mut io,
+        &[RATE],
+        &config,
+        &mut record,
+    )));
+    assert!(matches!(
+        trained.map(|trained| trained.outcome),
+        Ok(TrainingOutcome::Success {
+            achieved_rate: RATE,
+            ..
+        })
+    ));
+    let exit = block_on(spawnable(crate::lts::exit_to_tmds(&mut io, &mut record)));
+    assert_eq!(exit, Ok(()));
+}
