@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-10-17
+
 ### Fixed
 
 - **`lts::run`'s future is `Send` when its I/O is.** Since 0.2.0 it kept the sink's
