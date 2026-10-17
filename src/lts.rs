@@ -28,9 +28,11 @@ use crate::warning::Trained;
 /// The SCDC methods correspond to [`ScdcClient`](crate::ScdcClient)'s (without
 /// `read_ced`, which training does not use) and the PHY methods to `HdmiPhy`'s; see those
 /// traits for what each one does and what implementations must guarantee.
-// `async fn` in a public trait does not promise `Send` futures. That is intended: the
-// state machine targets single-threaded executors and the sync driver, as in
-// `hdmi-hal-async`.
+// `async fn` in a public trait does not promise `Send` futures, as in `hdmi-hal-async`'s
+// plain traits. `run`'s future is `Send` whenever the implementation's futures and errors
+// are (tested in `training::tests`); code generic over the I/O gets `Send` futures from the
+// leaf traits' `Send` twins (`SendHdmiPhy`, plumbob-async's `SendScdcClient`), so this
+// trait needs none.
 #[allow(async_fn_in_trait)]
 pub trait TrainingIo {
     /// Error type of the SCDC operations.
