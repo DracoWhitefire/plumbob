@@ -9,6 +9,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Part of Ashlar** — the README now opens with a block naming the
+  [Ashlar](https://ashlar-display.org) stack and linking the other crates in it. Keywords
+  are aligned across the stack, with `ashlar` and `hdmi` on every crate; `ashlar` is added,
+  `embedded` is dropped in favour of more specific keywords. Categories gain
+  `no-std::no-alloc`. The crate's `homepage` is now the Ashlar website.
+
 - **The documentation describes the `Send` futures as they are since 0.3.1.**
   architecture.md no longer calls the `Send` twins deferred: `run`'s future is `Send` over
   a concrete I/O whose futures and errors are, and code generic over the I/O gets `Send`
