@@ -7,8 +7,9 @@ description = "FRL link training state machine for HDMI 2.1"
 readme = "README.md"
 license = "MPL-2.0"
 repository = "https://github.com/DracoWhitefire/plumbob"
-keywords = ["hdmi", "link-training", "frl", "embedded", "no-std"]
-categories = ["hardware-support", "embedded", "no-std"]
+homepage = "https://ashlar-display.org"
+keywords = ["ashlar", "hdmi", "no-std", "frl", "link-training"]
+categories = ["hardware-support", "embedded", "no-std", "no-std::no-alloc"]
 
 [features]
 alloc = []
