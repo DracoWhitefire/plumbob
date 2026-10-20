@@ -18,13 +18,10 @@ Tests for the owned protocol types cover:
   0x1–0x8 to the `LtpPattern` of the same value (0x0, 0xE and 0xF have none)
 - `FfeLevels` accepting 0–7, rejecting higher values, and `limited_to` capping it at 3 for
   every rate up to 12 Gbps
-- Constructor invariants: `CedCount::new` strips the validity bit (`bits[14:0]` preserved,
-  bit 15 masked off)
-- Defaults and equality for `UpdateFlags`, `SourceTestConfig`, `LtpRequests` and
-  `CedCount`
+- Defaults and equality for `UpdateFlags`, `SourceTestConfig` and `LtpRequests`
 - The constructors that take fields in register or lane order (`UpdateFlags::new`,
   `ClearableUpdateFlags::new`, `SourceTestConfig::new`, `LtpRequests::new`,
-  `CedCounters::new`, `FrlConfig::new`): each field lands where its bit or lane says, since
+  `FrlConfig::new`): each field lands where its bit or lane says, since
   positional `bool` and lane arguments are easy to swap; `clearable()` drops only
   `RR_Test`; `LtpRequests::all_trained` counts lane 3.
 

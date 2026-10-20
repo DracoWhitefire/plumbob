@@ -1,6 +1,4 @@
-use crate::types::{
-    CedCounters, ClearableUpdateFlags, FrlConfig, LtpRequests, SourceTestConfig, UpdateFlags,
-};
+use crate::types::{ClearableUpdateFlags, FrlConfig, LtpRequests, SourceTestConfig, UpdateFlags};
 
 /// Typed SCDC interface required by the link training state machine, one method per
 /// register operation it performs.
@@ -72,10 +70,4 @@ pub trait ScdcClient {
 
     /// Write `Config_1`: the FRL rate and FFE levels.
     fn write_frl_config(&mut self, config: FrlConfig) -> Result<(), Self::Error>;
-
-    /// Read the per-lane character error counters, for diagnostics.
-    ///
-    /// Each lane's [`CedCount`](crate::CedCount) must be `None` when its validity bit is
-    /// not set.
-    fn read_ced(&mut self) -> Result<CedCounters, Self::Error>;
 }

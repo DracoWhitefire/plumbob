@@ -11,3 +11,7 @@ publish = false
 plumbob = { path = "../..", features = ["std"] }
 hdmi-hal = { version = "0.5.1" }
 display-types = { version = "0.4" }
+
+# Temporary, as in the crate's own manifest: remove with it.
+[patch.crates-io]
+display-types = { path = "../../../display-types" }

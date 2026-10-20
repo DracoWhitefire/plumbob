@@ -7,7 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking changes
+
+- **`ScdcClient::read_ced` is removed, with `CedCount` and `CedCounters`.** Training never
+  read the CED counters; a diagnostics method on the link training trait only made every
+  implementation carry one. Implementations delete their `read_ced`. To read the counters,
+  use the SCDC implementation directly (culvert's `read_ced`), or a trait of your own in
+  the integration layer.
+
 ### Changed
+
+- **The lane count of an FRL rate comes from display-types** (`HdmiForumFrl::lanes()`,
+  display-types 0.4.3), which defines it for every rate, instead of plumbob's own mapping
+  with a catch-all for four lanes. No behaviour change.
 
 - **Part of Ashlar** — the README now opens with a block naming the
   [Ashlar](https://ashlar-display.org) stack and linking the other crates in it. Keywords

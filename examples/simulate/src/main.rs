@@ -9,8 +9,8 @@ use core::convert::Infallible;
 use display_types::cea861::hdmi_forum::HdmiForumFrl;
 use hdmi_hal::phy::{EqParams, FrlOutput, HdmiPhy, LaneEqParams, LanePatterns};
 use plumbob::{
-    CedCounters, ClearableUpdateFlags, FrlConfig, FrlTrainer, LtpReq, LtpRequests, ScdcClient,
-    SourceTestConfig, TrainingConfig, UpdateFlags,
+    ClearableUpdateFlags, FrlConfig, FrlTrainer, LtpReq, LtpRequests, ScdcClient, SourceTestConfig,
+    TrainingConfig, UpdateFlags,
 };
 
 // --- SimSink ---------------------------------------------------------------------
@@ -106,10 +106,6 @@ impl ScdcClient for SimSink {
         );
         self.configured = config.frl_rate != HdmiForumFrl::NotSupported;
         Ok(())
-    }
-
-    fn read_ced(&mut self) -> Result<CedCounters, Infallible> {
-        Ok(CedCounters::new(None, None, None, None))
     }
 }
 

@@ -18,3 +18,8 @@ std = ["alloc"]
 [dependencies]
 hdmi-hal = { version = "0.5.1", default-features = false }
 display-types = { version = "0.4", default-features = false }
+
+# Temporary, until display-types 0.4.3 (`HdmiForumFrl::lanes`) is published: replaces
+# display-types for the whole graph, hdmi-hal's dependency included. Remove before merging.
+[patch.crates-io]
+display-types = { path = "../display-types" }

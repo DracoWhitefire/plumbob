@@ -361,62 +361,6 @@ impl SourceTestConfig {
     }
 }
 
-/// A 15-bit per-lane character error count.
-///
-/// The high byte's bit 7 is a validity flag consumed by [`CedCounters`];
-/// the counter occupies `bits[14:0]`. Values are always ≤ `0x7FFF`.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CedCount(u16);
-
-impl CedCount {
-    /// Constructs a `CedCount`, masking to 15 bits.
-    pub fn new(raw: u16) -> Self {
-        Self(raw & 0x7FFF)
-    }
-
-    /// Returns the character error count.
-    pub fn value(self) -> u16 {
-        self.0
-    }
-}
-
-/// Per-lane character error counts, for diagnostics; the training procedure does not
-/// consume them.
-///
-/// A lane's counter is `None` when its validity bit is not set. `lane3` is only
-/// populated in 4-lane FRL mode. Mirrors culvert's `CedCounters`; build one with
-/// [`new`](Self::new).
-#[non_exhaustive]
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct CedCounters {
-    /// Character error count for lane 0, or `None` if the validity bit is not set.
-    pub lane0: Option<CedCount>,
-    /// Character error count for lane 1, or `None` if the validity bit is not set.
-    pub lane1: Option<CedCount>,
-    /// Character error count for lane 2, or `None` if the validity bit is not set.
-    pub lane2: Option<CedCount>,
-    /// Character error count for lane 3, or `None` if the validity bit is not set.
-    /// Always `None` in TMDS mode or 3-lane FRL mode.
-    pub lane3: Option<CedCount>,
-}
-
-impl CedCounters {
-    /// Constructs a `CedCounters`.
-    pub const fn new(
-        lane0: Option<CedCount>,
-        lane1: Option<CedCount>,
-        lane2: Option<CedCount>,
-        lane3: Option<CedCount>,
-    ) -> Self {
-        Self {
-            lane0,
-            lane1,
-            lane2,
-            lane3,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -574,33 +518,6 @@ mod tests {
         );
     }
 
-    // --- CedCount ---
-
-    #[test]
-    fn ced_count_masks_validity_bit() {
-        // Bit 15 is the validity flag; it must be stripped.
-        let c = CedCount::new(0xFFFF);
-        assert_eq!(c.value(), 0x7FFF);
-    }
-
-    #[test]
-    fn ced_count_preserves_15_bit_value() {
-        let c = CedCount::new(0x0123);
-        assert_eq!(c.value(), 0x0123);
-    }
-
-    #[test]
-    fn ced_count_zero() {
-        assert_eq!(CedCount::new(0).value(), 0);
-    }
-
-    #[test]
-    fn ced_count_clone_eq() {
-        let a = CedCount::new(42);
-        assert_eq!(a, a.clone());
-        assert_ne!(CedCount::new(1), CedCount::new(2));
-    }
-
     // --- UpdateFlags, ClearableUpdateFlags ---
 
     #[test]
@@ -669,7 +586,7 @@ mod tests {
         assert!(!c.ced_update && !c.frl_start && !c.rsed_update);
     }
 
-    // --- LtpRequests, CedCounters, FrlConfig constructors ---
+    // --- LtpRequests, FrlConfig constructors ---
 
     #[test]
     fn ltp_requests_new_takes_the_lanes_in_order() {
@@ -687,20 +604,6 @@ mod tests {
         assert!(!LtpRequests::new(LtpReq::Lfsr0, none, none, none).all_trained());
         // Lane 3 counts, even though it is not in use in 3-lane FRL.
         assert!(!LtpRequests::new(none, none, none, LtpReq::Reserved(0x9)).all_trained());
-    }
-
-    #[test]
-    fn ced_counters_new_takes_the_lanes_in_order() {
-        let c = CedCounters::new(
-            Some(CedCount::new(0)),
-            Some(CedCount::new(1)),
-            Some(CedCount::new(2)),
-            None,
-        );
-        assert_eq!(c.lane0, Some(CedCount::new(0)));
-        assert_eq!(c.lane1, Some(CedCount::new(1)));
-        assert_eq!(c.lane2, Some(CedCount::new(2)));
-        assert_eq!(c.lane3, None);
     }
 
     #[test]

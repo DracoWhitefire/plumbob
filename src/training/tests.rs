@@ -1895,10 +1895,6 @@ impl crate::ScdcClient for DeadlineClient {
         self.exiting = config.frl_rate == HdmiForumFrl::NotSupported;
         self.sink.write_frl_config(config)
     }
-
-    fn read_ced(&mut self) -> Result<crate::CedCounters, ()> {
-        self.sink.read_ced()
-    }
 }
 
 #[test]
@@ -2400,7 +2396,6 @@ fn sink_op(call: &SinkCall) -> SinkOp {
         SinkCall::ReadSourceTestConfig(_) => SinkOp::ReadSourceTestConfig,
         SinkCall::WriteConfig0Defaults => SinkOp::WriteConfig0Defaults,
         SinkCall::WriteFrlConfig(_) => SinkOp::WriteFrlConfig,
-        SinkCall::ReadCed => SinkOp::ReadCed,
     }
 }
 

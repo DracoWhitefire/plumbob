@@ -75,19 +75,6 @@ disagree).
 latter); the rate list is the caller's, so the layer that builds it reads the register
 before training and honours them there, as the AMD driver does during rate selection.
 
-### `CedCount` and `CedCounters`
-
-`CedCount` is a 15-bit per-lane character error count. The high bit of the raw register
-value is a validity flag; `CedCount::new` masks it off:
-
-```rust
-CedCount::new(raw) // stores raw & 0x7FFF
-```
-
-`CedCounters` holds one `Option<CedCount>` per lane. `None` means the validity bit was not
-set. They are diagnostics; the training procedure does not consume them. `lane3` is
-`None` in 3-lane FRL mode.
-
 ---
 
 ## Training configuration and outcome types

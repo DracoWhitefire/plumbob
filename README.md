@@ -42,8 +42,7 @@ Implement `ScdcClient` against your SCDC transport, one method per register oper
 
 ```rust
 use plumbob::{
-    CedCounters, ClearableUpdateFlags, FrlConfig, LtpRequests, ScdcClient, SourceTestConfig,
-    UpdateFlags,
+    ClearableUpdateFlags, FrlConfig, LtpRequests, ScdcClient, SourceTestConfig, UpdateFlags,
 };
 
 struct MyScdcClient { /* I²C / DDC transport */ }
@@ -65,8 +64,6 @@ impl ScdcClient for MyScdcClient {
     fn write_config_0_defaults(&mut self) -> Result<(), MyError> { todo!() }
     // Config_1: FRL rate and FFE levels.
     fn write_frl_config(&mut self, config: FrlConfig) -> Result<(), MyError> { todo!() }
-    // ERR_DET counters, for diagnostics.
-    fn read_ced(&mut self) -> Result<CedCounters, MyError> { todo!() }
 }
 ```
 
@@ -283,7 +280,7 @@ machine without an allocator.
 
 **Bare `no_std` (no features)** — the complete training state machine is available.
 `FrlTrainer`, `TrainingConfig`, `TrainingOutcome`, `TrainingError`, and all owned protocol
-types (`LtpReq`, `LtpRequests`, `FfeLevels`, `UpdateFlags`, `CedCounters`, …) are
+types (`LtpReq`, `LtpRequests`, `FfeLevels`, `UpdateFlags`, …) are
 stack-allocated. No heap use anywhere in the training loop. This tier covers bare-metal
 and firmware targets.
 

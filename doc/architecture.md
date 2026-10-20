@@ -41,7 +41,7 @@ plumbob covers:
   a fallback whose LTS:L failed (`ExitFailed`), or a rate list the procedure cannot run
   (`InvalidRates`, `NoRates`),
 - owned protocol types: `LtpReq`, `LtpRequests`, `FfeLevels`, `FrlConfig`,
-  `UpdateFlags`, `SourceTestConfig`, `CedCounters`,
+  `UpdateFlags`, `SourceTestConfig`,
 - simulation support: the training procedure is fully exercisable without real hardware
   by using simulated implementations of `ScdcClient` and `HdmiPhy`.
 
@@ -343,9 +343,6 @@ pub struct SourceTestConfig {
     pub txffe_pre_shoot_only: bool, pub txffe_de_emphasis_only: bool, pub txffe_no_ffe: bool,
     pub flt_no_timeout: bool, pub dsc_frl_max: bool, pub frl_max: bool,
 }
-
-/// Per-lane character error counts (diagnostics; `new`).
-pub struct CedCounters { pub lane0: Option<CedCount>, /* … */ pub lane3: Option<CedCount> }
 ```
 
 ### `ScdcClient`
@@ -372,8 +369,6 @@ pub trait ScdcClient {
     fn write_config_0_defaults(&mut self) -> Result<(), Self::Error>;
     /// Config_1: FRL rate and FFE levels.
     fn write_frl_config(&mut self, config: FrlConfig) -> Result<(), Self::Error>;
-    /// ERR_DET counters, for diagnostics.
-    fn read_ced(&mut self) -> Result<CedCounters, Self::Error>;
 }
 ```
 
@@ -630,8 +625,8 @@ registers and returns typed results, it belongs in the SCDC implementation.
 #### Type ownership and the culvert boundary
 
 plumbob owns the types that form the vocabulary of `ScdcClient`: `LtpReq`, `LtpRequests`,
-`FfeLevels`, `FrlConfig`, `UpdateFlags`, `ClearableUpdateFlags`, `SourceTestConfig`,
-`CedCount`, `CedCounters`. These are the types the state machine reasons about.
+`FfeLevels`, `FrlConfig`, `UpdateFlags`, `ClearableUpdateFlags`, `SourceTestConfig`.
+These are the types the state machine reasons about.
 
 culvert independently defines its own register-layer types (`culvert::LtpReq`,
 `culvert::FfeLevels`, etc.) for its own purposes — they are the output of SCDC register
@@ -692,7 +687,7 @@ available depending on the target environment:
 
 The full training state machine is available. `FrlTrainer<C, P>` is stack-allocated;
 `TrainingConfig`, `TrainingOutcome`, `TrainingError`, and all owned protocol types
-(`LtpReq`, `LtpRequests`, `FfeLevels`, `UpdateFlags`, `CedCounters`, …) are stack-allocated. No heap
+(`LtpReq`, `LtpRequests`, `FfeLevels`, `UpdateFlags`, …) are stack-allocated. No heap
 use anywhere in the training loop. This tier covers bare-metal and firmware targets.
 
 The training future is 456 bytes in this tier, and 432 with `alloc` (where `Trained`
@@ -735,8 +730,8 @@ the core lives here.
 pub trait TrainingIo {
     type ScdcError;
     type PhyError;
-    // The SCDC operations of `ScdcClient` that training uses (all but `read_ced`) and the
-    // four `HdmiPhy` operations, as `async fn`s.
+    // The SCDC operations of `ScdcClient` and the four `HdmiPhy` operations, as
+    // `async fn`s.
     async fn read_flt_ready(&mut self) -> Result<bool, Self::ScdcError>;
     async fn send_ltp(&mut self, patterns: LanePatterns) -> Result<(), Self::PhyError>;
     // …
@@ -973,4 +968,8 @@ How a caller keeps a call shorter than the worst case:
 - A 0xF on some lanes but not all keeps those lanes' state, like 0x0; only 0xF on every
   active lane lowers the rate, as in the Xilinx driver and the Intel series. The AMD
   driver lowers the rate on 0xF from any single lane.
-- The state machine does not call `read_ced`; CED counters are diagnostics.
+- `ScdcClient` has no method for the CED counters: they are diagnostics, which training
+  never reads, and a method there would make every implementation carry one. A link
+  health monitor reads them from the SCDC implementation (culvert's `read_ced`), or
+  through a trait of its own in the integration layer. Until 0.4, `ScdcClient` had a
+  `read_ced`, with `CedCount` and `CedCounters` to return.

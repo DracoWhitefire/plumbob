@@ -16,8 +16,7 @@ use hdmi_hal::phy::{EqParams, FrlOutput, HdmiPhy, LanePatterns};
 
 use crate::scdc::ScdcClient;
 use crate::types::{
-    CedCounters, ClearableUpdateFlags, FrlConfig, LtpReq, LtpRequests, SourceTestConfig,
-    UpdateFlags,
+    ClearableUpdateFlags, FrlConfig, LtpReq, LtpRequests, SourceTestConfig, UpdateFlags,
 };
 
 /// The same request on all four lanes.
@@ -61,7 +60,6 @@ pub enum SinkOp {
     ReadSourceTestConfig,
     WriteConfig0Defaults,
     WriteFrlConfig,
-    ReadCed,
 }
 
 /// A call the sink received, with what it returned or was given.
@@ -74,7 +72,6 @@ pub enum SinkCall {
     ReadSourceTestConfig(SourceTestConfig),
     WriteConfig0Defaults,
     WriteFrlConfig(FrlConfig),
-    ReadCed,
 }
 
 /// A scripted sink.
@@ -313,17 +310,6 @@ impl ScdcClient for SimSink {
         self.update_polls = 0;
         self.log_call(SinkCall::WriteFrlConfig(config));
         Ok(())
-    }
-
-    fn read_ced(&mut self) -> Result<CedCounters, ()> {
-        self.check(SinkOp::ReadCed)?;
-        self.log_call(SinkCall::ReadCed);
-        Ok(CedCounters {
-            lane0: None,
-            lane1: None,
-            lane2: None,
-            lane3: None,
-        })
     }
 }
 
@@ -613,24 +599,15 @@ mod tests {
         let mut sink = SimSink::new();
         sink.write_config_0_defaults().unwrap();
         sink.write_frl_config(config).unwrap();
-        sink.read_ced().unwrap();
+        sink.read_source_test_config().unwrap();
         assert_eq!(
             sink.calls,
             [
                 SinkCall::WriteConfig0Defaults,
                 SinkCall::WriteFrlConfig(config),
-                SinkCall::ReadCed,
+                SinkCall::ReadSourceTestConfig(SourceTestConfig::default()),
             ]
         );
-    }
-
-    #[test]
-    fn sink_ced_reads_as_all_invalid() {
-        let ced = SimSink::new().read_ced().unwrap();
-        assert_eq!(ced.lane0, None);
-        assert_eq!(ced.lane1, None);
-        assert_eq!(ced.lane2, None);
-        assert_eq!(ced.lane3, None);
     }
 
     #[test]
@@ -647,7 +624,6 @@ mod tests {
             SinkOp::ReadSourceTestConfig,
             SinkOp::WriteConfig0Defaults,
             SinkOp::WriteFrlConfig,
-            SinkOp::ReadCed,
         ];
         for op in ops {
             let mut sink = SimSink::new().fail(op);
@@ -659,7 +635,6 @@ mod tests {
                 sink.read_source_test_config().map(drop),
                 sink.write_config_0_defaults(),
                 sink.write_frl_config(config),
-                sink.read_ced().map(drop),
             ];
             for (candidate, result) in ops.iter().zip(results) {
                 assert_eq!(
