@@ -298,10 +298,11 @@ cargo add plumbob --features std
 
 ## Stack position
 
-`plumbob` sits between the SCDC/PHY implementations and the integration layer that
-will orchestrate rate selection and fallback. It defines one interface (`ScdcClient`) and
-will implement one (`LinkTrainer`) that the integration layer, once built, will define;
-the dotted edge below marks that planned relationship.
+`plumbob` sits between the SCDC/PHY implementations and the link orchestrator that will
+sequence bring-up, rate selection and fallback. It defines one interface (`ScdcClient`).
+The orchestrator, once built, will define the interface it needs from link training and
+implement it for plumbob itself, behind a feature of its own; plumbob depends on nothing
+above it. The dotted edge below marks that planned relationship.
 
 ```mermaid
 flowchart LR
@@ -309,12 +310,12 @@ flowchart LR
     hal["hdmi-hal"]
     culvert["culvert"]
     plumbob["plumbob"]
-    integration["integration layer (planned)"]
+    integration["link orchestrator (planned)"]
 
     dt --> plumbob
     hal --> plumbob
     culvert -->|"implements ScdcClient"| plumbob
-    plumbob -.->|"will implement LinkTrainer"| integration
+    integration -.->|"will drive through its own trait"| plumbob
 ```
 
 `plumbob` does not depend on `culvert`. The relationship runs the other way: `culvert`
