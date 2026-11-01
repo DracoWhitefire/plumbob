@@ -5,8 +5,9 @@
 `plumbob` implements the Fixed Rate Link (FRL) training state machine defined in the HDMI
 2.1 specification. It defines the interface its dependencies must satisfy rather than
 depending on any specific SCDC implementation. It is meant to be replaceable in the same
-way: the integration layer above it (not yet built) will define a `LinkTrainer` trait for
-plumbob, or any other crate, to implement.
+way: the link orchestrator above it (not yet built) will define the interface it needs from
+link training and implement it for plumbob, so that another trainer can take plumbob's
+place.
 
 Training establishes actual link capability, not just theoretical negotiation. A
 `NegotiatedConfig` from concordance identifies what the hardware should support; link
@@ -76,7 +77,7 @@ The following are out of scope:
 ```
 display-types  ─┐
 hdmi-hal       ─┴─►  plumbob  ◄─  culvert (implements ScdcClient, feature-gated)
-                               ◄─  integration layer (planned: will define LinkTrainer)
+                               ◄─  link orchestrator (planned: its own trait, implemented for plumbob)
 ```
 
 - `hdmi-hal` — `HdmiPhy`, `LanePatterns`, `LtpPattern`, `FrlOutput`, `EqParams`,
@@ -87,9 +88,10 @@ plumbob does not depend on `culvert`. The relationship runs the other way: culve
 implements `plumbob::ScdcClient` for `Scdc<T>`, gated behind a `plumbob` cargo feature.
 Any crate that implements `ScdcClient` can be used in place of culvert.
 
-plumbob will not depend on the integration layer either. The integration layer, which is
-not yet built, will define a `LinkTrainer` trait for plumbob to implement, so that any
-crate implementing `LinkTrainer` can be used in place of plumbob.
+plumbob will not depend on the link orchestrator either. The orchestrator, which is not yet
+built, will define the trait it drives link training through and implement it for plumbob
+in its own crate, behind a feature, so that any crate implementing that trait can be used in
+place of plumbob.
 
 plumbob does not depend on `concordance` or `piaf`. It receives a target FRL rate from
 the caller and trains at that rate.
@@ -665,16 +667,19 @@ depending on the feature set, breaking crates that use culvert without plumbob. 
 dependency unconditional would force plumbob into every culvert user's dependency graph.
 The boundary conversion is small, explicit, and keeps both crates independently usable.
 
-### Above: `LinkTrainer` (planned)
+### Above: the link orchestrator (planned)
 
-The integration layer will define the interface it needs from link training, and plumbob
-will implement it. The integration layer will then have no dependency on plumbob
-specifically — any crate that implements `LinkTrainer` will be substitutable.
+The link orchestrator will define the interface it needs from link training, and implement
+it for plumbob in its own crate, behind a feature, translating plumbob's types into its
+own. Any crate that implements that interface will be substitutable for plumbob. The
+implementation lives above rather than in plumbob because a new crate's traits change often
+at first, and each change would otherwise force a plumbob release; it also keeps plumbob's
+dependencies pointing down the stack. (culvert implementing plumbob's `ScdcClient` is the
+older arrangement, and stays.)
 
-The `LinkTrainer` trait does not exist yet; it will live in the integration layer crate,
-which is not yet built. Its surface will be driven by what the DRM/KMS integration
-actually needs to call: at minimum, `train` and the ability to recover the SCDC client and
-PHY on completion. Until then, callers use `FrlTrainer` directly.
+A Linux DRM driver, whose DRM core already sequences the link, can call `FrlTrainer`
+directly without the orchestrator. Until the orchestrator exists, all callers use
+`FrlTrainer` directly.
 
 ---
 
@@ -785,8 +790,8 @@ Companions", "`Send` futures for multi-threaded executors") records the decision
 
 - **Interfaces owned by consumers.** plumbob defines the interface its dependencies
   must satisfy (`ScdcClient`) rather than depending on a concrete implementation.
-  The integration layer above will define the interface plumbob must satisfy
-  (`LinkTrainer`, planned).
+  The link orchestrator above will define the interface it drives training through and
+  implement it for plumbob (planned).
   Each layer is substitutable independently.
 - **Deterministic and testable.** The training procedure runs identically against a
   simulated `ScdcClient` and real hardware. Implement `ScdcClient` with a register
@@ -973,5 +978,5 @@ How a caller keeps a call shorter than the worst case:
 - `ScdcClient` has no method for the CED counters: they are diagnostics, which training
   never reads, and a method there would make every implementation carry one. A link
   health monitor reads them from the SCDC implementation (culvert's `read_ced`), or
-  through a trait of its own in the integration layer. Through 0.3, `ScdcClient` had a
+  through a trait of its own in the link orchestrator. Through 0.3, `ScdcClient` had a
   `read_ced`, with `CedCount` and `CedCounters` to return.
