@@ -1,7 +1,7 @@
 //! FRL link training state machine for HDMI 2.1.
 //!
 //! `plumbob` implements the Fixed Rate Link (FRL) training procedure defined in the
-//! HDMI 2.1 specification. It defines the [`ScdcClient`] interface its dependencies
+//! HDMI 2.1. It defines the [`ScdcClient`] interface its dependencies
 //! must satisfy and exposes [`FrlTrainer`] as the central entry point.
 //!
 //! The state machine itself is [`lts::run`], a function returning a future that performs

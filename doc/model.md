@@ -34,7 +34,7 @@ Values 0x1–0x8 are patterns the PHY drives on that lane; 0x0, 0xE and 0xF are 
 the state machine and never reach the PHY. 0x3 (Nyquist clock) is only driven when the
 sink sets `FLT_no_timeout`; otherwise the lane keeps its previous pattern. plumbob tracks
 every lane's pattern and always sends the PHY the full per-lane set. Lane 3 is ignored in
-3-lane FRL. The values the specification leaves undefined (0x9–0xD) are
+3-lane FRL. The values HDMI 2.1 leaves undefined (0x9–0xD) are
 `LtpReq::Reserved(value)`: an `ScdcClient` implementation passes them on rather than
 failing, and plumbob leaves the lane as it was, records `UndefinedLtpRequest` and
 returns a `TrainingWarning` with the outcome.
@@ -94,7 +94,7 @@ Per-attempt configuration, constructed via `Default` and overridden as needed:
 | `exit_to_tmds_on_error` | `true` | Whether an SCDC or PHY error is followed by LTS:L |
 
 Poll limits are exact counts: N means exactly N polls before the state gives up. The
-defaults reproduce the spec's 100 ms and 200 ms timeouts (and the AMD and Intel drivers'
+defaults reproduce HDMI 2.1's 100 ms and 200 ms timeouts (and the AMD and Intel drivers'
 200 ms `FRL_start` wait) at one poll every 2 ms; callers polling at a different cadence
 should scale them. The `FLT_no_timeout` cap's value and the retrain count follow the AMD
 driver; what happens when the cap runs out is plumbob's (see `NoTimeoutHold` below).
