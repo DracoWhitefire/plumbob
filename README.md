@@ -23,14 +23,14 @@
 FRL link training state machine for HDMI 2.1.
 
 `plumbob` implements the source side of Fixed Rate Link (FRL) training as defined in the
-HDMI 2.1 specification. It owns the link training state machine — LTS:2 (prepare),
+HDMI 2.1. It owns the link training state machine — LTS:2 (prepare),
 LTS:3 (train), LTS:P (pass), LTS:4 (lower rate) and LTS:L (exit to TMDS) — and defines
 the `ScdcClient` interface its SCDC implementation must satisfy. Callers supply an
 `ScdcClient` and an `HdmiPhy`, call `train` with the rates to try, and handle the
 `TrainingOutcome`.
 
 Which rates to try, SCDC register decoding, and PHY vendor sequences are all out of
-scope: plumbob implements the spec, not the strategy around it.
+scope: plumbob implements the standard's procedure, not the strategy around it.
 
 ## Usage
 
@@ -176,7 +176,7 @@ again when it is set.
 returns both ends to TMDS before any `FallbackRequired`, and after an SCDC or PHY error.
 
 Poll limits are exact counts: N means exactly N polls before the state gives up. The
-defaults (50 / 100 / 100 polls) reproduce the spec's 100 ms and 200 ms timeouts, and the
+defaults (50 / 100 / 100 polls) reproduce HDMI 2.1's 100 ms and 200 ms timeouts, and the
 200 ms `FRL_start` wait of the AMD and Intel drivers, at one poll every 2 ms. The
 inter-poll delay is the implementer's responsibility and belongs inside the polled
 `ScdcClient` methods. When the sink sets `FLT_no_timeout` it is under compliance test: the

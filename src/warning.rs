@@ -21,7 +21,7 @@ pub const MAX_WARNINGS: usize = 5;
 #[non_exhaustive]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum TrainingWarning {
-    /// A lane requested a value the specification leaves undefined (0x9–0xD). LTS:3
+    /// A lane requested a value HDMI 2.1 leaves undefined (0x9–0xD). LTS:3
     /// left the lane as it was.
     #[non_exhaustive]
     UndefinedLtpRequest {

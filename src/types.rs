@@ -5,7 +5,7 @@ use hdmi_hal::phy::LtpPattern;
 /// `Status_Flags_1` (lanes 0–1) or `Status_Flags_2` (lanes 2–3).
 ///
 /// Values 0x1–0x8 are patterns the PHY drives on that lane; 0x0, 0xE and 0xF are
-/// signals to the state machine and never reach the PHY. The values the specification
+/// signals to the state machine and never reach the PHY. The values HDMI 2.1
 /// leaves undefined (0x9–0xD) are [`Reserved`](Self::Reserved), so a request can always
 /// be represented and the training layer decides what to do with it: plumbob leaves the
 /// lane as it was.
@@ -34,7 +34,7 @@ pub enum LtpReq {
     FfeChange,
     /// Drop the FRL rate (0xF).
     RateChange,
-    /// A value the specification leaves undefined, 0x9–0xD.
+    /// A value HDMI 2.1 leaves undefined, 0x9–0xD.
     ///
     /// Build requests from a raw value with [`from_value`](Self::from_value), which only
     /// produces `Reserved` for 0x9–0xD. A `Reserved` built by hand with any other value
@@ -338,11 +338,11 @@ pub struct SourceTestConfig {
     /// LTS:2, LTS:3 and LTS:P poll limits (up to `no_timeout_poll_cap`).
     pub flt_no_timeout: bool,
     /// Bit 6: the source should use the maximum FRL rate with DSC. With `frl_max` also
-    /// set, the Amlogic (citing the specification) and NVIDIA drivers act on neither; the
+    /// set, the Amlogic (citing the standard) and NVIDIA drivers act on neither; the
     /// AMD driver trains at the maximum rate.
     pub dsc_frl_max: bool,
     /// Bit 7: the source should use the maximum FRL rate. With `dsc_frl_max` also set, the
-    /// Amlogic (citing the specification) and NVIDIA drivers act on neither; the AMD
+    /// Amlogic (citing the standard) and NVIDIA drivers act on neither; the AMD
     /// driver trains at the maximum rate.
     pub frl_max: bool,
 }
