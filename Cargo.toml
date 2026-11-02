@@ -17,4 +17,4 @@ std = ["alloc"]
 
 [dependencies]
 hdmi-hal = { version = "0.6", default-features = false }
-display-types = { version = "0.4.3", default-features = false }
+display-types = { version = ">=0.4.3, <0.6", default-features = false }
