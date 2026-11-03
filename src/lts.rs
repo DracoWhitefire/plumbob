@@ -197,7 +197,7 @@ impl Lanes {
                 LtpReq::Reserved(_) => {}
                 _ if !in_use => {}
                 // Without FLT_no_timeout the lane keeps its previous pattern, as the
-                // Xilinx driver does (spec Table 6-32, LTP3 row).
+                // Xilinx driver does for LTP3.
                 LtpReq::NyquistClock if !no_timeout => {}
                 LtpReq::FfeChange => {
                     // Held at the maximum once reached.

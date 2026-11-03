@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-03
+
+### Changed
+
+- **`display-types` requirement widened to `>=0.4.3, <0.6`**, so both 0.4.3 and 0.5 are
+  accepted, as in hdmi-hal. The display-types items plumbob uses are the same in both, so this
+  is not a breaking change: an existing dependency on display-types 0.4 keeps resolving, and
+  one on 0.5 now lines up with plumbob's. The `simulate` example takes the same range.
+
 ## [0.4.0] - 2026-10-25
 
 ### Breaking changes
@@ -177,7 +186,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **`TrainingConfig` has poll limits per state**: `flt_ready_polls` (default 50),
   `ltp_polls` (100), `frl_start_polls` (100) and `no_timeout_poll_cap` (500), replacing
   `flt_ready_timeout`, `frl_start_timeout` and `ltp_timeout` (each 1000), plus
-  `max_retrains` (3). The defaults reproduce the spec's 100 ms and 200 ms timeouts and the
+  `max_retrains` (3). The defaults reproduce HDMI 2.1's 100 ms and 200 ms timeouts and the
   AMD and Intel drivers' 200 ms `FRL_start` wait at one poll every 2 ms; the values of
   the `FLT_no_timeout` cap and the retrain count follow the AMD driver. `ffe_levels`
   defaults to 3, as the AMD and Intel drivers advertise; set it to 0 for a PHY that

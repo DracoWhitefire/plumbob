@@ -3,10 +3,11 @@
 ## Role
 
 `plumbob` implements the Fixed Rate Link (FRL) training state machine defined in the HDMI
-2.1 specification. It defines the interface its dependencies must satisfy rather than
+2.1. It defines the interface its dependencies must satisfy rather than
 depending on any specific SCDC implementation. It is meant to be replaceable in the same
-way: the integration layer above it (not yet built) will define a `LinkTrainer` trait for
-plumbob, or any other crate, to implement.
+way: the link orchestrator above it (not yet built) will define the interface it needs from
+link training and implement it for plumbob, so that another trainer can take plumbob's
+place.
 
 Training establishes actual link capability, not just theoretical negotiation. A
 `NegotiatedConfig` from concordance identifies what the hardware should support; link
@@ -28,7 +29,7 @@ deployment model, not a requirement.
 plumbob covers:
 
 - the FRL link training state machine: LTS:2 → LTS:3 → LTS:P, with LTS:4 (lower rate)
-  on the sink's request and LTS:L (exit to TMDS) on failure, per HDMI 2.1 §6,
+  on the sink's request and LTS:L (exit to TMDS) on failure, as HDMI 2.1 defines them,
 - `ScdcClient`: the typed SCDC interface trait, defined here and implemented by SCDC crates,
 - `FrlTrainer<C, P>`: the central type, owning an `ScdcClient` and a PHY,
 - `lts`: the state machine as one I/O-free function returning a future (`lts::run`) over
@@ -57,7 +58,7 @@ The following are out of scope:
   for lane reconfiguration are in platform PHY backends.
 - **Timing** — plumbob is poll-based and has no clock: no sleep, no timers. `FrlTrainer`
   blocks until training ends; `plumbob-async` drives the same state machine on the
-  caller's executor. The spec's timeouts (100 ms for `FLT_ready`, 200 ms for LTS:3) are
+  caller's executor. HDMI 2.1's timeouts (100 ms for `FLT_ready`, 200 ms for LTS:3) are
   expressed as poll limits in `TrainingConfig`; their defaults assume one poll every 2 ms.
   plumbob runs the polling loop itself, so the interval has to come from the polled
   `ScdcClient` methods, which wait before they read.
@@ -76,7 +77,7 @@ The following are out of scope:
 ```
 display-types  ─┐
 hdmi-hal       ─┴─►  plumbob  ◄─  culvert (implements ScdcClient, feature-gated)
-                               ◄─  integration layer (planned: will define LinkTrainer)
+                               ◄─  link orchestrator (planned: its own trait, implemented for plumbob)
 ```
 
 - `hdmi-hal` — `HdmiPhy`, `LanePatterns`, `LtpPattern`, `FrlOutput`, `EqParams`,
@@ -87,29 +88,30 @@ plumbob does not depend on `culvert`. The relationship runs the other way: culve
 implements `plumbob::ScdcClient` for `Scdc<T>`, gated behind a `plumbob` cargo feature.
 Any crate that implements `ScdcClient` can be used in place of culvert.
 
-plumbob will not depend on the integration layer either. The integration layer, which is
-not yet built, will define a `LinkTrainer` trait for plumbob to implement, so that any
-crate implementing `LinkTrainer` can be used in place of plumbob.
+plumbob will not depend on the link orchestrator either. The orchestrator, which is not yet
+built, will define the trait it drives link training through and implement it for plumbob
+in its own crate, behind a feature, so that any crate implementing that trait can be used in
+place of plumbob.
 
 plumbob does not depend on `concordance` or `piaf`. It receives a target FRL rate from
 the caller and trains at that rate.
 
 ---
 
-## Training Procedure (HDMI 2.1 §6, link training states)
+## Training Procedure (HDMI 2.1 link training states)
 
 `train` runs the source side of FRL link training over a caller-supplied list of rates, in
 order, and returns when it reaches a terminal state; `train_at_rate` is the same with a
 single rate. The list must be one the procedure can run: LTS:4 is a step down, so every
 rate must be strictly lower than the one before it, and `NotSupported` is not an FRL
 rate. Any other list is rejected with `TrainingError::InvalidRates { index, rate }`
-before any SCDC or PHY operation — the specification decides this, not the caller, and
+before any SCDC or PHY operation — the standard decides this, not the caller, and
 running a list LTS:4 cannot follow would invent behaviour. An empty list has nothing to
 train at and is rejected the same way, as `TrainingError::NoRates`; a caller with no FRL
 rate to try (a sink without FRL) does not train, and calls `exit_to_tmds` if an earlier
 FRL link must come down. So every `FallbackRequired` follows training, and leaves both
 ends in TMDS. Which valid rates to try remains the caller's choice. The sequence follows the link training states (LTS) of the
-HDMI 2.1 specification as implemented by open-source HDMI 2.1 transmitters: the
+HDMI 2.1 procedure as implemented by open-source HDMI 2.1 transmitters: the
 AMD/Xilinx `v_hdmitx1` driver (`xv_hdmitx1_frl.c`) and the Intel `xe` FRL series
 (`intel_hdmi_train_lanes`). LTS:1 (reading the sink's EDID and SCDC capability) is the
 caller's job; training starts at LTS:2.
@@ -165,7 +167,7 @@ always what the PHY was last told: LTS:2 leaves every lane with no pattern and T
      - **0x1, 0x2, 0x4–0x8** — that lane's pattern becomes the requested one.
      - **0x3** (Nyquist clock) — becomes the lane's pattern only when `flt_no_timeout` is
        set. Otherwise the lane keeps its previous pattern and the other lanes are acted
-       on, as the Xilinx driver does (citing the spec's Table 6-32, LTP3 row). The AMD
+       on, as the Xilinx driver does for LTP3. The AMD
        driver differs: a 0x3 on any lane makes it skip the whole request set and wait
        for the next `FLT_update`.
      - **0xE** — the lane's TxFFE level rises by one, up to the advertised maximum, and is
@@ -264,7 +266,7 @@ set. A failed attempt never leaves the sink configured for an FRL rate the sourc
 driving. Every step is attempted even if an earlier one fails, so a PHY error cannot keep
 the sink in FRL, nor an SCDC error the PHY.
 
-LTS:L also follows an SCDC or PHY error, wherever it happens: the spec's exit from a
+LTS:L also follows an SCDC or PHY error, wherever it happens: the standard's exit from a
 failed attempt applies whatever made it fail. The error is returned as
 `TrainingError::Scdc` or `TrainingError::Phy`, with `exit: TmdsExit` saying what LTS:L
 did — `Exited`, or `Failed` with an `ExitError`: the first error of each end whose steps
@@ -315,7 +317,7 @@ pub enum LtpReq {
     Lfsr3,          // 0x8
     FfeChange,      // 0xE: raise this lane's TxFFE level
     RateChange,     // 0xF: drop the FRL rate
-    Reserved(u8),   // 0x9–0xD: undefined by the specification
+    Reserved(u8),   // 0x9–0xD: undefined by HDMI 2.1
 }
 // `LtpReq::value()` returns the 4-bit value.
 
@@ -655,7 +657,7 @@ What plumbob does with `Source_Test_Configuration`: it acts on `FLT_no_timeout`,
 passes the three TxFFE bits to the PHY as hdmi-hal's `TxFfeRestrictions`. `FRL_Max` and
 `DSC_FRL_Max` select the rate, which the caller does before training, through culvert's
 `SourceTestConfig`: the reference drivers read them during rate selection (AMD, Amlogic,
-NVIDIA). With both set, Amlogic (citing the specification) and NVIDIA act on neither,
+NVIDIA). With both set, Amlogic (citing the standard) and NVIDIA act on neither,
 while AMD trains at the maximum rate. NVIDIA also turns DSC off under `FRL_Max` and on
 under `DSC_FRL_Max`.
 
@@ -665,16 +667,19 @@ depending on the feature set, breaking crates that use culvert without plumbob. 
 dependency unconditional would force plumbob into every culvert user's dependency graph.
 The boundary conversion is small, explicit, and keeps both crates independently usable.
 
-### Above: `LinkTrainer` (planned)
+### Above: the link orchestrator (planned)
 
-The integration layer will define the interface it needs from link training, and plumbob
-will implement it. The integration layer will then have no dependency on plumbob
-specifically — any crate that implements `LinkTrainer` will be substitutable.
+The link orchestrator will define the interface it needs from link training, and implement
+it for plumbob in its own crate, behind a feature, translating plumbob's types into its
+own. Any crate that implements that interface will be substitutable for plumbob. The
+implementation lives above rather than in plumbob because a new crate's traits change often
+at first, and each change would otherwise force a plumbob release; it also keeps plumbob's
+dependencies pointing down the stack. (culvert implementing plumbob's `ScdcClient` is the
+older arrangement, and stays.)
 
-The `LinkTrainer` trait does not exist yet; it will live in the integration layer crate,
-which is not yet built. Its surface will be driven by what the DRM/KMS integration
-actually needs to call: at minimum, `train` and the ability to recover the SCDC client and
-PHY on completion. Until then, callers use `FrlTrainer` directly.
+A Linux DRM driver, whose DRM core already sequences the link, can call `FrlTrainer`
+directly without the orchestrator. Until the orchestrator exists, all callers use
+`FrlTrainer` directly.
 
 ---
 
@@ -785,8 +790,8 @@ Companions", "`Send` futures for multi-threaded executors") records the decision
 
 - **Interfaces owned by consumers.** plumbob defines the interface its dependencies
   must satisfy (`ScdcClient`) rather than depending on a concrete implementation.
-  The integration layer above will define the interface plumbob must satisfy
-  (`LinkTrainer`, planned).
+  The link orchestrator above will define the interface it drives training through and
+  implement it for plumbob (planned).
   Each layer is substitutable independently.
 - **Deterministic and testable.** The training procedure runs identically against a
   simulated `ScdcClient` and real hardware. Implement `ScdcClient` with a register
@@ -800,10 +805,10 @@ Companions", "`Send` futures for multi-threaded executors") records the decision
   point produces a typed result and leaves the sink in a defined state: TMDS after a
   fallback or an error, or, when LTS:L itself fails, an error saying which end did not
   get there. No implicit control flow, no silent completion.
-- **Policy at the right layer.** plumbob implements the spec, not strategy. Which rates to
+- **Policy at the right layer.** plumbob implements the standard's procedure, not strategy. Which rates to
   try and in what order, retries beyond one call, and the decision of whether to surface
   a `FallbackRequired` to the user are the caller's concerns. Stepping down on the sink's
-  request is the spec's LTS:4, so it happens inside `train`.
+  request is the standard's LTS:4, so it happens inside `train`.
 - **Transport and PHY errors are distinct.** A caller diagnosing a training failure
   needs to know whether it came from the I²C bus, the PHY, or the protocol. `TrainingError`
   keeps them separate.
@@ -823,7 +828,7 @@ Companions", "`Send` futures for multi-threaded executors") records the decision
 The procedure above relies on these parts of `hdmi-hal` (mirrored in `hdmi-hal-async`,
 and recorded by `hdmi-hal-i2c-dev`'s `StubPhy`):
 
-- **`LtpPattern` with the spec values**: 1 = all ones, 2 = all zeros, 3 = Nyquist clock,
+- **`LtpPattern` with the standard's values**: 1 = all ones, 2 = all zeros, 3 = Nyquist clock,
   4 = DDE compliance and 5–8 = LFSR 0–3. `LtpReq::pattern` maps a request to the pattern
   of the same value.
 - **Per-lane patterns.** `HdmiPhy::send_ltp` takes the full per-lane set
@@ -931,7 +936,7 @@ How a caller keeps a call shorter than the worst case:
   returns `NoTimeoutHold` without LTS:L. Both agree with the Xilinx driver, which has no
   limit, that the source does not leave FRL on its own timer under test. The Intel series
   does not handle `FLT_no_timeout`.
-- The 100 ms `FLT_ready` limit (50 polls) is the spec's and the shortest of the
+- The 100 ms `FLT_ready` limit (50 polls) is HDMI 2.1's and the shortest of the
   references: the Xilinx driver waits 100 ms, the AMD driver up to 105 polls at least
   2 ms apart (≈ 210 ms), the Intel series 250 ms. A sink that asserts `FLT_ready` within
   those drivers' limits but after 100 ms ends the attempt with `FltReadyTimeout`; raise
@@ -973,5 +978,5 @@ How a caller keeps a call shorter than the worst case:
 - `ScdcClient` has no method for the CED counters: they are diagnostics, which training
   never reads, and a method there would make every implementation carry one. A link
   health monitor reads them from the SCDC implementation (culvert's `read_ced`), or
-  through a trait of its own in the integration layer. Through 0.3, `ScdcClient` had a
+  through a trait of its own in the link orchestrator. Through 0.3, `ScdcClient` had a
   `read_ced`, with `CedCount` and `CedCounters` to return.

@@ -11,26 +11,26 @@
 > **Part of [Ashlar](https://ashlar-display.org)** — a display connection stack in Rust,
 > HDMI 2.1 first: from EDID parsing through mode negotiation to FRL link training.
 >
-> [display-types](https://github.com/DracoWhitefire/display-types) ·
-> [piaf](https://github.com/DracoWhitefire/piaf) ·
-> [concordance](https://github.com/DracoWhitefire/concordance) ·
-> [cartouche](https://github.com/DracoWhitefire/cartouche) ·
-> [culvert](https://github.com/DracoWhitefire/culvert) ·
+> [display-types](https://github.com/ashlar-display/display-types) ·
+> [piaf](https://github.com/ashlar-display/piaf) ·
+> [concordance](https://github.com/ashlar-display/concordance) ·
+> [cartouche](https://github.com/ashlar-display/cartouche) ·
+> [culvert](https://github.com/ashlar-display/culvert) ·
 > **plumbob** ·
-> [hdmi-hal](https://github.com/DracoWhitefire/hdmi-hal) ·
-> [hdmi-hal-i2c-dev](https://github.com/DracoWhitefire/hdmi-hal-i2c-dev)
+> [hdmi-hal](https://github.com/ashlar-display/hdmi-hal) ·
+> [hdmi-hal-i2c-dev](https://github.com/ashlar-display/hdmi-hal-i2c-dev)
 
 FRL link training state machine for HDMI 2.1.
 
 `plumbob` implements the source side of Fixed Rate Link (FRL) training as defined in the
-HDMI 2.1 specification. It owns the link training state machine — LTS:2 (prepare),
+HDMI 2.1. It owns the link training state machine — LTS:2 (prepare),
 LTS:3 (train), LTS:P (pass), LTS:4 (lower rate) and LTS:L (exit to TMDS) — and defines
 the `ScdcClient` interface its SCDC implementation must satisfy. Callers supply an
 `ScdcClient` and an `HdmiPhy`, call `train` with the rates to try, and handle the
 `TrainingOutcome`.
 
 Which rates to try, SCDC register decoding, and PHY vendor sequences are all out of
-scope: plumbob implements the spec, not the strategy around it.
+scope: plumbob implements the standard's procedure, not the strategy around it.
 
 ## Usage
 
@@ -176,7 +176,7 @@ again when it is set.
 returns both ends to TMDS before any `FallbackRequired`, and after an SCDC or PHY error.
 
 Poll limits are exact counts: N means exactly N polls before the state gives up. The
-defaults (50 / 100 / 100 polls) reproduce the spec's 100 ms and 200 ms timeouts, and the
+defaults (50 / 100 / 100 polls) reproduce HDMI 2.1's 100 ms and 200 ms timeouts, and the
 200 ms `FRL_start` wait of the AMD and Intel drivers, at one poll every 2 ms. The
 inter-poll delay is the implementer's responsibility and belongs inside the polled
 `ScdcClient` methods. When the sink sets `FLT_no_timeout` it is under compliance test: the
@@ -298,10 +298,11 @@ cargo add plumbob --features std
 
 ## Stack position
 
-`plumbob` sits between the SCDC/PHY implementations and the integration layer that
-will orchestrate rate selection and fallback. It defines one interface (`ScdcClient`) and
-will implement one (`LinkTrainer`) that the integration layer, once built, will define;
-the dotted edge below marks that planned relationship.
+`plumbob` sits between the SCDC/PHY implementations and the link orchestrator that will
+sequence bring-up, rate selection and fallback. It defines one interface (`ScdcClient`).
+The orchestrator, once built, will define the interface it needs from link training and
+implement it for plumbob itself, behind a feature of its own; plumbob depends on nothing
+above it. The dotted edge below marks that planned relationship.
 
 ```mermaid
 flowchart LR
@@ -309,12 +310,12 @@ flowchart LR
     hal["hdmi-hal"]
     culvert["culvert"]
     plumbob["plumbob"]
-    integration["integration layer (planned)"]
+    integration["link orchestrator (planned)"]
 
     dt --> plumbob
     hal --> plumbob
     culvert -->|"implements ScdcClient"| plumbob
-    plumbob -.->|"will implement LinkTrainer"| integration
+    integration -.->|"will drive through its own trait"| plumbob
 ```
 
 `plumbob` does not depend on `culvert`. The relationship runs the other way: `culvert`

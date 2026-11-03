@@ -60,7 +60,7 @@ pub enum TrainingEvent {
         /// Its new TxFFE level.
         level: u8,
     },
-    /// LTS:3: a lane requested a value the specification leaves undefined (0x9–0xD). A
+    /// LTS:3: a lane requested a value HDMI 2.1 leaves undefined (0x9–0xD). A
     /// lane in use keeps its pattern and TxFFE level; lane 3 at a 3-lane rate is not in
     /// use, and its requests are not acted on whatever their value.
     #[non_exhaustive]
