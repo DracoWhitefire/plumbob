@@ -28,7 +28,7 @@ dependencies = [
 
 [[package]]
 name = "plumbob"
-version = "0.4.0"
+version = "0.4.1"
 dependencies = [
  "display-types",
  "hdmi-hal",
