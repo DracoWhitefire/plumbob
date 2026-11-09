@@ -164,7 +164,10 @@ always what the PHY was last told: LTS:2 leaves every lane with no pattern and T
 2. If `flt_update` is not set, poll again.
 3. Read the per-lane requests (`LtpRequests`) and act on the active lanes:
    - **all 0x0** — training passed: go to LTS:P.
-   - **all 0xF** — the sink requests a lower rate: go to LTS:4.
+   - **all 0xF** — the sink requests a lower rate: go to LTS:4. Only 0xF on every active
+     lane lowers the rate, as in the Xilinx driver and the Intel series; a 0xF on some
+     lanes but not all keeps those lanes' state, like 0x0. The AMD driver lowers the rate
+     on 0xF from any single lane.
    - otherwise, per lane, update the lane's state:
      - **0x1, 0x2, 0x4–0x8** — that lane's pattern becomes the requested one.
      - **0x3** (Nyquist clock) — becomes the lane's pattern only when `flt_no_timeout` is
@@ -204,14 +207,27 @@ If training has not passed within the poll limit, go to LTS:L and return
      is never returned with the PHY on restrictions the tester has replaced.
    - **`flt_update`** is checked next. If `frl_start` is set as well, the retrain wins,
      as in the Xilinx driver: `frl_start` is cleared (so it cannot end the next LTS:P
-     early) and `FrlStartWithRetrain` is recorded; then the retrain below.
+     early) and `FrlStartWithRetrain` is recorded; then the retrain below. Starting video
+     on a link the sink has asked to retrain would only have to be undone. The AMD driver
+     passes and retrains later; the Intel series clears both and passes, discarding the
+     sink's request.
    - **`frl_start`** — clear it and return `Success`. The caller starts video
      (`set_frl_output(Active)`) on the PHY, through `FrlTrainer::phy_mut` or after
      `into_parts`.
    - **`flt_update`** — the sink requests retraining: go back to LTS:3, at most
      `TrainingConfig::max_retrains` times per `train` call. LTS:3 resumes from the state
-     LTS:P left: no pattern on any lane, the TxFFE levels as they were. The next request
-     after that goes to LTS:L and returns `FallbackRequired { reason: RetrainsExhausted }`.
+     LTS:P left: no pattern on any lane, the TxFFE levels as they were, with a fresh poll
+     limit; levels are reset only in LTS:2 and LTS:4. The Xilinx driver does the same: it
+     clears the patterns on entering LTS:P and again on the retrain, and keeps its TxFFE
+     adjustments. The next request after that goes to LTS:L and returns
+     `FallbackRequired { reason: RetrainsExhausted }`, so the LTS:P ↔ LTS:3 cycle always
+     ends. The drivers differ on retraining: the Xilinx driver returns to LTS:3 without a
+     limit (its state machine is timer-driven, not blocking); the AMD driver's LTS:P clears
+     `FLT_update` and stops waiting, and a retrain request reaches it later through its
+     link-status check, which reruns the whole procedure; the Intel series falls back to
+     TMDS on the first request. `max_retrains: 0` gives the Intel series' fallback, except
+     when `FRL_start` is set as well: Intel then clears both and passes, while plumbob
+     clears `FRL_start` and falls back.
 3. If neither arrives within the limit, go to LTS:L and return
    `FallbackRequired { reason: FrlStartTimeout }` — or, under `FLT_no_timeout`, hold the
    link (see below).
@@ -446,6 +462,24 @@ pub struct TrainingConfig {
 }
 ```
 
+Where the defaults come from:
+
+- **`flt_ready_polls`, 100 ms**, is HDMI 2.1's and the shortest of the references: the
+  Xilinx driver waits 100 ms, the AMD driver up to 105 polls at least 2 ms apart
+  (≈ 210 ms), the Intel series 250 ms. A sink that asserts `FLT_ready` within those
+  drivers' limits but after 100 ms ends the attempt with `FltReadyTimeout`; raise
+  `flt_ready_polls` for it.
+- **`frl_start_polls`, 200 ms**, is the AMD and Intel drivers' `FRL_start` wait; the
+  Xilinx driver has none.
+- **`ffe_levels`, 3**, is the number the AMD and Intel drivers advertise, limited to the
+  rate's maximum (3 up to 12 Gbps). With 0 the sink could request no TxFFE raises, and
+  every 0xE would be ignored; a PHY that cannot apply TxFFE sets it to 0 explicitly.
+- **`no_timeout_poll_cap`, 500**, is the AMD driver's cap; what happens when it runs out
+  is plumbob's ("`FLT_no_timeout` — holding the link"). The Intel series does not handle
+  `FLT_no_timeout`.
+- **`max_retrains`, 3**, is the number of retries the AMD driver allows a failed
+  procedure (up to four runs), applied here to retrains.
+
 ```rust
 impl<C: ScdcClient, P: FrlPhy> FrlTrainer<C, P> {
     /// Train over `rates` in order, stepping down when the sink requests it.
@@ -627,6 +661,10 @@ The rule: if it touches state across multiple register accesses, timeout logic, 
 decision of what to do with a register value, it belongs in plumbob. If it reads or writes
 registers and returns typed results, it belongs in the SCDC implementation.
 
+`ScdcClient` has no method for the CED counters: they are diagnostics, which training
+never reads, and a method there would make every implementation carry one. A link health
+monitor reads them from the SCDC implementation (culvert's `read_ced`).
+
 #### Type ownership and the culvert boundary
 
 plumbob owns the types that form the vocabulary of `ScdcClient`: `LtpReq`, `LtpRequests`,
@@ -729,8 +767,7 @@ The state machine is one function returning a future, `lts::run` (see below), so
 link training needs no second implementation. `plumbob-async` defines an async
 `ScdcClient` and an async `FrlTrainer` that drives `lts::run` over async I/O, and depends
 on `plumbob` for the state machine and all shared types; `culvert-async` implements its
-`ScdcClient`. See the stack design document's "Sync and Async Companions" section for why
-the core lives here.
+`ScdcClient`.
 
 ### `plumbob::lts`
 
@@ -784,8 +821,7 @@ Code generic over the I/O traits cannot spawn `run` on a multi-threaded executor
 of the leaf traits do it instead — hdmi-hal-async's `SendFrlPhy` and plumbob-async's
 `SendScdcClient`, each a `Send` variant of the plain trait with a blanket implementation
 of it. Over them plumbob-async's adapter, and so the `run` future, is `Send` in generic
-code; `TrainingIo` itself needs no twin. The stack design document ("Sync and Async
-Companions", "`Send` futures for multi-threaded executors") records the decision.
+code; `TrainingIo` itself needs no twin.
 
 ---
 
@@ -923,63 +959,3 @@ How a caller keeps a call shorter than the worst case:
   an error leaves the link as it is (`TmdsExit::HeldUnderTest`); `no_timeout_poll_cap`
   bounds that case. This works the same in sync and async code; plumbob has no separate
   stop hook, because the poll interval, the limits above and this already cover it.
-
----
-
-## Decisions
-
-- The sink's rate-drop request is handled inside `train` (LTS:4) over the caller's rate
-  list, and every non-success is `FallbackRequired { reason }` with a non-exhaustive
-  `FallbackReason`.
-- Poll limits default to 50 / 100 / 100 polls (100 / 200 / 200 ms at 2 ms per poll), with
-  `FLT_no_timeout` honoured up to `no_timeout_poll_cap` (500 polls). The 200 ms
-  `FRL_start` wait is the AMD and Intel drivers' (the Xilinx driver has none). The number
-  500 is the AMD driver's cap, but what happens when it runs out is plumbob's: AMD applies
-  it in LTS:3 only and returns success; plumbob applies it in LTS:2, LTS:3 and LTS:P and
-  returns `NoTimeoutHold` without LTS:L. Both agree with the Xilinx driver, which has no
-  limit, that the source does not leave FRL on its own timer under test. The Intel series
-  does not handle `FLT_no_timeout`.
-- The 100 ms `FLT_ready` limit (50 polls) is HDMI 2.1's and the shortest of the
-  references: the Xilinx driver waits 100 ms, the AMD driver up to 105 polls at least
-  2 ms apart (≈ 210 ms), the Intel series 250 ms. A sink that asserts `FLT_ready` within
-  those drivers' limits but after 100 ms ends the attempt with `FltReadyTimeout`; raise
-  `flt_ready_polls` for it.
-- A lane's TxFFE level is raised up to the advertised maximum and held there.
-- `TrainingConfig::ffe_levels` defaults to 3, the number the AMD and Intel drivers
-  advertise (limited to the rate's maximum, which is 3 up to 12 Gbps). With 0, the sink
-  could request no TxFFE raises at all and plumbob would ignore every 0xE; a PHY that
-  cannot apply TxFFE sets it to 0 explicitly.
-- A Nyquist clock request (0x3) without `FLT_no_timeout` leaves the lane's previous pattern
-  in place; plumbob tracks and sends the full per-lane set.
-- FRL output control (`set_frl_output`) is part of `FrlPhy`.
-- In LTS:P, when the sink sets `FRL_start` and `FLT_update` together, the retrain wins:
-  `FRL_start` is cleared and LTS:3 resumes, within `max_retrains`. Starting video on a
-  link the sink has asked to retrain would only have to be undone. The Xilinx driver ends
-  up in LTS:3 the same way; AMD passes and retrains later; Intel clears both and passes,
-  discarding the sink's request.
-- Retraining from LTS:P starts LTS:3 from the state LTS:P left — no pattern on any lane,
-  each lane's TxFFE level kept — with a fresh poll limit; levels are reset only in LTS:2
-  and LTS:4. This follows from plumbob's lane model being what the PHY was last told
-  (LTS:P stopped the patterns but not the levels), and matches the Xilinx driver, which
-  clears the patterns on entering LTS:P and again on the retrain but keeps its TxFFE
-  adjustments. Intel rebuilds every lane's pattern from scratch on each request, and AMD
-  retrains only after link-up, by running the whole procedure again. Retraining is
-  bounded by `max_retrains` (default 3) per `train` call, so the LTS:P ↔ LTS:3 cycle
-  always ends. The reference drivers differ here: Xilinx returns to LTS:3 without a limit
-  (its state machine is timer-driven, not blocking); AMD's LTS:P clears `FLT_update` and
-  stops waiting, and a retrain request reaches it later through its link-status check,
-  which reruns the whole procedure; Intel falls back to TMDS on the first request. The
-  default borrows the number of retries AMD allows a failed procedure (3, so up to four
-  runs), applied here to retrains. `max_retrains: 0` gives Intel's fallback on a retrain
-  request, except when `FRL_start` is set as well: Intel then clears both and passes,
-  while plumbob clears `FRL_start` and falls back. The bound applies under `FLT_no_timeout`
-  too: unlike the poll limits it is not suspended there, and exhausting it falls back
-  rather than holding the link (see "`FLT_no_timeout` — holding the link").
-- A 0xF on some lanes but not all keeps those lanes' state, like 0x0; only 0xF on every
-  active lane lowers the rate, as in the Xilinx driver and the Intel series. The AMD
-  driver lowers the rate on 0xF from any single lane.
-- `ScdcClient` has no method for the CED counters: they are diagnostics, which training
-  never reads, and a method there would make every implementation carry one. A link
-  health monitor reads them from the SCDC implementation (culvert's `read_ced`), or
-  through a trait of its own in the link orchestrator. Through 0.3, `ScdcClient` had a
-  `read_ced`, with `CedCount` and `CedCounters` to return.

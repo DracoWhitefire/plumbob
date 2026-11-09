@@ -19,7 +19,7 @@ std = ["alloc"]
 hdmi-hal = { version = "0.6", default-features = false }
 display-types = { version = ">=0.4.3, <0.6", default-features = false }
 
-# Prototype against hdmi-hal's unreleased breaking release (release order step 2): a pushed
+# Prototype against hdmi-hal's unreleased breaking release: a pushed
 # commit of its feat/tmds-phy branch, moved by hand. Removed when hdmi-hal is released.
 [patch.crates-io]
 hdmi-hal = { git = "https://github.com/ashlar-display/hdmi-hal", rev = "35131adfe65067620e004665f6e2a88a4dbd6fb9" }
