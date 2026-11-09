@@ -3,7 +3,7 @@ use core::pin::pin;
 use core::task::{Context, Poll, Waker};
 
 use display_types::cea861::hdmi_forum::HdmiForumFrl;
-use hdmi_hal::phy::{EqParams, FrlOutput, HdmiPhy, LanePatterns};
+use hdmi_hal::phy::{EqParams, FrlOutput, FrlPhy, LanePatterns};
 
 use crate::lts::{self, TrainingIo};
 use crate::scdc::ScdcClient;
@@ -72,7 +72,7 @@ pub enum TrainingOutcome {
 /// ([`InvalidRates`](Self::InvalidRates), [`NoRates`](Self::NoRates)) — not that the link
 /// simply did not train.
 ///
-/// After an SCDC or PHY error, plumbob performs LTS:L, returning both ends to TMDS as
+/// After an SCDC or PHY error, plumbob performs LTS:L, turning FRL off at both ends as
 /// after a fallback, unless [`TrainingConfig::exit_to_tmds_on_error`] is off or the sink
 /// had set `FLT_no_timeout` (the link is then held for the test equipment, as with
 /// [`TrainingOutcome::NoTimeoutHold`]). `exit` says what happened. When LTS:L itself fails after a fallback, the error is
@@ -195,7 +195,7 @@ pub struct TrainingConfig {
     /// than ending in [`TrainingOutcome::NoTimeoutHold`]. A compliance test that needs
     /// more retrains raises it.
     pub max_retrains: u32,
-    /// Whether an SCDC or PHY error is followed by LTS:L, returning both ends to TMDS as a
+    /// Whether an SCDC or PHY error is followed by LTS:L, turning FRL off at both ends as a
     /// fallback does. Default `true`. Turn it off to leave the sink and PHY as the error
     /// left them, for example to inspect the sink's registers; [`TrainingError`] then
     /// reports [`TmdsExit::Skipped`]. While the sink sets `FLT_no_timeout` an error never
@@ -217,9 +217,9 @@ impl Default for TrainingConfig {
     }
 }
 
-type Error<C, P> = TrainingError<<C as ScdcClient>::Error, <P as HdmiPhy>::Error>;
+type Error<C, P> = TrainingError<<C as ScdcClient>::Error, <P as FrlPhy>::Error>;
 
-/// The central training type. Owns an `ScdcClient` and an `HdmiPhy`.
+/// The central training type. Owns an `ScdcClient` and an `FrlPhy`.
 ///
 /// Reusable across training attempts; use [`into_parts`](Self::into_parts) to recover
 /// the SCDC client and PHY when training is finished.
@@ -228,7 +228,7 @@ pub struct FrlTrainer<C, P> {
     phy: P,
 }
 
-impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
+impl<C: ScdcClient, P: FrlPhy> FrlTrainer<C, P> {
     /// Constructs a new `FrlTrainer` owning the given SCDC client and PHY.
     pub fn new(scdc: C, phy: P) -> Self {
         Self { scdc, phy }
@@ -260,8 +260,10 @@ impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
         &mut self.phy
     }
 
-    /// LTS:L on demand: stops the training patterns, returns the PHY to TMDS, turns FRL
-    /// off in `Config_1` and clears `FLT_update` if it is set.
+    /// LTS:L on demand: stops the training patterns, turns the PHY's FRL off (entering no
+    /// other mode; entering TMDS is the TMDS bring-up's, through hdmi-hal's `TmdsPhy`),
+    /// turns FRL off in `Config_1`, which returns the sink to TMDS, and clears `FLT_update`
+    /// if it is set.
     ///
     /// For taking an FRL link down outside [`train`](Self::train) — when the display is
     /// disabled or unplugged, or before a mode change — and after an error that did not
@@ -344,14 +346,14 @@ impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
     }
 }
 
-/// [`TrainingIo`] over a sync `ScdcClient` and `HdmiPhy`. Each operation is the sync call
+/// [`TrainingIo`] over a sync `ScdcClient` and `FrlPhy`. Each operation is the sync call
 /// itself, so its future is ready the first time it is polled.
 struct SyncIo<'a, C, P> {
     scdc: &'a mut C,
     phy: &'a mut P,
 }
 
-impl<C: ScdcClient, P: HdmiPhy> TrainingIo for SyncIo<'_, C, P> {
+impl<C: ScdcClient, P: FrlPhy> TrainingIo for SyncIo<'_, C, P> {
     type ScdcError = C::Error;
     type PhyError = P::Error;
 

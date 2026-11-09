@@ -2405,7 +2405,6 @@ fn phy_op(call: &PhyCall) -> PhyOp {
         PhyCall::SendLtp(_) => PhyOp::SendLtp,
         PhyCall::SetFrlOutput(_) => PhyOp::SetFrlOutput,
         PhyCall::AdjustEqualization(_) => PhyOp::AdjustEqualization,
-        PhyCall::SetScrambling(_) => PhyOp::SetScrambling,
     }
 }
 

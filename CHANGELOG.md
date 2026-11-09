@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Breaking changes
+
+- **Requires hdmi-hal's PHY traits by link mode.** The PHY trait plumbob drives is
+  `FrlPhy`, hdmi-hal's new name for `HdmiPhy`, re-exported under that name; there is no
+  alias. Implementations rename the trait; `set_scrambling` is no longer part of it (it is
+  `TmdsPhy`'s, which plumbob does not use), and `FrlPhy::Error` is bounded by
+  `core::fmt::Debug`.
+- **LTS:L turns the PHY's FRL off instead of returning it to TMDS.** It still calls
+  `set_frl_rate(HdmiForumFrl::NotSupported)`, which now means "FRL off" and enters no other
+  mode; the sink is back in TMDS as before. A caller that continues in TMDS enters it at the
+  source through hdmi-hal's `TmdsPhy`, as the TMDS bring-up (`spiritlevel`) does.
+
 ## [0.4.1] - 2026-11-03
 
 ### Changed

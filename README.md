@@ -26,7 +26,7 @@ FRL link training state machine for HDMI 2.1.
 HDMI 2.1. It owns the link training state machine — LTS:2 (prepare),
 LTS:3 (train), LTS:P (pass), LTS:4 (lower rate) and LTS:L (exit to TMDS) — and defines
 the `ScdcClient` interface its SCDC implementation must satisfy. Callers supply an
-`ScdcClient` and an `HdmiPhy`, call `train` with the rates to try, and handle the
+`ScdcClient` and an `FrlPhy`, call `train` with the rates to try, and handle the
 `TrainingOutcome`.
 
 Which rates to try, SCDC register decoding, and PHY vendor sequences are all out of
@@ -71,7 +71,7 @@ Construct an `FrlTrainer` and train over the rates to try, highest first. plumbo
 down through the list when the sink asks for a lower rate:
 
 ```rust
-use plumbob::{FrlOutput, FrlTrainer, HdmiForumFrl, HdmiPhy, TrainingConfig, TrainingOutcome};
+use plumbob::{FrlOutput, FrlTrainer, HdmiForumFrl, FrlPhy, TrainingConfig, TrainingOutcome};
 
 let mut trainer = FrlTrainer::new(scdc, phy);
 let config = TrainingConfig::default();
@@ -117,7 +117,7 @@ For a complete worked example with simulated SCDC and PHY backends, see
 no listed rate trained, with a `FallbackReason`; it always leaves the sink and PHY in
 TMDS. `TrainingError` means a hard I/O failure from the SCDC client or PHY. The two are
 kept distinct so a caller diagnosing a failure knows whether it came from the protocol or
-the bus. After an I/O error plumbob still returns both ends to TMDS, and the error's
+the bus. After an I/O error plumbob still turns FRL off at both ends, and the error's
 `exit` field (`TmdsExit`) says whether that worked; set
 `TrainingConfig::exit_to_tmds_on_error` to `false` to leave them as the error left them.
 While the sink sets `FLT_no_timeout` (compliance testing) an error leaves the link as it
@@ -173,7 +173,9 @@ The caller polls `Update_0` (the Xilinx driver checks every 250 ms) and calls `t
 again when it is set.
 
 **LTS:4** moves to the next rate in the list and continues LTS:3 there. **LTS:L**
-returns both ends to TMDS before any `FallbackRequired`, and after an SCDC or PHY error.
+turns FRL off at both ends before any `FallbackRequired`, and after an SCDC or PHY error:
+the sink is back in TMDS, and the PHY has no mode until the caller enters one (TMDS
+through `spiritlevel` and hdmi-hal's `TmdsPhy`).
 
 Poll limits are exact counts: N means exactly N polls before the state gives up. The
 defaults (50 / 100 / 100 polls) reproduce HDMI 2.1's 100 ms and 200 ms timeouts, and the
@@ -259,7 +261,7 @@ LTS:P means training passed but the sink never released the link. Every
 The state machine is written once, as `plumbob::lts::run`: a function returning a future,
 over the `TrainingIo` trait (the SCDC and PHY operations training performs), which does no
 I/O of its own. `FrlTrainer` drives it synchronously over an `ScdcClient` and an
-`HdmiPhy`, with no async runtime: its I/O completes immediately, so the function never
+`FrlPhy`, with no async runtime: its I/O completes immediately, so the function never
 waits. [`plumbob-async`](https://crates.io/crates/plumbob-async) drives the same function
 over async I/O, so sync and async training cannot drift apart. Implementing `TrainingIo`
 yourself drives it from any other environment.
@@ -328,7 +330,7 @@ Any crate that implements `ScdcClient` is substitutable.
   to do with a `FallbackRequired`; plumbob only steps down when the sink asks it to.
 - **SCDC register decoding** — plumbob reads typed values from `ScdcClient` and does not
   decode raw register bytes or know SCDC register addresses.
-- **PHY vendor sequences** — plumbob calls `HdmiPhy` methods (`set_frl_rate`, `send_ltp`,
+- **PHY vendor sequences** — plumbob calls `FrlPhy` methods (`set_frl_rate`, `send_ltp`,
   `set_frl_output`, `adjust_equalization`, which carries each lane's TxFFE level and the
   tester's `TxFfeRestrictions`); the register sequences behind them live in
   platform PHY backends.

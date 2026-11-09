@@ -12,7 +12,7 @@ use std::rc::Rc;
 use std::vec::Vec;
 
 use display_types::cea861::hdmi_forum::HdmiForumFrl;
-use hdmi_hal::phy::{EqParams, FrlOutput, HdmiPhy, LanePatterns};
+use hdmi_hal::phy::{EqParams, FrlOutput, FrlPhy, LanePatterns};
 
 use crate::scdc::ScdcClient;
 use crate::types::{
@@ -357,7 +357,6 @@ pub enum PhyOp {
     SendLtp,
     SetFrlOutput,
     AdjustEqualization,
-    SetScrambling,
 }
 
 /// A call the PHY received.
@@ -367,7 +366,6 @@ pub enum PhyCall {
     SendLtp(LanePatterns),
     SetFrlOutput(FrlOutput),
     AdjustEqualization(EqParams),
-    SetScrambling(bool),
 }
 
 /// A PHY that records every call.
@@ -414,7 +412,7 @@ impl SimPhy {
     }
 }
 
-impl HdmiPhy for SimPhy {
+impl FrlPhy for SimPhy {
     type Error = ();
 
     fn set_frl_rate(&mut self, rate: HdmiForumFrl) -> Result<(), ()> {
@@ -434,10 +432,6 @@ impl HdmiPhy for SimPhy {
             PhyOp::AdjustEqualization,
             PhyCall::AdjustEqualization(params),
         )
-    }
-
-    fn set_scrambling(&mut self, enabled: bool) -> Result<(), ()> {
-        self.record(PhyOp::SetScrambling, PhyCall::SetScrambling(enabled))
     }
 }
 
@@ -656,7 +650,6 @@ mod tests {
         phy.send_ltp(LanePatterns::default()).unwrap();
         phy.set_frl_output(FrlOutput::GapOnly).unwrap();
         phy.adjust_equalization(EqParams::new()).unwrap();
-        phy.set_scrambling(true).unwrap();
         assert_eq!(
             phy.calls,
             [
@@ -664,7 +657,6 @@ mod tests {
                 PhyCall::SendLtp(LanePatterns::default()),
                 PhyCall::SetFrlOutput(FrlOutput::GapOnly),
                 PhyCall::AdjustEqualization(EqParams::new()),
-                PhyCall::SetScrambling(true),
             ]
         );
     }
@@ -676,7 +668,6 @@ mod tests {
             PhyOp::SendLtp,
             PhyOp::SetFrlOutput,
             PhyOp::AdjustEqualization,
-            PhyOp::SetScrambling,
         ];
         for op in ops {
             let mut phy = SimPhy::new().fail(op);
@@ -685,7 +676,6 @@ mod tests {
                 phy.send_ltp(LanePatterns::default()),
                 phy.set_frl_output(FrlOutput::Active),
                 phy.adjust_equalization(EqParams::new()),
-                phy.set_scrambling(false),
             ];
             for (candidate, result) in ops.iter().zip(results) {
                 assert_eq!(

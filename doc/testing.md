@@ -1,7 +1,7 @@
 # Testing Strategy
 
 plumbob's test suite is built around deterministic state machine tests. All tests run
-against scripted implementations of `ScdcClient` and `HdmiPhy`; no real hardware is
+against scripted implementations of `ScdcClient` and `FrlPhy`; no real hardware is
 required at any point.
 
 ## Test structure
@@ -157,6 +157,6 @@ New logic without tests will likely trip this.
 
 ## Philosophy
 
-The training loop runs identically against simulated and real `ScdcClient` / `HdmiPhy`
+The training loop runs identically against simulated and real `ScdcClient` / `FrlPhy`
 implementations. A test that cannot run with a scripted `ScdcClient` does not belong in
 this repository. Hardware is never a test dependency.

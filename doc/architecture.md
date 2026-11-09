@@ -18,7 +18,7 @@ with other rates, fall back to TMDS, or surface the failure.
 
 plumbob is usable as a standalone crate without the broader concordance/piaf stack. A
 firmware image, an embedded hardware vendor's SDK, or a kernel driver can depend directly
-on plumbob, supply their own `ScdcClient` and `HdmiPhy` implementations, and call
+on plumbob, supply their own `ScdcClient` and `FrlPhy` implementations, and call
 `train` or `train_at_rate` without any negotiation layer above it. The concordance integration is one
 deployment model, not a requirement.
 
@@ -44,7 +44,7 @@ plumbob covers:
 - owned protocol types: `LtpReq`, `LtpRequests`, `FfeLevels`, `FrlConfig`,
   `UpdateFlags`, `SourceTestConfig`,
 - simulation support: the training procedure is fully exercisable without real hardware
-  by using simulated implementations of `ScdcClient` and `HdmiPhy`.
+  by using simulated implementations of `ScdcClient` and `FrlPhy`.
 
 The following are out of scope:
 
@@ -54,7 +54,7 @@ The following are out of scope:
   rate table of its own. Timeouts end the attempt; they do not step down.
 - **SCDC register decoding** — plumbob reads typed values from `ScdcClient` and does not
   decode raw register bytes or know SCDC register addresses.
-- **PHY vendor sequences** — plumbob calls `HdmiPhy` methods; the register sequences
+- **PHY vendor sequences** — plumbob calls `FrlPhy` methods; the register sequences
   for lane reconfiguration are in platform PHY backends.
 - **Timing** — plumbob is poll-based and has no clock: no sleep, no timers. `FrlTrainer`
   blocks until training ends; `plumbob-async` drives the same state machine on the
@@ -62,10 +62,12 @@ The following are out of scope:
   expressed as poll limits in `TrainingConfig`; their defaults assume one poll every 2 ms.
   plumbob runs the polling loop itself, so the interval has to come from the polled
   `ScdcClient` methods, which wait before they read.
-- **TMDS link setup** — plumbob handles FRL training only. Its part in TMDS ends at LTS:L,
-  which leaves both ends in TMDS: the PHY through `set_frl_rate(NotSupported)`, the sink
-  through `Config_1` with FRL off. Setting up the TMDS link — scrambling, the clock
-  ratio, the mode the caller chooses instead — is outside plumbob.
+- **TMDS link setup** — plumbob handles FRL training only. Its part ends at LTS:L, which
+  turns FRL off at both ends: the PHY through `set_frl_rate(NotSupported)`, which enters no
+  other mode, and the sink through `Config_1` with FRL off, which returns it to TMDS.
+  Entering TMDS at the source and setting up the TMDS link — the character rate, the clock
+  ratio, scrambling — is the TMDS bring-up's (`spiritlevel`, over hdmi-hal's `TmdsPhy`),
+  outside plumbob.
 - **CED-driven equalization** — equalization during training follows the sink's FFE
   change requests (0xE). Using CED counters to tune equalization beyond that is not part
   of the training procedure and is left to the caller.
@@ -80,7 +82,7 @@ hdmi-hal       ─┴─►  plumbob  ◄─  culvert (implements ScdcClient, fe
                                ◄─  link orchestrator (planned: its own trait, implemented for plumbob)
 ```
 
-- `hdmi-hal` — `HdmiPhy`, `LanePatterns`, `LtpPattern`, `FrlOutput`, `EqParams`,
+- `hdmi-hal` — `FrlPhy`, `LanePatterns`, `LtpPattern`, `FrlOutput`, `EqParams`,
   `LaneEqParams`, `TxFfeLevel`
 - `display-types` — `HdmiForumFrl`
 
@@ -260,7 +262,8 @@ driver checks every 250 ms) and calls `train` again when it is set.
 ### LTS:L — Exit to TMDS
 
 Before returning `FallbackRequired`, plumbob leaves both ends in a defined state: it stops
-the training patterns, returns the PHY to TMDS (`set_frl_rate(NotSupported)`), writes
+the training patterns, turns the PHY's FRL off (`set_frl_rate(NotSupported)`, which enters
+no other mode: entering TMDS is the TMDS bring-up's, through hdmi-hal's `TmdsPhy`), writes
 `Config_1` with `HdmiForumFrl::NotSupported` (FRL off) and clears `FLT_update` if it is
 set. A failed attempt never leaves the sink configured for an FRL rate the source is not
 driving. Every step is attempted even if an earlier one fails, so a PHY error cannot keep
@@ -444,7 +447,7 @@ pub struct TrainingConfig {
 ```
 
 ```rust
-impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
+impl<C: ScdcClient, P: FrlPhy> FrlTrainer<C, P> {
     /// Train over `rates` in order, stepping down when the sink requests it.
     pub fn train(&mut self, rates: &[HdmiForumFrl], config: &TrainingConfig)
         -> Result<Trained, TrainingError<C::Error, P::Error>>;
@@ -735,7 +738,7 @@ the core lives here.
 pub trait TrainingIo {
     type ScdcError;
     type PhyError;
-    // The SCDC operations of `ScdcClient` and the four `HdmiPhy` operations, as
+    // The SCDC operations of `ScdcClient` and the four `FrlPhy` operations, as
     // `async fn`s.
     async fn read_flt_ready(&mut self) -> Result<bool, Self::ScdcError>;
     async fn send_ltp(&mut self, patterns: LanePatterns) -> Result<(), Self::PhyError>;
@@ -761,11 +764,11 @@ pub async fn exit_to_tmds<Io: TrainingIo, F: FnMut(TrainingEvent)>(
 with no I/O of its own. Drivers supply the I/O:
 
 - **`FrlTrainer` (sync).** An adapter implements `TrainingIo` over the trainer's
-  `ScdcClient` and `HdmiPhy`; each method is the sync call itself, so its future is ready
+  `ScdcClient` and `FrlPhy`; each method is the sync call itself, so its future is ready
   when first polled. The trainer polls `run` once with `core::task::Waker::noop()` (stable
   since Rust 1.85, plumbob's MSRV) and it completes: no executor, no runtime, `no_std`.
   A `Pending` there would be a plumbob bug and panics.
-- **`plumbob-async`.** An adapter over async `ScdcClient` and `HdmiPhy` implementations,
+- **`plumbob-async`.** An adapter over async `ScdcClient` and `FrlPhy` implementations,
   `.await`ing `run`.
 
 `TrainingIo`'s futures are not required to be `Send`, as in `hdmi-hal-async`'s plain
@@ -778,7 +781,7 @@ I/O; 0.3.1 fixed that.
 
 Code generic over the I/O traits cannot spawn `run` on a multi-threaded executor through
 `TrainingIo`: an `async fn` in a trait promises nothing about its future. The `Send` twins
-of the leaf traits do it instead — hdmi-hal-async's `SendHdmiPhy` and plumbob-async's
+of the leaf traits do it instead — hdmi-hal-async's `SendFrlPhy` and plumbob-async's
 `SendScdcClient`, each a `Send` variant of the plain trait with a blanket implementation
 of it. Over them plumbob-async's adapter, and so the `run` future, is `Send` in generic
 code; `TrainingIo` itself needs no twin. The stack design document ("Sync and Async
@@ -831,16 +834,16 @@ and recorded by `hdmi-hal-i2c-dev`'s `StubPhy`):
 - **`LtpPattern` with the standard's values**: 1 = all ones, 2 = all zeros, 3 = Nyquist clock,
   4 = DDE compliance and 5–8 = LFSR 0–3. `LtpReq::pattern` maps a request to the pattern
   of the same value.
-- **Per-lane patterns.** `HdmiPhy::send_ltp` takes the full per-lane set
+- **Per-lane patterns.** `FrlPhy::send_ltp` takes the full per-lane set
   (`LanePatterns`, an `Option<LtpPattern>` per lane, `None` meaning no pattern on that
   lane). The PHY applies the set as given; plumbob tracks which pattern each lane carries.
 - **Per-lane TxFFE levels.** `LaneEqParams::tx_ffe_level` (a `TxFfeLevel`, 0–7), applied
-  through `HdmiPhy::adjust_equalization`.
-- **FRL output mode on `HdmiPhy`.** `set_frl_output(FrlOutput)`: plumbob sets `GapOnly`
+  through `FrlPhy::adjust_equalization`.
+- **FRL output mode on `FrlPhy`.** `set_frl_output(FrlOutput)`: plumbob sets `GapOnly`
   during training and LTS:P, and the caller sets `Active` (video, data islands and
-  control) after `Success`. It sits on `HdmiPhy` because both plumbob and the integration
-  layer drive it, and because `HdmiPhy` already carries link-level operations
-  (`set_scrambling`, `send_ltp`).
+  control) after `Success`. It sits on `FrlPhy` because both plumbob and the integration
+  layer drive it, and because `FrlPhy` already carries link-level operations
+  (`send_ltp`).
 - **`set_frl_rate` includes bring-up.** It returns once the PHY transmits at the rate,
   after whatever its hardware needs to get there, such as a clock pattern held until its
   PLL locks. plumbob sends no pattern during LTS:2 itself: it cannot observe when a
@@ -948,7 +951,7 @@ How a caller keeps a call shorter than the worst case:
   cannot apply TxFFE sets it to 0 explicitly.
 - A Nyquist clock request (0x3) without `FLT_no_timeout` leaves the lane's previous pattern
   in place; plumbob tracks and sends the full per-lane set.
-- FRL output control (`set_frl_output`) is part of `HdmiPhy`.
+- FRL output control (`set_frl_output`) is part of `FrlPhy`.
 - In LTS:P, when the sink sets `FRL_start` and `FLT_update` together, the retrain wins:
   `FRL_start` is cleared and LTS:3 resumes, within `max_retrains`. Starting video on a
   link the sink has asked to retrain would only have to be undone. The Xilinx driver ends
