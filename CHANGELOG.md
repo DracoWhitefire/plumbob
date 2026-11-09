@@ -19,6 +19,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   mode; the sink is back in TMDS as before. A caller that continues in TMDS enters it at the
   source through hdmi-hal's `TmdsPhy`, as the TMDS bring-up (`spiritlevel`) does.
 
+### Internal
+
+- CI fails on `main`, and the publish workflow before anything is built, when `Cargo.toml`
+  has a `[patch]` section: `cargo package` drops it, so a release built with one would not
+  build from crates.io.
+
 ## [0.4.1] - 2026-11-03
 
 ### Changed
