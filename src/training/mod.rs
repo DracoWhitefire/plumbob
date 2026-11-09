@@ -3,7 +3,7 @@ use core::pin::pin;
 use core::task::{Context, Poll, Waker};
 
 use display_types::cea861::hdmi_forum::HdmiForumFrl;
-use hdmi_hal::phy::{EqParams, FrlOutput, HdmiPhy, LanePatterns};
+use hdmi_hal::phy::{EqParams, FrlOutput, FrlPhy, LanePatterns};
 
 use crate::lts::{self, TrainingIo};
 use crate::scdc::ScdcClient;
@@ -217,9 +217,9 @@ impl Default for TrainingConfig {
     }
 }
 
-type Error<C, P> = TrainingError<<C as ScdcClient>::Error, <P as HdmiPhy>::Error>;
+type Error<C, P> = TrainingError<<C as ScdcClient>::Error, <P as FrlPhy>::Error>;
 
-/// The central training type. Owns an `ScdcClient` and an `HdmiPhy`.
+/// The central training type. Owns an `ScdcClient` and an `FrlPhy`.
 ///
 /// Reusable across training attempts; use [`into_parts`](Self::into_parts) to recover
 /// the SCDC client and PHY when training is finished.
@@ -228,7 +228,7 @@ pub struct FrlTrainer<C, P> {
     phy: P,
 }
 
-impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
+impl<C: ScdcClient, P: FrlPhy> FrlTrainer<C, P> {
     /// Constructs a new `FrlTrainer` owning the given SCDC client and PHY.
     pub fn new(scdc: C, phy: P) -> Self {
         Self { scdc, phy }
@@ -344,14 +344,14 @@ impl<C: ScdcClient, P: HdmiPhy> FrlTrainer<C, P> {
     }
 }
 
-/// [`TrainingIo`] over a sync `ScdcClient` and `HdmiPhy`. Each operation is the sync call
+/// [`TrainingIo`] over a sync `ScdcClient` and `FrlPhy`. Each operation is the sync call
 /// itself, so its future is ready the first time it is polled.
 struct SyncIo<'a, C, P> {
     scdc: &'a mut C,
     phy: &'a mut P,
 }
 
-impl<C: ScdcClient, P: HdmiPhy> TrainingIo for SyncIo<'_, C, P> {
+impl<C: ScdcClient, P: FrlPhy> TrainingIo for SyncIo<'_, C, P> {
     type ScdcError = C::Error;
     type PhyError = P::Error;
 

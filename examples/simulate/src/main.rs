@@ -1,13 +1,13 @@
 //! Simulated FRL training example for `plumbob`.
 //!
 //! Demonstrates the full `FrlTrainer` usage pattern against in-memory
-//! implementations of `ScdcClient` and `HdmiPhy`. No hardware required.
+//! implementations of `ScdcClient` and `FrlPhy`. No hardware required.
 //!
 //! Run with `cargo run` from this directory.
 
 use core::convert::Infallible;
 use display_types::cea861::hdmi_forum::HdmiForumFrl;
-use hdmi_hal::phy::{EqParams, FrlOutput, HdmiPhy, LaneEqParams, LanePatterns};
+use hdmi_hal::phy::{EqParams, FrlOutput, FrlPhy, LaneEqParams, LanePatterns};
 use plumbob::{
     ClearableUpdateFlags, FrlConfig, FrlTrainer, LtpReq, LtpRequests, ScdcClient, SourceTestConfig,
     TrainingConfig, UpdateFlags,
@@ -113,7 +113,7 @@ impl ScdcClient for SimSink {
 
 struct SimPhy;
 
-impl HdmiPhy for SimPhy {
+impl FrlPhy for SimPhy {
     type Error = Infallible;
 
     fn set_frl_rate(&mut self, rate: HdmiForumFrl) -> Result<(), Infallible> {
@@ -140,11 +140,6 @@ impl HdmiPhy for SimPhy {
             level(params.lane2),
             params.lane3.map(level)
         );
-        Ok(())
-    }
-
-    fn set_scrambling(&mut self, enabled: bool) -> Result<(), Infallible> {
-        println!("PHY:  set_scrambling({enabled})");
         Ok(())
     }
 }

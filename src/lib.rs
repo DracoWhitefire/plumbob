@@ -43,7 +43,7 @@ pub use trace::TrainingEvent;
 /// does without depending on those crates themselves.
 pub use display_types::cea861::hdmi_forum::HdmiForumFrl;
 pub use hdmi_hal::phy::{
-    EqParams, FrlOutput, HdmiPhy, LaneEqParams, LanePatterns, LtpPattern, TxFfeLevel,
+    EqParams, FrlOutput, FrlPhy, LaneEqParams, LanePatterns, LtpPattern, TxFfeLevel,
     TxFfeRestrictions,
 };
 #[cfg(feature = "alloc")]
