@@ -72,7 +72,7 @@ pub enum TrainingOutcome {
 /// ([`InvalidRates`](Self::InvalidRates), [`NoRates`](Self::NoRates)) — not that the link
 /// simply did not train.
 ///
-/// After an SCDC or PHY error, plumbob performs LTS:L, returning both ends to TMDS as
+/// After an SCDC or PHY error, plumbob performs LTS:L, turning FRL off at both ends as
 /// after a fallback, unless [`TrainingConfig::exit_to_tmds_on_error`] is off or the sink
 /// had set `FLT_no_timeout` (the link is then held for the test equipment, as with
 /// [`TrainingOutcome::NoTimeoutHold`]). `exit` says what happened. When LTS:L itself fails after a fallback, the error is
@@ -195,7 +195,7 @@ pub struct TrainingConfig {
     /// than ending in [`TrainingOutcome::NoTimeoutHold`]. A compliance test that needs
     /// more retrains raises it.
     pub max_retrains: u32,
-    /// Whether an SCDC or PHY error is followed by LTS:L, returning both ends to TMDS as a
+    /// Whether an SCDC or PHY error is followed by LTS:L, turning FRL off at both ends as a
     /// fallback does. Default `true`. Turn it off to leave the sink and PHY as the error
     /// left them, for example to inspect the sink's registers; [`TrainingError`] then
     /// reports [`TmdsExit::Skipped`]. While the sink sets `FLT_no_timeout` an error never
@@ -260,8 +260,10 @@ impl<C: ScdcClient, P: FrlPhy> FrlTrainer<C, P> {
         &mut self.phy
     }
 
-    /// LTS:L on demand: stops the training patterns, returns the PHY to TMDS, turns FRL
-    /// off in `Config_1` and clears `FLT_update` if it is set.
+    /// LTS:L on demand: stops the training patterns, turns the PHY's FRL off (entering no
+    /// other mode; entering TMDS is the TMDS bring-up's, through hdmi-hal's `TmdsPhy`),
+    /// turns FRL off in `Config_1`, which returns the sink to TMDS, and clears `FLT_update`
+    /// if it is set.
     ///
     /// For taking an FRL link down outside [`train`](Self::train) — when the display is
     /// disabled or unplugged, or before a mode change — and after an error that did not

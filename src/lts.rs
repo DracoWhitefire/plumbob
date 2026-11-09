@@ -102,8 +102,9 @@ enum Fault<ScdcErr, PhyErr> {
 
 type Failure<Io> = Fault<<Io as TrainingIo>::ScdcError, <Io as TrainingIo>::PhyError>;
 
-/// Performs LTS:L through `io`: stops the training patterns, returns the PHY to TMDS,
-/// turns FRL off in `Config_1` and clears `FLT_update` if it is set.
+/// Performs LTS:L through `io`: stops the training patterns, turns the PHY's FRL off
+/// (entering no other mode), turns FRL off in `Config_1`, which returns the sink to TMDS,
+/// and clears `FLT_update` if it is set.
 ///
 /// This is [`FrlTrainer::exit_to_tmds`](crate::FrlTrainer::exit_to_tmds), with `record`
 /// called with `ExitedToTmds` or `ExitToTmdsFailed`. Every step is attempted even when

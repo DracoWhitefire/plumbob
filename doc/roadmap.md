@@ -17,12 +17,13 @@ during video.
 
 ### `HdmiPhy` becomes `FrlPhy`
 
-hdmi-hal plans to split its PHY trait by link mode: `HdmiPhy` renamed `FrlPhy`, and a
-separate `TmdsPhy` for TMDS. With that, `set_frl_rate(HdmiForumFrl::NotSupported)` will mean
-"FRL off" rather than "switch to TMDS", and LTS:L's promise changes from "the PHY back in
-TMDS" to "FRL off"; entering TMDS becomes the job of a separate TMDS bring-up crate, also
-planned. A breaking release of plumbob and plumbob-async, following hdmi-hal's; the LTS:3
-entry point above ships in the same release.
+hdmi-hal's next breaking release splits its PHY trait by link mode: `HdmiPhy` renamed
+`FrlPhy`, and a separate `TmdsPhy` for TMDS. With that, `set_frl_rate(HdmiForumFrl::NotSupported)`
+means "FRL off" rather than "switch to TMDS", and LTS:L's promise for the PHY changes from
+"back in TMDS" to "FRL off"; entering TMDS becomes the job of the TMDS bring-up crate,
+`spiritlevel`. plumbob's side is on the development branch, built against hdmi-hal's; a
+breaking release of plumbob and plumbob-async follows hdmi-hal's, and the LTS:3 entry point
+above ships in the same release.
 
 ### The link orchestrator's trainer interface
 
