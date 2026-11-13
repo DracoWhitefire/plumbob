@@ -44,6 +44,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **rustdoc runs with every feature and `-D warnings`**, as docs.rs builds, in CI and in
   the publish workflow's `verify` job: `-D missing_docs` alone let broken intra-doc links
   through.
+- **The tests run with `alloc` only too**, in CI and in the publish workflow's `verify`
+  job; that build was only compiled.
 
 ## [0.4.1] - 2026-11-03
 

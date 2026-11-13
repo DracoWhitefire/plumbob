@@ -110,6 +110,9 @@ jobs:
       - name: Test
         run: cargo test --locked --features std
 
+      - name: Test (alloc only)
+        run: cargo test --locked --features alloc
+
       - name: Test (no default features)
         run: cargo test --locked --no-default-features
 
