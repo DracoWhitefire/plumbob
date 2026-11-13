@@ -149,10 +149,18 @@ with it, over the simulator's zero-sized error types), so a change that grows it
 the tests with the `std` feature and again with no features, so both budgets are
 checked.
 
+## Builds
+
+CI runs the tests with `std`, with `alloc` only and with no features, on stable and on the
+MSRV, and builds the `alloc`-only and bare configurations for `thumbv7em-none-eabi`, which
+has no `std`. The README's examples compile as doctests: the training examples inside
+hidden generic functions, so they are checked against the API without a sink. The
+`examples/simulate` crate runs in CI against its simulated sink and PHY.
+
 ## Coverage
 
 CI measures line coverage with `cargo-llvm-cov` over the `std` feature set. The baseline
-is stored in `.coverage-baseline`; CI fails if coverage drops more than 0.1% below it.
+is stored in `.coverage-baseline`; CI fails if coverage drops more than 0.1 percentage points below it.
 New logic without tests will likely trip this.
 
 ## Philosophy

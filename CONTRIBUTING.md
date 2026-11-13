@@ -26,11 +26,17 @@ is fine.
 
 ## Coding standards
 
-- Run `cargo fmt` and `cargo clippy -- -D warnings` before pushing.
-- Public items need rustdoc comments (`cargo rustdoc -- -D missing_docs` must pass).
+- Run `cargo fmt` and `cargo clippy --all-targets --features std -- -D warnings` before
+  pushing; CI runs clippy in every feature set ([doc/setup.md](doc/setup.md) lists the
+  commands).
+- Public items need rustdoc comments, and intra-doc links must resolve
+  (`cargo rustdoc --all-features -- -D warnings` must pass).
 - Follow the existing patterns in the codebase — see [`doc/architecture.md`](doc/architecture.md)
   and [`doc/model.md`](doc/model.md) for the design principles behind them.
 - `#![forbid(unsafe_code)]` is enforced; no unsafe code.
+- A claim about HDMI behaviour (a rule, a default, a threshold, a register encoding) cites
+  at least two independent public implementations (repository, commit, file and line).
+  Where implementations differ, the behaviour is a setting with the majority as default.
 - Keep `no_std` compatibility. `FrlTrainer` and all owned protocol types must compile
   without `alloc` or `std`.
 
@@ -41,9 +47,27 @@ is fine.
   commits (or three PRs).
 - Tests are expected for new decoding logic. A unit test with a handcrafted byte slice is
   usually sufficient; a real fixture capture is a bonus.
-- CI must be green before a PR can merge: fmt, clippy, docs, all test and build targets,
-  and coverage must not drop more than 0.1% below the baseline (stored in
-  `.coverage-baseline`). New decoding logic without tests will likely trip this.
+- CI must be green before a PR can merge: fmt, clippy, docs, the tests in every feature
+  set, the simulate example, the bare-metal `no_std` builds, the same tests and builds on
+  the MSRV (Rust 1.85), and coverage must not drop more than 0.1 percentage points below
+  the baseline (stored in `.coverage-baseline`). New decoding logic without tests will
+  likely trip this.
+
+## Publishing and downstream dependencies
+
+plumbob builds on [hdmi-hal](https://github.com/ashlar-display/hdmi-hal) and
+[display-types](https://github.com/ashlar-display/display-types) and re-exports the types
+its API uses (the `HdmiPhy` trait and its value types, `HdmiForumFrl`). Their
+versions are therefore part of plumbob's API: moving to a breaking release of either is a
+breaking release of plumbob, unless the version requirement keeps accepting the old release
+as well. Other
+[Ashlar crates](https://ashlar-display.org/crates.html) depend on plumbob as a versioned
+crate dependency. Changes that add or modify public API must be merged, tagged, and
+published to crates.io before downstream crates can adopt them. The workflow is:
+
+1. Merge and tag a release in this repo (`vX.Y.Z`).
+2. The publish CI workflow uploads the new version to crates.io.
+3. Update the version constraint in the downstream crate's `Cargo.toml`.
 
 ## Review process
 
