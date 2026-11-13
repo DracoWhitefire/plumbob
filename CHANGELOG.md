@@ -9,8 +9,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **docs.rs marks the items that need a feature** (`alloc`, `std`) with the `doc_cfg`
-  badge, enabled only in docs.rs builds; docs.rs builds with every feature.
+- **docs.rs marks the items that need the `alloc` feature** with the `doc_cfg` badge,
+  enabled only in docs.rs builds; docs.rs builds with every feature. (`std` adds no API of
+  its own.)
 
 ### Changed
 

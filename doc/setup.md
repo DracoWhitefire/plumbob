@@ -23,7 +23,7 @@ cargo rustdoc --all-features -- -D warnings
 ## Running tests
 
 ```sh
-cargo test --features std         # with the traced variant and the sync driver's std parts
+cargo test --features std         # std (implies alloc)
 cargo test --features alloc       # alloc only
 cargo test --no-default-features  # bare no_std
 ```

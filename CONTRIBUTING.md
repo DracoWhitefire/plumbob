@@ -57,8 +57,10 @@ is fine.
 
 plumbob builds on [hdmi-hal](https://github.com/ashlar-display/hdmi-hal) and
 [display-types](https://github.com/ashlar-display/display-types) and re-exports the types
-its API uses (the PHY traits and value types, `HdmiForumFrl`), so a breaking release of
-either is a breaking release of plumbob. Other
+its API uses (the `HdmiPhy` trait and its value types, `HdmiForumFrl`). Their
+versions are therefore part of plumbob's API: moving to a breaking release of either is a
+breaking release of plumbob, unless the version requirement keeps accepting the old release
+as well. Other
 [Ashlar crates](https://ashlar-display.org/crates.html) depend on plumbob as a versioned
 crate dependency. Changes that add or modify public API must be merged, tagged, and
 published to crates.io before downstream crates can adopt them. The workflow is:
