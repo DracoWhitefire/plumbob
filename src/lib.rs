@@ -49,3 +49,8 @@ pub use hdmi_hal::phy::{
 #[cfg(feature = "alloc")]
 pub use trace::TrainingTrace;
 pub use warning::{MAX_WARNINGS, Trained, TrainingWarning};
+
+// Compiles and runs the README's examples as doctests.
+#[cfg(doctest)]
+#[doc = include_str!("../README.md")]
+struct ReadmeDoctests;

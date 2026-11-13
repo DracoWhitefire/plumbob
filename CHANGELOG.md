@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Internal
+
+- **The README's Rust examples compile as doctests** (`ReadmeDoctests` in `lib.rs`,
+  compiled only for `cargo test`): the `ScdcClient` sketch with a hidden error type, and
+  the training examples inside hidden generic functions, so they are checked against the
+  API without a sink. The two event logs are marked as text.
+
 ## [0.4.1] - 2026-11-03
 
 ### Changed

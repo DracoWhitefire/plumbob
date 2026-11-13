@@ -46,6 +46,8 @@ use plumbob::{
 };
 
 struct MyScdcClient { /* I²C / DDC transport */ }
+# #[derive(Debug)]
+# struct MyError;
 
 impl ScdcClient for MyScdcClient {
     type Error = MyError;
@@ -71,6 +73,17 @@ Construct an `FrlTrainer` and train over the rates to try, highest first. plumbo
 down through the list when the sink asks for a lower rate:
 
 ```rust
+# use core::convert::Infallible;
+# use plumbob::TrainingError;
+# enum Error<E> { Training(TrainingError<E, Infallible>) }
+# impl<E> From<TrainingError<E, Infallible>> for Error<E> {
+#     fn from(e: TrainingError<E, Infallible>) -> Self { Error::Training(e) }
+# }
+# impl<E> From<Infallible> for Error<E> {
+#     fn from(e: Infallible) -> Self { match e {} }
+# }
+# fn example<S, P>(scdc: S, phy: P) -> Result<(), Error<S::Error>>
+# where S: plumbob::ScdcClient, P: plumbob::HdmiPhy<Error = Infallible> {
 use plumbob::{FrlOutput, FrlTrainer, HdmiForumFrl, HdmiPhy, TrainingConfig, TrainingOutcome};
 
 let mut trainer = FrlTrainer::new(scdc, phy);
@@ -96,6 +109,8 @@ match trained.outcome {
 for warning in trained.iter_warnings() {
     println!("Warning: {warning:?}");
 }
+# Ok(())
+# }
 ```
 
 `train` returns a `Trained`: the outcome, and the `TrainingWarning`s the attempt
@@ -200,29 +215,44 @@ The trace records the rates, the `TrainingConfig` in force, and an ordered
 `TrainingEvent` log covering the full attempt:
 
 ```rust
+# #[cfg(feature = "alloc")]
+# fn example<S: plumbob::ScdcClient, P: plumbob::HdmiPhy>(
+#     trainer: &mut plumbob::FrlTrainer<S, P>,
+#     rates: [plumbob::HdmiForumFrl; 3],
+#     config: plumbob::TrainingConfig,
+# ) where S::Error: core::fmt::Debug, P::Error: core::fmt::Debug {
 let (result, trace) = trainer.train_traced(&rates, &config);
 
 println!("Result: {result:?}");
 for event in &trace.events {
     println!("  {event:?}");
 }
+# }
 ```
 
 Without an allocator, `train_with_events` delivers the same events as they occur, to a
 callback; the caller decides what to keep:
 
 ```rust
+# use plumbob::TrainingEvent;
+# fn example<S: plumbob::ScdcClient, P: plumbob::HdmiPhy>(
+#     trainer: &mut plumbob::FrlTrainer<S, P>,
+#     rates: [plumbob::HdmiForumFrl; 3],
+#     config: plumbob::TrainingConfig,
+# ) -> Result<(), plumbob::TrainingError<S::Error, P::Error>> {
 let mut timeouts = 0;
 let trained = trainer.train_with_events(&rates, &config, &mut |event| {
     if matches!(event, TrainingEvent::TrainingTimeout { .. }) {
         timeouts += 1;
     }
 })?;
+# Ok(())
+# }
 ```
 
 A successful attempt, where the sink asks for one TxFFE raise on lane 1:
 
-```
+```text
 SourceTestConfigRead { config: SourceTestConfig { txffe_pre_shoot_only: false, txffe_de_emphasis_only: false, txffe_no_ffe: false, flt_no_timeout: false, dsc_frl_max: false, frl_max: false } }
 FltReady { after_polls: 3 }
 RateConfigured { rate: Rate12Gbps4Lanes, ffe_levels: FfeLevels(3) }
@@ -235,7 +265,7 @@ FrlStart { after_polls: 6 }
 
 A sink that asks for a lower rate, trained over `[Rate12Gbps4Lanes, Rate10Gbps4Lanes]`:
 
-```
+```text
 SourceTestConfigRead { config: SourceTestConfig { txffe_pre_shoot_only: false, txffe_de_emphasis_only: false, txffe_no_ffe: false, flt_no_timeout: false, dsc_frl_max: false, frl_max: false } }
 FltReady { after_polls: 2 }
 RateConfigured { rate: Rate12Gbps4Lanes, ffe_levels: FfeLevels(3) }
