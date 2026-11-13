@@ -68,6 +68,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rustdoc with `-D warnings`, the example, the bare-metal builds, the MSRV, a tolerance of
   0.1 percentage points), states the provenance rule for claims about HDMI behaviour, and
   has a publishing section on the crates plumbob builds on and re-exports.
+- **The README's documentation list links `doc/setup.md`, `doc/roadmap.md` and
+  `CONTRIBUTING.md`.**
 
 ## [0.4.1] - 2026-11-03
 

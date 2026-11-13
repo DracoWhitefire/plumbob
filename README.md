@@ -367,6 +367,10 @@ Any crate that implements `ScdcClient` is substitutable.
   interface boundaries, design principles, and the async roadmap
 - [`doc/model.md`](doc/model.md) — the protocol, configuration and outcome types
 - [`doc/testing.md`](doc/testing.md) — how the state machine is tested without hardware
+- [`doc/setup.md`](doc/setup.md) — build, test, `no_std`, MSRV, coverage and example commands
+- [`doc/roadmap.md`](doc/roadmap.md) — what comes next
+- [`CONTRIBUTING.md`](CONTRIBUTING.md) — how to contribute, and how releases reach the
+  crates that depend on plumbob
 
 ## Verifying releases
 
