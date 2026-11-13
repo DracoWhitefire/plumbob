@@ -49,6 +49,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **CI runs the simulate example**, not only builds it, and format-checks and lints it (as
   its own workspace, the root `cargo fmt` and `clippy` did not reach it), in `ci.yml` and
   in the publish workflow's `verify` job.
+- **The MSRV is checked**: an `MSRV` job in CI and in the publish workflow (which waits for
+  it) runs the tests in every feature set and the bare-metal builds on the `rust-version`
+  from `Cargo.toml` (1.85) with `cargo msrv verify`; the crate declared it, and nothing
+  checked it.
 
 ## [0.4.1] - 2026-11-03
 
