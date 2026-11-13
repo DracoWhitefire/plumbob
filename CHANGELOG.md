@@ -53,6 +53,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   it) runs the tests in every feature set and the bare-metal builds on the `rust-version`
   from `Cargo.toml` (1.85) with `cargo msrv verify`; the crate declared it, and nothing
   checked it.
+- **The coverage job's cache is keyed on the Rust version** as well as `Cargo.lock`, so a
+  `target/` built by an older Rust is not restored: `cargo llvm-cov clean --workspace`
+  leaves its instrumented binaries behind, and the report would count their lines as
+  uncovered (it did so in other Ashlar crates after the update to Rust 1.100). The
+  coverage run is `--locked`, as the other jobs are.
 
 ## [0.4.1] - 2026-11-03
 
