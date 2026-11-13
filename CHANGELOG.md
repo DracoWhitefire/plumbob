@@ -46,6 +46,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   through.
 - **The tests run with `alloc` only too**, in CI and in the publish workflow's `verify`
   job; that build was only compiled.
+- **CI runs the simulate example**, not only builds it, and format-checks and lints it (as
+  its own workspace, the root `cargo fmt` and `clippy` did not reach it), in `ci.yml` and
+  in the publish workflow's `verify` job.
 
 ## [0.4.1] - 2026-11-03
 

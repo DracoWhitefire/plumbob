@@ -122,8 +122,16 @@ jobs:
       - name: Build (no_std)
         run: cargo build --locked --no-default-features --target thumbv7em-none-eabi
 
-      - name: Build simulate example
-        run: cargo build --locked --manifest-path examples/simulate/Cargo.toml
+      # The example is its own workspace, which the root fmt and clippy do not reach. It
+      # simulates the sink and the PHY, so it runs here.
+      - name: Format check (simulate example)
+        run: cargo fmt --check --manifest-path examples/simulate/Cargo.toml
+
+      - name: Clippy (simulate example)
+        run: cargo clippy --locked --manifest-path examples/simulate/Cargo.toml -- -D warnings
+
+      - name: Run simulate example
+        run: cargo run --locked --manifest-path examples/simulate/Cargo.toml
 
   # What is about to be released, shown on the run page while the publish job
   # waits for approval in the `release` environment. Packages the crate the same
