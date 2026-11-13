@@ -62,6 +62,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   rustdoc with every feature, the bare-metal `no_std` builds, the MSRV check and the
   simulate example, with when to refresh its lock file; the coverage tolerance is 0.1
   percentage points, not 0.1%.
+- **`doc/testing.md` describes the builds** CI runs the tests in, the README doctests and
+  the simulate example run.
 
 ## [0.4.1] - 2026-11-03
 
