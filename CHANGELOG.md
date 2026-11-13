@@ -64,6 +64,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   percentage points, not 0.1%.
 - **`doc/testing.md` describes the builds** CI runs the tests in, the README doctests and
   the simulate example run.
+- **`CONTRIBUTING.md` matches the CI checks** (clippy over all targets in every feature set,
+  rustdoc with `-D warnings`, the example, the bare-metal builds, the MSRV, a tolerance of
+  0.1 percentage points), states the provenance rule for claims about HDMI behaviour, and
+  has a publishing section on the crates plumbob builds on and re-exports.
 
 ## [0.4.1] - 2026-11-03
 
