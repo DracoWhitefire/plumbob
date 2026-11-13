@@ -160,7 +160,7 @@ hidden generic functions, so they are checked against the API without a sink. Th
 ## Coverage
 
 CI measures line coverage with `cargo-llvm-cov` over the `std` feature set. The baseline
-is stored in `.coverage-baseline`; CI fails if coverage drops more than 0.1% below it.
+is stored in `.coverage-baseline`; CI fails if coverage drops more than 0.1 percentage points below it.
 New logic without tests will likely trip this.
 
 ## Philosophy
