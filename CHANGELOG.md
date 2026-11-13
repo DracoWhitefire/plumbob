@@ -58,6 +58,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   leaves its instrumented binaries behind, and the report would count their lines as
   uncovered (it did so in other Ashlar crates after the update to Rust 1.100). The
   coverage run is `--locked`, as the other jobs are.
+- **`doc/setup.md` lists the checks CI runs**: clippy and the tests in every feature set,
+  rustdoc with every feature, the bare-metal `no_std` builds, the MSRV check and the
+  simulate example, with when to refresh its lock file; the coverage tolerance is 0.1
+  percentage points, not 0.1%.
 
 ## [0.4.1] - 2026-11-03
 
