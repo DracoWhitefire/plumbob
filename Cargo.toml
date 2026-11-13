@@ -10,6 +10,7 @@ repository = "https://github.com/ashlar-display/plumbob"
 homepage = "https://ashlar-display.org"
 keywords = ["ashlar", "hdmi", "no-std", "frl", "link-training"]
 categories = ["hardware-support", "embedded", "no-std", "no-std::no-alloc"]
+include = ["src/**", "doc/**", "README.md", "CHANGELOG.md", "LICENSE"]
 
 [features]
 alloc = []
