@@ -57,8 +57,14 @@ jobs:
       - name: Format check
         run: cargo fmt --check
 
-      - name: Clippy
-        run: cargo clippy --locked --features std -- -D warnings
+      - name: Clippy (std)
+        run: cargo clippy --locked --all-targets --features std -- -D warnings
+
+      - name: Clippy (alloc only)
+        run: cargo clippy --locked --all-targets --features alloc -- -D warnings
+
+      - name: Clippy (no default features)
+        run: cargo clippy --locked --all-targets --no-default-features -- -D warnings
 
       - name: Docs
         run: cargo rustdoc --locked --features std -- -D missing_docs
