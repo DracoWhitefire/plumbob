@@ -72,6 +72,11 @@ The current baseline is stored in `.coverage-baseline`. CI fails if coverage dro
 than 0.1 percentage points below it. On pushes to `main` or `develop`, an improvement
 automatically opens a `ci/coverage-ratchet` PR to commit the new baseline.
 
+Rust versions count lines differently, so the same code can measure differently on two
+versions. Measure the baseline with the Rust version CI's `stable` uses
+(`cargo +<version> llvm-cov …`), or CI can fail on a baseline that a different local
+version produced.
+
 ## Running the simulate example
 
 ```sh
